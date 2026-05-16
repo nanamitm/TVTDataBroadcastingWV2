@@ -169,7 +169,7 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t st
 
 void CommentFetcher::FetchLoop()
 {
-    constexpr DWORD kIntervalMs = 60000;
+    constexpr DWORD kIntervalMs = 15000; // fetch every 15 seconds
 
     DbgLog("FetchLoop started");
 
@@ -184,9 +184,8 @@ void CommentFetcher::FetchLoop()
             DbgLog("FetchLoop: channel is empty, skipping");
         } else {
             time_t nowTime  = time(nullptr);
-            // kakolog API has ~5 min indexing delay, so fetch up to 3 min ago
-            constexpr time_t kDelaySec  = 180;
-            constexpr time_t kInitialSec = 600;
+            constexpr time_t kDelaySec   = 60;  // API indexing delay ~1 min
+            constexpr time_t kInitialSec = 180; // initial window: last 3 min
             time_t toTime   = nowTime - kDelaySec;
             time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - kInitialSec;
 
@@ -208,7 +207,7 @@ void CommentFetcher::FetchLoop()
             m_lastSent = toTime;
             // Keep only the last 60 seconds of the fetch window to avoid flooding
             if (comments.size() > 0) {
-                time_t windowCutoff = toTime - 60;
+                time_t windowCutoff = toTime - 20; // keep last 20 sec of window
                 comments.erase(
                     std::remove_if(comments.begin(), comments.end(),
                         [windowCutoff](const Comment& c) { return c.date < windowCutoff; }),

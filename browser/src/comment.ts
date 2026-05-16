@@ -16,7 +16,7 @@ interface ActiveComment {
     createdAt: number;
 }
 
-const DURATION_MS = 4000;
+const DURATION_MS = 8000;
 const FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 const MAX_LANES = 20;
 

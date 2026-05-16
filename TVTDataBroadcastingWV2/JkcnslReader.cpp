@@ -143,10 +143,8 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkCh
     // Start reader thread
     m_thread = std::thread([this] { ReadLoop(); });
 
-    // Send stream command: R1 {nx-jikkyo-url}
-    // NX-Jikkyo: refuge stream, no authentication required
-    std::string url  = "https://nx-jikkyo.tsukumijima.net/watch/" + jkChannel;
-    std::string cmd  = "R1 " + url + "\r\n";
+    // Send stream command: L{channel}  e.g. "Ljk1\r\n"
+    std::string cmd = "L" + jkChannel + "\r\n";
     JkDbg(("Sending: " + cmd).c_str());
 
     DWORD written = 0;

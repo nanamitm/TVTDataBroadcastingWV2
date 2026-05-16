@@ -17,6 +17,7 @@ interface ActiveComment {
 }
 
 const DURATION_MS = 8000;
+const DEFAULT_OPACITY = 1.0;
 const FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 const MAX_LANES = 20;
 
@@ -35,6 +36,7 @@ export class CommentRenderer {
     private readonly ctx: CanvasRenderingContext2D;
     private comments: ActiveComment[] = [];
     private rafId = 0;
+    private opacity = DEFAULT_OPACITY;
     // レーンごとの「次にコメントを追加できる時刻」
     private nakaLane: number[] = new Array(MAX_LANES).fill(0);
     private topLane: number[] = new Array(MAX_LANES).fill(0);
@@ -100,10 +102,15 @@ export class CommentRenderer {
         return best;
     }
 
+    setOpacity(opacity: number) {
+        this.opacity = Math.max(0, Math.min(1, opacity));
+    }
+
     private draw() {
         const { canvas, ctx } = this;
         const now = performance.now();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = this.opacity;
 
         this.comments = this.comments.filter(c => now - c.createdAt < DURATION_MS);
 

@@ -509,6 +509,9 @@ type ToWebViewMessage = {
     comments: CommentData[],
 } | {
     type: "clearComments",
+} | {
+    type: "commentConfig",
+    opacity: number,
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -613,6 +616,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "clearComments") {
         console.log("[comment] clearComments");
         commentRenderer.clear();
+    } else if (data.type === "commentConfig") {
+        commentRenderer.setOpacity(data.opacity);
     }
 }
 

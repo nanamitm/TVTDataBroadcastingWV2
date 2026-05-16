@@ -1439,6 +1439,19 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateCaptionState(false);
                 this->UpdateVolume();
+                // Send comment config (opacity 0-100 from INI, default 100)
+                {
+                    int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
+                    opacityPct = max(0, min(100, opacityPct));
+                    nlohmann::json cfgMsg{
+                        { "type", "commentConfig" },
+                        { "opacity", opacityPct / 100.0 }
+                    };
+                    std::stringstream cfgSs;
+                    cfgSs << cfgMsg;
+                    auto cfgJson = utf8StrToWString(cfgSs.str().c_str());
+                    this->webView->PostWebMessageAsJson(cfgJson.c_str());
+                }
                 if (this->proxySession)
                 {
                     this->UpdateNetworkState();

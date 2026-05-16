@@ -360,8 +360,6 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
-    std::unordered_map<DWORD, int> m_jkChannelMap; // from NicoJK.ini [Channels]
-    void LoadJkChannelMap();
     std::string DetectJkChannel() const;
     void SendComments(std::vector<Comment> comments);
     void UpdateCommentChannel();
@@ -647,7 +645,6 @@ bool CDataBroadcastingWV2::Initialize()
     m_pApp->RegisterStatusItem(&statusItemInfo);
     this->useTVTestVolume = this->GetIniItem(L"UseTVTestVolume", true);
     this->useTVTestChannelCommand = this->GetIniItem(L"UseTVTestChannelCommand", true);
-    this->LoadJkChannelMap();
     this->restoreCaptionState = this->GetIniItem(L"RestoreCaptionState", 0) != 0;
     if (this->restoreCaptionState)
     {
@@ -1868,75 +1865,36 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     this->webView->PostWebMessageAsJson(wjson.c_str());
 }
 
-void CDataBroadcastingWV2::LoadJkChannelMap()
-{
-    m_jkChannelMap.clear();
-
-    // 1st: our own INI [Channels] section
-    // 2nd: NicoJK.ini [Channels] section (fallback)
-    std::vector<std::filesystem::path> candidates = {
-        this->iniFile,
-        std::filesystem::path(this->baseDirectory).parent_path() / L"NicoJK.ini",
-    };
-
-    std::vector<wchar_t> buf(8192);
-    DWORD len = 0;
-    for (auto& path : candidates) {
-        len = GetPrivateProfileSectionW(L"Channels", buf.data(), (DWORD)buf.size(), path.c_str());
-        if (len > 0) {
-            char logbuf[MAX_PATH + 64];
-            sprintf_s(logbuf, "[TVTDataBroadcastingWV2] Reading [Channels] from %ls", path.c_str());
-            OutputDebugStringA(logbuf);
-            OutputDebugStringA("\n");
-            break;
-        }
-    }
-    if (len == 0) return;
-
-    for (DWORD i = 0; i < len; ) {
-        std::wstring line(buf.data() + i);
-        i += (DWORD)line.size() + 1;
-        if (line.empty() || line[0] == L';') continue;
-
-        auto eq = line.find(L'=');
-        if (eq == std::wstring::npos) continue;
-
-        std::wstring keyStr = line.substr(0, eq);
-        std::wstring valStr = line.substr(eq + 1);
-
-        // Remove preferred marker '+'
-        if (!valStr.empty() && valStr[0] == L'+') valStr = valStr.substr(1);
-
-        int jkNum = 0;
-        DWORD key  = 0;
-        try {
-            key   = (DWORD)std::stoul(keyStr, nullptr, 16);
-            jkNum = std::stoi(valStr);
-        } catch (...) { continue; }
-
-        m_jkChannelMap[key] = jkNum; // -1 means explicitly unmapped
-    }
-
-    char logbuf[64];
-    sprintf_s(logbuf, "[TVTDataBroadcastingWV2] Loaded %zu jk channel entries from NicoJK.ini", m_jkChannelMap.size());
-    OutputDebugStringA(logbuf);
-    OutputDebugStringA("\n");
-}
-
 std::string CDataBroadcastingWV2::DetectJkChannel() const
 {
-    // Key format: 0x{NetCat}{ServiceID}
-    // NetCat = 0x4 for BS (NetworkID==4), 0xF for terrestrial (all others)
-    WORD netCat = (this->currentChannel.NetworkID == 4) ? 4 : 0xF;
-    DWORD key   = ((DWORD)netCat << 16) | this->currentService.ServiceID;
+    // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
+    // NetCat = 0x4 for BS (NetworkID==4), 0xF for terrestrial
+    WORD  netCat = (this->currentChannel.NetworkID == 4) ? 4 : 0xF;
+    DWORD key    = ((DWORD)netCat << 16) | this->currentService.ServiceID;
 
-    auto it = m_jkChannelMap.find(key);
-    if (it != m_jkChannelMap.end()) {
-        if (it->second <= 0) return ""; // explicitly unmapped (-1)
+    // Build key string e.g. "0xF0430"
+    wchar_t keyStr[16];
+    swprintf_s(keyStr, L"0x%X", key);
+
+    // Try our INI [Channels], then NicoJK.ini [Channels]
+    const std::wstring paths[] = {
+        this->iniFile,
+        std::filesystem::path(this->baseDirectory).parent_path().wstring() + L"\\NicoJK.ini",
+    };
+    for (auto& path : paths) {
+        wchar_t valStr[16] = {};
+        DWORD len = GetPrivateProfileStringW(L"Channels", keyStr, L"", valStr, 16, path.c_str());
+        if (len == 0) continue;
+
+        const wchar_t* val = valStr;
+        if (*val == L'+') val++; // strip preferred marker
+        int jkNum = _wtoi(val);
+        if (jkNum <= 0) return ""; // 0 or -1 = explicitly unmapped
         char buf[16];
-        sprintf_s(buf, "jk%d", it->second);
+        sprintf_s(buf, "jk%d", jkNum);
         return buf;
     }
+
     // Fallback: built-in BS mapping
     return CommentFetcher::DetectChannel(
         this->currentChannel.NetworkID,

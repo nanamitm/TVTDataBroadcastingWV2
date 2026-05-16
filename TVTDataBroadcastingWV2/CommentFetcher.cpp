@@ -144,13 +144,19 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t st
             if (!item.contains("chat")) continue;
             auto& chat = item["chat"];
 
-            time_t date = chat.value("date", (time_t)0);
+            // date field is a JSON string (e.g. "1234567890"), not a number
+            time_t date = 0;
+            if (chat.contains("date")) {
+                auto& dv = chat["date"];
+                if (dv.is_string()) date = std::stoll(dv.get<std::string>());
+                else if (dv.is_number()) date = dv.get<time_t>();
+            }
             if (date <= this->m_lastSent) continue;
 
             Comment c;
-            c.text = chat.value("content", "");
+            c.text = chat.value("content", std::string(""));
             if (c.text.empty()) continue;
-            ParseMail(chat.value("mail", ""), c.color, c.position, c.size);
+            ParseMail(chat.value("mail", std::string("")), c.color, c.position, c.size);
             result.push_back(std::move(c));
         }
     } catch (...) {}
@@ -182,6 +188,12 @@ void CommentFetcher::FetchLoop()
             constexpr time_t kInitialSec = 600;
             time_t toTime   = nowTime - kDelaySec;
             time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - kInitialSec;
+
+            if (toTime <= fromTime) {
+                DbgLog("FetchLoop: window too small, skipping");
+                WaitForSingleObject(m_wakeEvent, kIntervalMs);
+                continue;
+            }
 
             char logbuf[256];
             sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)fromTime, (long long)toTime);

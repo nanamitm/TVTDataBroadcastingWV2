@@ -12,6 +12,7 @@
 #include "InputDialog.h"
 #include "OneSeg.h"
 #include "CommentFetcher.h"
+#include "JkcnslReader.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -358,7 +359,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool caption = false;
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
-    CommentFetcher m_commentFetcher;
+    CommentFetcher m_commentFetcher;   // fallback: REST API polling
+    JkcnslReader   m_jkcnslReader;    // primary: real-time via jkcnsl.exe
     void SendComments(std::vector<Comment> comments);
     void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
@@ -1723,17 +1725,36 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             OutputDebugStringA("\n");
             if (enableComment)
             {
-                this->m_commentFetcher.SetCallback([this](std::vector<Comment> comments) {
+                auto commentCallback = [this](std::vector<Comment> comments) {
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
-                });
-                this->m_commentFetcher.Start();
+                };
+                // Try jkcnsl.exe first (real-time); fall back to REST API polling
+                auto jkcnslPath = this->GetIniItem(L"JkcnslPath",
+                    (std::filesystem::path(this->baseDirectory).parent_path() / L"jkcnsl.exe").c_str());
+                this->m_jkcnslReader.SetCallback(commentCallback);
+                bool useJkcnsl = false;
+                if (!jkcnslPath.empty()) {
+                    std::string ch;
+                    auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
+                    ch = iniCh.empty() ? CommentFetcher::DetectChannel(
+                        this->currentChannel.NetworkID,
+                        this->currentService.ServiceID,
+                        this->currentService.szServiceName) : std::string(iniCh.begin(), iniCh.end());
+                    useJkcnsl = this->m_jkcnslReader.Start(jkcnslPath, ch);
+                }
+                if (!useJkcnsl) {
+                    // Fallback: REST API polling
+                    this->m_commentFetcher.SetCallback(commentCallback);
+                    this->m_commentFetcher.Start();
+                }
                 this->UpdateCommentChannel();
             }
         }
     }
     else
     {
+        this->m_jkcnslReader.Stop();
         this->m_commentFetcher.Stop();
         this->EnablePanelButtons(false);
         this->Disable(false);
@@ -1907,7 +1928,9 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
         OutputDebugStringA(logbuf);
         OutputDebugStringA("\n");
     }
-    this->m_commentFetcher.SetChannel(ch);
+    if (!this->m_jkcnslReader.IsRunning()) {
+        this->m_commentFetcher.SetChannel(ch);
+    }
 }
 
 void CDataBroadcastingWV2::SetCaptionState(bool enable)

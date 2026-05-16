@@ -1871,11 +1871,26 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 void CDataBroadcastingWV2::LoadJkChannelMap()
 {
     m_jkChannelMap.clear();
-    // NicoJK.ini is in the same Plugins directory as our plugin
-    auto nicojkIni = std::filesystem::path(this->baseDirectory).parent_path() / L"NicoJK.ini";
+
+    // 1st: our own INI [Channels] section
+    // 2nd: NicoJK.ini [Channels] section (fallback)
+    std::vector<std::filesystem::path> candidates = {
+        this->iniFile,
+        std::filesystem::path(this->baseDirectory).parent_path() / L"NicoJK.ini",
+    };
 
     std::vector<wchar_t> buf(8192);
-    DWORD len = GetPrivateProfileSectionW(L"Channels", buf.data(), (DWORD)buf.size(), nicojkIni.c_str());
+    DWORD len = 0;
+    for (auto& path : candidates) {
+        len = GetPrivateProfileSectionW(L"Channels", buf.data(), (DWORD)buf.size(), path.c_str());
+        if (len > 0) {
+            char logbuf[MAX_PATH + 64];
+            sprintf_s(logbuf, "[TVTDataBroadcastingWV2] Reading [Channels] from %ls", path.c_str());
+            OutputDebugStringA(logbuf);
+            OutputDebugStringA("\n");
+            break;
+        }
+    }
     if (len == 0) return;
 
     for (DWORD i = 0; i < len; ) {
@@ -1930,11 +1945,8 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
 
 void CDataBroadcastingWV2::UpdateCommentChannel()
 {
-    // Determine jikkyo channel (INI override > NicoJK.ini map > built-in BS map)
-    auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
-    std::string ch = iniCh.empty()
-        ? this->DetectJkChannel()
-        : std::string(iniCh.begin(), iniCh.end());
+    // Determine jikkyo channel: [Channels] in our INI or NicoJK.ini, then built-in BS map
+    std::string ch = this->DetectJkChannel();
 
     {
         char logbuf[128];

@@ -512,6 +512,7 @@ type ToWebViewMessage = {
 } | {
     type: "commentConfig",
     opacity: number,
+    duration_ms: number,
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -618,6 +619,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         commentRenderer.clear();
     } else if (data.type === "commentConfig") {
         commentRenderer.setOpacity(data.opacity);
+        commentRenderer.setDuration(data.duration_ms);
     }
 }
 

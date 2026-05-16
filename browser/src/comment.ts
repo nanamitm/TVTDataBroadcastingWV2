@@ -16,7 +16,7 @@ interface ActiveComment {
     createdAt: number;
 }
 
-const DURATION_MS = 8000;
+let DURATION_MS = 8000;
 const DEFAULT_OPACITY = 1.0;
 const FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 const MAX_LANES = 20;
@@ -104,6 +104,10 @@ export class CommentRenderer {
 
     setOpacity(opacity: number) {
         this.opacity = Math.max(0, Math.min(1, opacity));
+    }
+
+    setDuration(ms: number) {
+        DURATION_MS = Math.max(1000, Math.min(30000, ms));
     }
 
     private draw() {

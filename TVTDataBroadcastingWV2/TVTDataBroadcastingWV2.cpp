@@ -1439,13 +1439,16 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateCaptionState(false);
                 this->UpdateVolume();
-                // Send comment config (opacity 0-100 from INI, default 100)
+                // Send comment config (opacity + duration)
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
                     opacityPct = std::max(0, std::min(100, opacityPct));
+                    int durationSec = this->GetIniItem(L"CommentDuration", 8);
+                    durationSec = std::max(1, std::min(30, durationSec));
                     nlohmann::json cfgMsg{
-                        { "type", "commentConfig" },
-                        { "opacity", opacityPct / 100.0 }
+                        { "type",        "commentConfig"        },
+                        { "opacity",     opacityPct / 100.0     },
+                        { "duration_ms", durationSec * 1000     },
                     };
                     std::stringstream cfgSs;
                     cfgSs << cfgMsg;
@@ -2460,6 +2463,8 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         {
             int opacity = pThis->GetIniItem(L"CommentOpacity", 100);
             SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, std::max(0, std::min(100, opacity)), FALSE);
+            int duration = pThis->GetIniItem(L"CommentDuration", 8);
+            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_DURATION, std::max(1, std::min(30, duration)), FALSE);
         }
         if (pThis->GetIniItem(L"UseTVTestVolume", 1))
         {
@@ -2526,10 +2531,26 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                         EndDialog(hDlg, IDCANCEL);
                         return 1;
                     }
-                    // Apply immediately to WebView2
+                    BOOL validD = FALSE;
+                    int duration = (int)GetDlgItemInt(hDlg, IDC_EDIT_COMMENT_DURATION, &validD, FALSE);
+                    if (!validD) duration = 8;
+                    duration = std::max(1, std::min(30, duration));
+                    WCHAR durationStr[8];
+                    swprintf_s(durationStr, L"%d", duration);
+                    if (!pThis->SetIniItem(L"CommentDuration", durationStr))
+                    {
+                        MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
+                        EndDialog(hDlg, IDCANCEL);
+                        return 1;
+                    }
+                    // Apply both settings immediately to WebView2
                     if (pThis->webView && pThis->webViewLoaded)
                     {
-                        nlohmann::json cfgMsg{ { "type", "commentConfig" }, { "opacity", opacity / 100.0 } };
+                        nlohmann::json cfgMsg{
+                            { "type",        "commentConfig"    },
+                            { "opacity",     opacity / 100.0    },
+                            { "duration_ms", duration * 1000    },
+                        };
                         std::stringstream cfgSs;
                         cfgSs << cfgMsg;
                         auto cfgJson = utf8StrToWString(cfgSs.str().c_str());

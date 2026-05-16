@@ -1442,7 +1442,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 // Send comment config (opacity 0-100 from INI, default 100)
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
-                    opacityPct = max(0, min(100, opacityPct));
+                    opacityPct = std::max(0, std::min(100, opacityPct));
                     nlohmann::json cfgMsg{
                         { "type", "commentConfig" },
                         { "opacity", opacityPct / 100.0 }
@@ -2459,7 +2459,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         }
         {
             int opacity = pThis->GetIniItem(L"CommentOpacity", 100);
-            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, max(0, min(100, opacity)), FALSE);
+            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, std::max(0, std::min(100, opacity)), FALSE);
         }
         if (pThis->GetIniItem(L"UseTVTestVolume", 1))
         {
@@ -2517,7 +2517,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                     BOOL valid = FALSE;
                     int opacity = (int)GetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, &valid, FALSE);
                     if (!valid) opacity = 100;
-                    opacity = max(0, min(100, opacity));
+                    opacity = std::max(0, std::min(100, opacity));
                     WCHAR opacityStr[8];
                     swprintf_s(opacityStr, L"%d", opacity);
                     if (!pThis->SetIniItem(L"CommentOpacity", opacityStr))

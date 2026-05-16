@@ -179,8 +179,8 @@ void CommentFetcher::FetchLoop()
             DbgLog("FetchLoop: channel is empty, skipping");
         } else {
             time_t now  = time(nullptr);
-            time_t from = m_lastSent > 0 ? m_lastSent : now - 5;
-            time_t to   = now + 5;
+            time_t to   = now;                                          // 未来は指定しない
+            time_t from = m_lastSent > 0 ? m_lastSent : now - 120;    // 初回は直近2分
 
             char logbuf[256];
             sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)from, (long long)to);
@@ -192,8 +192,11 @@ void CommentFetcher::FetchLoop()
             DbgLog(logbuf);
 
             if (!comments.empty()) {
-                m_lastSent = to - 5;
+                m_lastSent = to;
                 if (m_callback) m_callback(std::move(comments));
+            } else {
+                // コメントがなくても時刻を進める（同じ範囲を再取得しない）
+                m_lastSent = to;
             }
         }
 

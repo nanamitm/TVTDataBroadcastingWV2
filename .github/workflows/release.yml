@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        platform: [x86, x64, ARM64]
+
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        submodules: 'recursive'
+
+    - name: Get version
+      id: version
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $v = "${{ github.event.inputs.version }}"
+        } else {
+          $v = "${{ github.ref_name }}"
+        }
+        Write-Output "VERSION=$v" >> $env:GITHUB_OUTPUT
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Restore NuGet packages
+      run: nuget restore
+
+    - name: Build tvtp
+      env:
+        PLATFORM: ${{ matrix.platform }}
+        VERSION: ${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
+      run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache-dependency-path: ./browser/package-lock.json
+
+    - name: Install npm packages
+      working-directory: ./browser/
+      run: npm ci
+
+    - name: Build depends
+      working-directory: ./browser/
+      run: npm -w @chinachu/aribts run build
+
+    - name: Build web-bml
+      working-directory: ./browser/
+      run: npm run build
+
+    - name: Package
+      env:
+        PLATFORM: ${{ matrix.platform }}
+        VERSION: ${{ steps.version.outputs.VERSION }}
+      run: |
+        $name = "TVTDataBroadcastingWV2-$env:VERSION-$env:PLATFORM"
+        mkdir $name
+        copy LICENSE "$name/TVTDataBroadcastingWV2-LICENSE"
+        copy LICENSE.nlohmann.json.txt "$name/TVTDataBroadcastingWV2-LICENSE.json.txt"
+        copy README.md "$name/TVTDataBroadcastingWV2-README.txt"
+        copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp $name/ || copy "$env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp" $name/
+        mkdir "$name/TVTDataBroadcastingWV2/resources/dist"
+        copy browser/dist/TVTDataBroadcastingWV2.js "$name/TVTDataBroadcastingWV2/resources/dist/"
+        copy browser/web-bml/fonts/*.woff2 "$name/TVTDataBroadcastingWV2/resources/dist/"
+        copy browser/web-bml/fonts/LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/fonts-LICENSE.txt"
+        copy browser/dist/TVTDataBroadcastingWV2.js.LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/"
+        copy browser/TVTDataBroadcastingWV2.html "$name/TVTDataBroadcastingWV2/resources/"
+        Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
+        path: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+        merge-multiple: true
+
+    - uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ needs.build.outputs.version }}
+        name: ${{ needs.build.outputs.version }}
+        files: artifacts/*.zip
+        generate_release_notes: true

@@ -354,6 +354,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void Tune();
     void InitWebView2();
     bool caption = false;
+    bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
@@ -636,6 +637,11 @@ bool CDataBroadcastingWV2::Initialize()
     m_pApp->RegisterStatusItem(&statusItemInfo);
     this->useTVTestVolume = this->GetIniItem(L"UseTVTestVolume", true);
     this->useTVTestChannelCommand = this->GetIniItem(L"UseTVTestChannelCommand", true);
+    this->restoreCaptionState = this->GetIniItem(L"RestoreCaptionState", 0) != 0;
+    if (this->restoreCaptionState)
+    {
+        this->caption = this->GetIniItem(L"AutoEnableCaption", 0) != 0;
+    }
     if (this->GetIniItem(L"AutoEnable", 0))
     {
         // Initialize()でプラグインを有効にするかPLUGIN_FLAG_ENABLEDEFAULTだとサイドパネルのプラグインボタンが押された状態にならないので遅延する
@@ -1811,6 +1817,10 @@ void CDataBroadcastingWV2::UpdateVolume()
 void CDataBroadcastingWV2::SetCaptionState(bool enable)
 {
     this->caption = enable;
+    if (this->restoreCaptionState)
+    {
+        this->SetIniItem(L"AutoEnableCaption", enable ? L"1" : L"0");
+    }
     if (this->hRemoteWnd)
     {
         SendDlgItemMessageW(this->hRemoteWnd, IDC_TOGGLE_CAPTION, BM_SETCHECK, this->caption ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -2304,6 +2314,10 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         {
             SendDlgItemMessageW(hDlg, IDC_CHECK_AUTOENABLE, BM_SETCHECK, BST_CHECKED, 0);
         }
+        if (pThis->restoreCaptionState)
+        {
+            SendDlgItemMessageW(hDlg, IDC_CHECK_RESTORE_CAPTION_STATE, BM_SETCHECK, BST_CHECKED, 0);
+        }
         if (pThis->GetIniItem(L"UseTVTestVolume", 1))
         {
             SendDlgItemMessageW(hDlg, IDC_CHECK_USE_TVTEST_VOLUME, BM_SETCHECK, BST_CHECKED, 0);
@@ -2344,6 +2358,13 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                 pThis->UpdateVolume();
                 pThis->useTVTestChannelCommand = SendDlgItemMessageW(hDlg, IDC_CHECK_USE_TVTEST_CHANNEL_COMMAND, BM_GETCHECK, 0, 0);
                 if (!pThis->SetIniItem(L"UseTVTestChannelCommand", pThis->useTVTestChannelCommand ? L"1" : L"0"))
+                {
+                    MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
+                    EndDialog(hDlg, IDCANCEL);
+                    return 1;
+                }
+                pThis->restoreCaptionState = SendDlgItemMessageW(hDlg, IDC_CHECK_RESTORE_CAPTION_STATE, BM_GETCHECK, 0, 0) != 0;
+                if (!pThis->SetIniItem(L"RestoreCaptionState", pThis->restoreCaptionState ? L"1" : L"0"))
                 {
                     MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
                     EndDialog(hDlg, IDCANCEL);

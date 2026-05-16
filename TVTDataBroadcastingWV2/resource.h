@@ -53,6 +53,7 @@
 #define IDC_STATIC_RED                  1049
 #define IDC_STATIC_GREEN                1050
 #define IDC_STATIC_YELLOW               1051
+#define IDC_CHECK_RESTORE_CAPTION_STATE 1052
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -61,7 +62,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        107
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1052
+#define _APS_NEXT_CONTROL_VALUE         1053
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

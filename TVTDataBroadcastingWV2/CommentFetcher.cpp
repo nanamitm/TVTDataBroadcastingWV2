@@ -131,29 +131,27 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t st
     }
     if (json.empty()) return {};
 
+    // Actual response structure:
+    // {"packet": [{"chat": {"no":1,"date":1234,"mail":"","content":"text",...}}, ...]}
+    // packet is an array; each element has a "chat" object; text field is "content".
     std::vector<Comment> result;
     try {
-        auto root   = nlohmann::json::parse(json);
+        auto root    = nlohmann::json::parse(json);
         auto& packet = root.at("packet");
-        if (!packet.contains("chat")) return result;
+        if (!packet.is_array()) return result;
 
-        auto& chats = packet["chat"];
-        auto process = [this, &result](const nlohmann::json& chat) {
-            if (!chat.contains("#text")) return;
-            time_t date = std::stoll(chat.value("@date", "0"));
-            if (date <= this->m_lastSent) return;
+        for (auto& item : packet) {
+            if (!item.contains("chat")) continue;
+            auto& chat = item["chat"];
+
+            time_t date = chat.value("date", (time_t)0);
+            if (date <= this->m_lastSent) continue;
 
             Comment c;
-            c.text = chat["#text"].get<std::string>();
-            if (c.text.empty()) return;
-            ParseMail(chat.value("@mail", ""), c.color, c.position, c.size);
+            c.text = chat.value("content", "");
+            if (c.text.empty()) continue;
+            ParseMail(chat.value("mail", ""), c.color, c.position, c.size);
             result.push_back(std::move(c));
-        };
-
-        if (chats.is_array()) {
-            for (auto& chat : chats) process(chat);
-        } else if (chats.is_object()) {
-            process(chats);
         }
     } catch (...) {}
 
@@ -179,8 +177,11 @@ void CommentFetcher::FetchLoop()
             DbgLog("FetchLoop: channel is empty, skipping");
         } else {
             time_t nowTime  = time(nullptr);
-            time_t toTime   = nowTime;
-            time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - 120;
+            // kakolog API has ~5 min indexing delay, so fetch up to 3 min ago
+            constexpr time_t kDelaySec  = 180;
+            constexpr time_t kInitialSec = 600;
+            time_t toTime   = nowTime - kDelaySec;
+            time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - kInitialSec;
 
             char logbuf[256];
             sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)fromTime, (long long)toTime);

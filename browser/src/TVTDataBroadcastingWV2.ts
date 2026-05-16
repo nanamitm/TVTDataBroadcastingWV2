@@ -1,3 +1,4 @@
+import { CommentData, CommentRenderer } from "./comment";
 import { ComponentPMT, ResponseMessage } from "../web-bml/server/ws_api";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "../web-bml/client/bml_browser";
 import { decodeTS } from "../web-bml/server/decode_ts";
@@ -503,6 +504,11 @@ type ToWebViewMessage = {
     channelId: number,
 } | {
     type: "launchOneSeg",
+} | {
+    type: "comments",
+    comments: CommentData[],
+} | {
+    type: "clearComments",
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -601,8 +607,18 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "launchOneSeg") {
         oneSegLaunched = true;
         browserElement.style.visibility = "visible";
+    } else if (data.type === "comments") {
+        commentRenderer.add(data.comments);
+    } else if (data.type === "clearComments") {
+        commentRenderer.clear();
     }
 }
+
+const commentCanvas = document.getElementById("comment-canvas") as HTMLCanvasElement;
+commentCanvas.width = commentCanvas.offsetWidth;
+commentCanvas.height = commentCanvas.offsetHeight;
+const commentRenderer = new CommentRenderer(commentCanvas);
+commentRenderer.start();
 
 window.chrome.webview.addEventListener("message", (ev: any) => onWebViewMessage(ev.data as ToWebViewMessage, window.chrome.webview.postMessage));
 

@@ -248,6 +248,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="CommentFetcher.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
     <ClInclude Include="OneSeg.h" />
@@ -256,6 +257,7 @@
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="CommentFetcher.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
     <ClCompile Include="OneSeg.cpp" />

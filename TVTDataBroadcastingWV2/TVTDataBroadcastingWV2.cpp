@@ -11,6 +11,7 @@
 #include "proxy.h"
 #include "InputDialog.h"
 #include "OneSeg.h"
+#include "CommentFetcher.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -24,6 +25,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_RESPONSE (WM_APP + 2)
 #define WM_APP_INPUT (WM_APP + 3)
 #define WM_APP_ENABLE_PLUGIN (WM_APP + 4)
+#define WM_APP_COMMENTS (WM_APP + 5)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -356,6 +358,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool caption = false;
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
+    CommentFetcher m_commentFetcher;
+    void SendComments(std::vector<Comment> comments);
+    void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
@@ -509,6 +514,7 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
     {
         this->currentServiceIsOneSeg = false;
         this->packetQueue.clear();
+        this->UpdateCommentChannel();
     }
     Tune();
     return true;
@@ -891,6 +897,12 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     case WM_APP_ENABLE_PLUGIN:
         pThis->m_pApp->EnablePlugin(true);
         return 0;
+    case WM_APP_COMMENTS:
+    {
+        auto comments = std::unique_ptr<std::vector<Comment>>(reinterpret_cast<std::vector<Comment>*>(wParam));
+        pThis->SendComments(std::move(*comments));
+        break;
+    }
     }
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
@@ -1703,9 +1715,19 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         {
             this->proxySession = std::unique_ptr<ProxySession>(new ProxySession());
         }
+        if (this->GetIniItem(L"EnableComment", 0))
+        {
+            this->m_commentFetcher.SetCallback([this](std::vector<Comment> comments) {
+                PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
+                    new std::vector<Comment>(std::move(comments))), 0);
+            });
+            this->m_commentFetcher.Start();
+            this->UpdateCommentChannel();
+        }
     }
     else
     {
+        this->m_commentFetcher.Stop();
         this->EnablePanelButtons(false);
         this->Disable(false);
     }
@@ -1812,6 +1834,52 @@ void CDataBroadcastingWV2::UpdateVolume()
     ss << msg;
     auto wjson = utf8StrToWString(ss.str().c_str());
     this->webView->PostWebMessageAsJson(wjson.c_str());
+}
+
+void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
+{
+    if (!this->webView || !this->webViewLoaded || comments.empty()) return;
+    nlohmann::json arr = nlohmann::json::array();
+    for (auto& c : comments)
+    {
+        arr.push_back({
+            { "text",     c.text     },
+            { "color",    c.color    },
+            { "position", c.position },
+            { "size",     c.size     },
+        });
+    }
+    nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
+    std::stringstream ss;
+    ss << msg;
+    auto wjson = utf8StrToWString(ss.str().c_str());
+    this->webView->PostWebMessageAsJson(wjson.c_str());
+}
+
+void CDataBroadcastingWV2::UpdateCommentChannel()
+{
+    if (!this->webView)
+    {
+        // WebView2未初期化時はクリアだけ送らず、チャンネルだけ更新
+        std::string ch = CommentFetcher::DetectChannel(
+            this->currentChannel.NetworkID,
+            this->currentService.ServiceID,
+            this->currentService.szServiceName);
+        this->m_commentFetcher.SetChannel(ch);
+        return;
+    }
+    // チャンネル変更時に画面のコメントをクリア
+    nlohmann::json msg{ { "type", "clearComments" } };
+    std::stringstream ss;
+    ss << msg;
+    auto wjson = utf8StrToWString(ss.str().c_str());
+    this->webView->PostWebMessageAsJson(wjson.c_str());
+
+    std::string ch = CommentFetcher::DetectChannel(
+        this->currentChannel.NetworkID,
+        this->currentService.ServiceID,
+        this->currentService.szServiceName);
+    this->m_commentFetcher.SetChannel(ch);
 }
 
 void CDataBroadcastingWV2::SetCaptionState(bool enable)

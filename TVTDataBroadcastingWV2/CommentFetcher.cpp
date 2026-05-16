@@ -116,12 +116,12 @@ static const std::vector<std::pair<const wchar_t*, const char*>> kASCIIKeywords 
 
 // --- Fetch from jikkyo.tsukumijima.net ---
 
-std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t from, time_t to)
+std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t startTime, time_t endTime)
 {
     std::wostringstream path;
     path << L"/api/kakolog/"
          << std::wstring(channel.begin(), channel.end())
-         << L"?starttime=" << from << L"&endtime=" << to << L"&format=json";
+         << L"?starttime=" << startTime << L"&endtime=" << endTime << L"&format=json";
 
     std::string json = HttpGet(L"jikkyo.tsukumijima.net", path.str());
     {
@@ -178,25 +178,22 @@ void CommentFetcher::FetchLoop()
         if (channel.empty()) {
             DbgLog("FetchLoop: channel is empty, skipping");
         } else {
-            time_t now  = time(nullptr);
-            time_t to   = now;                                          // 未来は指定しない
-            time_t from = m_lastSent > 0 ? m_lastSent : now - 120;    // 初回は直近2分
+            time_t nowTime  = time(nullptr);
+            time_t toTime   = nowTime;
+            time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - 120;
 
             char logbuf[256];
-            sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)from, (long long)to);
+            sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)fromTime, (long long)toTime);
             DbgLog(logbuf);
 
-            auto comments = Fetch(channel, from, to);
+            auto comments = Fetch(channel, fromTime, toTime);
 
             sprintf_s(logbuf, "Fetch result: %zu comments", comments.size());
             DbgLog(logbuf);
 
-            if (!comments.empty()) {
-                m_lastSent = to;
-                if (m_callback) m_callback(std::move(comments));
-            } else {
-                // コメントがなくても時刻を進める（同じ範囲を再取得しない）
-                m_lastSent = to;
+            m_lastSent = toTime;
+            if (!comments.empty() && m_callback) {
+                m_callback(std::move(comments));
             }
         }
 

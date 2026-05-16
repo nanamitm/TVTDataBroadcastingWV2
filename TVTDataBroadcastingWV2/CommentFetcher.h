@@ -41,7 +41,7 @@ private:
     time_t m_lastSent = 0;
 
     void FetchLoop();
-    std::vector<Comment> Fetch(const std::string& channel, time_t from, time_t to);
+    std::vector<Comment> Fetch(const std::string& channel, time_t startTime, time_t endTime);
     static void ParseMail(const std::string& mail, std::string& color, std::string& position, std::string& size);
     static std::string HttpGet(const std::wstring& host, const std::wstring& path);
 };

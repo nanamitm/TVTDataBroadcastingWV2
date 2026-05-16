@@ -6,9 +6,6 @@
 #include <string>
 #include <thread>
 
-// Reads real-time jikkyo comments by launching jkcnsl.exe and connecting to
-// NX-Jikkyo (https://nx-jikkyo.tsukumijima.net) via the refuge stream protocol.
-// No NicoNico authentication is required.
 class JkcnslReader
 {
 public:
@@ -19,25 +16,25 @@ public:
     JkcnslReader(const JkcnslReader&) = delete;
     JkcnslReader& operator=(const JkcnslReader&) = delete;
 
-    // jkcnsl.exe path and jikkyo channel ("jk1", "jk4", ...)
     bool Start(const std::wstring& jkcnslPath, const std::string& jkChannel);
     void Stop();
     bool IsRunning() const { return m_running; }
-
+    const std::string& GetChannel() const { return m_channel; }
     void SetCallback(Callback cb) { m_callback = std::move(cb); }
 
-    // Parse a single XML chat line from jkcnsl stdout.
-    // Returns true and fills out if the line is a valid <chat> element.
     static bool ParseChatLine(const std::string& line, Comment& out);
 
 private:
     Callback m_callback;
-    HANDLE m_hProcess   = nullptr;
-    HANDLE m_hStdinWrite  = nullptr;
-    HANDLE m_hStdoutRead  = nullptr;
+    HANDLE m_hProcess    = nullptr;
+    HANDLE m_hStdinWrite = nullptr;
+    HANDLE m_hStdoutRead = nullptr; // overlapped read end
+    HANDLE m_hStopEvent  = nullptr; // manual-reset, signals ReadLoop to exit
     std::thread m_thread;
     std::atomic<bool> m_running{ false };
+    std::string m_channel;
 
     void ReadLoop();
+    void ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf);
     static std::string GetXmlAttr(const std::string& xml, const std::string& attr);
 };

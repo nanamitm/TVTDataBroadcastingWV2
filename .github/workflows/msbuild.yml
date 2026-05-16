@@ -2,9 +2,7 @@ name: MSBuild
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    tags: [ 'v*' ]
 
 env:
   SOLUTION_FILE_PATH: .

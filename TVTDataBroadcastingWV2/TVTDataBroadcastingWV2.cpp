@@ -2457,6 +2457,10 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         {
             SendDlgItemMessageW(hDlg, IDC_CHECK_RESTORE_CAPTION_STATE, BM_SETCHECK, BST_CHECKED, 0);
         }
+        {
+            int opacity = pThis->GetIniItem(L"CommentOpacity", 100);
+            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, max(0, min(100, opacity)), FALSE);
+        }
         if (pThis->GetIniItem(L"UseTVTestVolume", 1))
         {
             SendDlgItemMessageW(hDlg, IDC_CHECK_USE_TVTEST_VOLUME, BM_SETCHECK, BST_CHECKED, 0);
@@ -2508,6 +2512,29 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                     MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
                     EndDialog(hDlg, IDCANCEL);
                     return 1;
+                }
+                {
+                    BOOL valid = FALSE;
+                    int opacity = (int)GetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, &valid, FALSE);
+                    if (!valid) opacity = 100;
+                    opacity = max(0, min(100, opacity));
+                    WCHAR opacityStr[8];
+                    swprintf_s(opacityStr, L"%d", opacity);
+                    if (!pThis->SetIniItem(L"CommentOpacity", opacityStr))
+                    {
+                        MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
+                        EndDialog(hDlg, IDCANCEL);
+                        return 1;
+                    }
+                    // Apply immediately to WebView2
+                    if (pThis->webView && pThis->webViewLoaded)
+                    {
+                        nlohmann::json cfgMsg{ { "type", "commentConfig" }, { "opacity", opacity / 100.0 } };
+                        std::stringstream cfgSs;
+                        cfgSs << cfgMsg;
+                        auto cfgJson = utf8StrToWString(cfgSs.str().c_str());
+                        pThis->webView->PostWebMessageAsJson(cfgJson.c_str());
+                    }
                 }
                 pThis->EnablePanelButtons(pThis->m_pApp->IsPluginEnabled());
             }

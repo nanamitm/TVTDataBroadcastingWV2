@@ -1846,13 +1846,9 @@ void CDataBroadcastingWV2::UpdateVolume()
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
     if (!this->webView || !this->webViewLoaded || comments.empty()) return;
-    // Only send the most recent 60 seconds to avoid flooding the screen
-    time_t now = time(nullptr);
-    time_t cutoff = now - 60;
     nlohmann::json arr = nlohmann::json::array();
     for (auto& c : comments)
     {
-        if (c.date > 0 && c.date < cutoff) continue;
         arr.push_back({
             { "text",     c.text     },
             { "color",    c.color    },
@@ -1861,7 +1857,6 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
             { "date",     c.date     },
         });
     }
-    if (arr.empty()) return;
     nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
     std::stringstream ss;
     ss << msg;

@@ -206,6 +206,17 @@ void CommentFetcher::FetchLoop()
             DbgLog(logbuf);
 
             m_lastSent = toTime;
+            // Keep only the last 60 seconds of the fetch window to avoid flooding
+            if (comments.size() > 0) {
+                time_t windowCutoff = toTime - 60;
+                comments.erase(
+                    std::remove_if(comments.begin(), comments.end(),
+                        [windowCutoff](const Comment& c) { return c.date < windowCutoff; }),
+                    comments.end());
+                char lb2[64];
+                sprintf_s(lb2, "After filter: %zu comments", comments.size());
+                DbgLog(lb2);
+            }
             if (!comments.empty() && m_callback) {
                 m_callback(std::move(comments));
             }

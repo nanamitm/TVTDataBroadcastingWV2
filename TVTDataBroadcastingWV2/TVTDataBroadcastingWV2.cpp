@@ -1715,14 +1715,21 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         {
             this->proxySession = std::unique_ptr<ProxySession>(new ProxySession());
         }
-        if (this->GetIniItem(L"EnableComment", 0))
         {
-            this->m_commentFetcher.SetCallback([this](std::vector<Comment> comments) {
-                PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
-                    new std::vector<Comment>(std::move(comments))), 0);
-            });
-            this->m_commentFetcher.Start();
-            this->UpdateCommentChannel();
+            auto enableComment = this->GetIniItem(L"EnableComment", 0);
+            char logbuf[128];
+            sprintf_s(logbuf, "[TVTDataBroadcastingWV2] EnableComment=%d", enableComment);
+            OutputDebugStringA(logbuf);
+            OutputDebugStringA("\n");
+            if (enableComment)
+            {
+                this->m_commentFetcher.SetCallback([this](std::vector<Comment> comments) {
+                    PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
+                        new std::vector<Comment>(std::move(comments))), 0);
+                });
+                this->m_commentFetcher.Start();
+                this->UpdateCommentChannel();
+            }
         }
     }
     else
@@ -1892,6 +1899,12 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
             this->currentChannel.NetworkID,
             this->currentService.ServiceID,
             this->currentService.szServiceName);
+    }
+    {
+        char logbuf[128];
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] SetChannel=%s (NetworkID=%d ServiceID=%d)", ch.c_str(), this->currentChannel.NetworkID, this->currentService.ServiceID);
+        OutputDebugStringA(logbuf);
+        OutputDebugStringA("\n");
     }
     this->m_commentFetcher.SetChannel(ch);
 }

@@ -117,6 +117,11 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t fr
          << L"?starttime=" << from << L"&endtime=" << to << L"&format=json";
 
     std::string json = HttpGet(L"jikkyo.tsukumijima.net", path.str());
+    {
+        char logbuf[512];
+        sprintf_s(logbuf, "HttpGet response size=%zu, preview=%.120s", json.size(), json.empty() ? "(empty)" : json.c_str());
+        DbgLog(logbuf);
+    }
     if (json.empty()) return {};
 
     std::vector<Comment> result;
@@ -150,9 +155,18 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t fr
 
 // --- Background fetch loop ---
 
+static void DbgLog(const char* msg)
+{
+    OutputDebugStringA("[TVTDataBroadcastingWV2] ");
+    OutputDebugStringA(msg);
+    OutputDebugStringA("\n");
+}
+
 void CommentFetcher::FetchLoop()
 {
     constexpr DWORD kIntervalMs = 60000;
+
+    DbgLog("FetchLoop started");
 
     while (m_running) {
         std::string channel;
@@ -161,12 +175,22 @@ void CommentFetcher::FetchLoop()
             channel = m_channel;
         }
 
-        if (!channel.empty()) {
+        if (channel.empty()) {
+            DbgLog("FetchLoop: channel is empty, skipping");
+        } else {
             time_t now  = time(nullptr);
             time_t from = m_lastSent > 0 ? m_lastSent : now - 5;
             time_t to   = now + 5;
 
+            char logbuf[256];
+            sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)from, (long long)to);
+            DbgLog(logbuf);
+
             auto comments = Fetch(channel, from, to);
+
+            sprintf_s(logbuf, "Fetch result: %zu comments", comments.size());
+            DbgLog(logbuf);
+
             if (!comments.empty()) {
                 m_lastSent = to - 5;
                 if (m_callback) m_callback(std::move(comments));

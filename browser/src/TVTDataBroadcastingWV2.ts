@@ -608,8 +608,10 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         oneSegLaunched = true;
         browserElement.style.visibility = "visible";
     } else if (data.type === "comments") {
+        console.log("[comment] received", data.comments.length, "comments", data.comments[0]);
         commentRenderer.add(data.comments);
     } else if (data.type === "clearComments") {
+        console.log("[comment] clearComments");
         commentRenderer.clear();
     }
 }
@@ -618,8 +620,10 @@ const commentCanvas = document.getElementById("comment-canvas") as HTMLCanvasEle
 const commentParent = document.getElementById("data-broadcasting-browser")!;
 commentCanvas.width = commentParent.clientWidth || 960;
 commentCanvas.height = commentParent.clientHeight || 540;
+console.log("[comment] canvas size:", commentCanvas.width, "x", commentCanvas.height);
 const commentRenderer = new CommentRenderer(commentCanvas);
 commentRenderer.start();
+console.log("[comment] CommentRenderer started");
 
 window.chrome.webview.addEventListener("message", (ev: any) => onWebViewMessage(ev.data as ToWebViewMessage, window.chrome.webview.postMessage));
 

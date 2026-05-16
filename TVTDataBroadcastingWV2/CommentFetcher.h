@@ -31,6 +31,7 @@ public:
     void Stop();
 
     static std::string DetectChannel(WORD networkId, WORD serviceId, const std::wstring& serviceName);
+    static void ParseMail(const std::string& mail, std::string& color, std::string& position, std::string& size);
 
 private:
     Callback m_callback;
@@ -43,6 +44,5 @@ private:
 
     void FetchLoop();
     std::vector<Comment> Fetch(const std::string& channel, time_t startTime, time_t endTime);
-    static void ParseMail(const std::string& mail, std::string& color, std::string& position, std::string& size);
     static std::string HttpGet(const std::wstring& host, const std::wstring& path);
 };

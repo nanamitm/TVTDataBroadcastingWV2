@@ -156,6 +156,7 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t st
             Comment c;
             c.text = chat.value("content", std::string(""));
             if (c.text.empty()) continue;
+            c.date = date;
             ParseMail(chat.value("mail", std::string("")), c.color, c.position, c.size);
             result.push_back(std::move(c));
         }

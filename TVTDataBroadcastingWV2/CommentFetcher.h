@@ -12,6 +12,7 @@ struct Comment {
     std::string color;    // CSS color name
     std::string position; // "naka" / "ue" / "shita"
     std::string size;     // "small" / "medium" / "big"
+    time_t date = 0;      // Unix timestamp of the comment
 };
 
 class CommentFetcher

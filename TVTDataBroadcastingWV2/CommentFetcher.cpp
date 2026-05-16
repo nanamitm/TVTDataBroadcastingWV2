@@ -1,73 +1,23 @@
 #include "pch.h"
 #include "CommentFetcher.h"
-#include "thirdparty/json.hpp"
-#include <winhttp.h>
 #include <sstream>
 #include <unordered_map>
 
-#pragma comment(lib, "winhttp.lib")
-
-static void DbgLog(const char* msg)
-{
-    OutputDebugStringA("[TVTDataBroadcastingWV2] ");
-    OutputDebugStringA(msg);
-    OutputDebugStringA("\n");
-}
-
-// BS (NetworkID=4): ServiceID -> jikkyo channel string
+// BS (NetworkID=4): ServiceID -> jikkyo channel
 // Only channels supported by jkcnsl L command (jk1-jk9, jk101, jk211)
 static const std::unordered_map<WORD, const char*> kBSChannels = {
     { 101, "jk101" }, // NHK BS1
     { 211, "jk211" }, // WOWOW Live
 };
 
-// Terrestrial: ASCII prefix in service name -> jikkyo channel
-// Only valid L command channels (jk1-jk9)
-static const std::vector<std::pair<const wchar_t*, const char*>> kASCIIKeywords = {
-    { L"NTV",       "jk4" },
-    { L"TBS",       "jk6" },
-    { L"TX ",       "jk7" }, // space avoids TX-prefix false match
-    { L"CX",        "jk8" },
-    { L"TOKYO MX",  "jk9" },
-};
-
-// --- HTTP GET (HTTPS via WinHTTP) ---
-
-/*static*/ std::string CommentFetcher::HttpGet(const std::wstring& host, const std::wstring& path)
+/*static*/ std::string CommentFetcher::DetectChannel(WORD networkId, WORD serviceId)
 {
-    std::string result;
-    HINTERNET hSession = WinHttpOpen(L"TVTDataBroadcastingWV2/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return result;
-
-    HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (hConnect) {
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(),
-            nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-        if (hRequest) {
-            if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                WinHttpReceiveResponse(hRequest, nullptr)) {
-                DWORD avail = 0;
-                do {
-                    avail = 0;
-                    WinHttpQueryDataAvailable(hRequest, &avail);
-                    if (avail == 0) break;
-                    std::string buf(avail, '\0');
-                    DWORD read = 0;
-                    WinHttpReadData(hRequest, buf.data(), avail, &read);
-                    result.append(buf, 0, read);
-                } while (avail > 0);
-            }
-            WinHttpCloseHandle(hRequest);
-        }
-        WinHttpCloseHandle(hConnect);
+    if (networkId == 4) {
+        auto it = kBSChannels.find(serviceId);
+        if (it != kBSChannels.end()) return it->second;
     }
-    WinHttpCloseHandle(hSession);
-    return result;
+    return "";
 }
-
-// --- Parse jikkyo mail field ---
 
 /*static*/ void CommentFetcher::ParseMail(const std::string& mail,
     std::string& color, std::string& position, std::string& size)
@@ -95,166 +45,4 @@ static const std::vector<std::pair<const wchar_t*, const char*>> kASCIIKeywords 
         auto it = kColors.find(token);
         if (it != kColors.end()) color = it->second;
     }
-}
-
-// --- Fetch from jikkyo.tsukumijima.net ---
-
-std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t startTime, time_t endTime)
-{
-    std::wostringstream path;
-    path << L"/api/kakolog/"
-         << std::wstring(channel.begin(), channel.end())
-         << L"?starttime=" << startTime << L"&endtime=" << endTime << L"&format=json";
-
-    std::string json = HttpGet(L"jikkyo.tsukumijima.net", path.str());
-    {
-        char logbuf[512];
-        sprintf_s(logbuf, "HttpGet response size=%zu, preview=%.120s", json.size(), json.empty() ? "(empty)" : json.c_str());
-        DbgLog(logbuf);
-    }
-    if (json.empty()) return {};
-
-    // Actual response structure:
-    // {"packet": [{"chat": {"no":1,"date":1234,"mail":"","content":"text",...}}, ...]}
-    // packet is an array; each element has a "chat" object; text field is "content".
-    std::vector<Comment> result;
-    try {
-        auto root    = nlohmann::json::parse(json);
-        auto& packet = root.at("packet");
-        if (!packet.is_array()) return result;
-
-        for (auto& item : packet) {
-            if (!item.contains("chat")) continue;
-            auto& chat = item["chat"];
-
-            // date field is a JSON string (e.g. "1234567890"), not a number
-            time_t date = 0;
-            if (chat.contains("date")) {
-                auto& dv = chat["date"];
-                if (dv.is_string()) date = std::stoll(dv.get<std::string>());
-                else if (dv.is_number()) date = dv.get<time_t>();
-            }
-            if (date <= this->m_lastSent) continue;
-
-            Comment c;
-            c.text = chat.value("content", std::string(""));
-            if (c.text.empty()) continue;
-            c.date = date;
-            ParseMail(chat.value("mail", std::string("")), c.color, c.position, c.size);
-            result.push_back(std::move(c));
-        }
-    } catch (...) {}
-
-    return result;
-}
-
-// --- Background fetch loop ---
-
-void CommentFetcher::FetchLoop()
-{
-    constexpr DWORD kIntervalMs = 15000; // fetch every 15 seconds
-
-    DbgLog("FetchLoop started");
-
-    while (m_running) {
-        std::string channel;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            channel = m_channel;
-        }
-
-        if (channel.empty()) {
-            DbgLog("FetchLoop: channel is empty, skipping");
-        } else {
-            time_t nowTime  = time(nullptr);
-            constexpr time_t kDelaySec   = 60;  // API indexing delay ~1 min
-            constexpr time_t kInitialSec = 180; // initial window: last 3 min
-            time_t toTime   = nowTime - kDelaySec;
-            time_t fromTime = m_lastSent > 0 ? m_lastSent : nowTime - kInitialSec;
-
-            if (toTime <= fromTime) {
-                DbgLog("FetchLoop: window too small, skipping");
-                WaitForSingleObject(m_wakeEvent, kIntervalMs);
-                continue;
-            }
-
-            char logbuf[256];
-            sprintf_s(logbuf, "Fetching channel=%s from=%lld to=%lld", channel.c_str(), (long long)fromTime, (long long)toTime);
-            DbgLog(logbuf);
-
-            auto comments = Fetch(channel, fromTime, toTime);
-
-            sprintf_s(logbuf, "Fetch result: %zu comments", comments.size());
-            DbgLog(logbuf);
-
-            m_lastSent = toTime;
-            // Keep only the last 60 seconds of the fetch window to avoid flooding
-            if (comments.size() > 0) {
-                time_t windowCutoff = toTime - 20; // keep last 20 sec of window
-                comments.erase(
-                    std::remove_if(comments.begin(), comments.end(),
-                        [windowCutoff](const Comment& c) { return c.date < windowCutoff; }),
-                    comments.end());
-                char lb2[64];
-                sprintf_s(lb2, "After filter: %zu comments", comments.size());
-                DbgLog(lb2);
-            }
-            if (!comments.empty() && m_callback) {
-                m_callback(std::move(comments));
-            }
-        }
-
-        WaitForSingleObject(m_wakeEvent, kIntervalMs);
-    }
-}
-
-// --- Public interface ---
-
-/*static*/ std::string CommentFetcher::DetectChannel(
-    WORD networkId, WORD serviceId, const std::wstring& serviceName)
-{
-    // BS: identified by standardised ServiceID
-    if (networkId == 4) {
-        auto it = kBSChannels.find(serviceId);
-        if (it != kBSChannels.end()) return it->second;
-        return "";
-    }
-    // Terrestrial: match ASCII substrings in service name
-    for (auto& kv : kASCIIKeywords) {
-        if (serviceName.find(kv.first) != std::wstring::npos) return kv.second;
-    }
-    return "";
-}
-
-void CommentFetcher::SetChannel(const std::string& jikkyoChannel)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_channel != jikkyoChannel) {
-        m_channel  = jikkyoChannel;
-        m_lastSent = 0;
-        if (m_wakeEvent) SetEvent(m_wakeEvent);
-    }
-}
-
-void CommentFetcher::Start()
-{
-    if (m_running) return;
-    m_wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    m_running   = true;
-    m_thread    = std::thread([this] { FetchLoop(); });
-}
-
-void CommentFetcher::Stop()
-{
-    if (!m_running) return;
-    m_running = false;
-    if (m_wakeEvent) SetEvent(m_wakeEvent);
-    if (m_thread.joinable()) m_thread.join();
-    if (m_wakeEvent) { CloseHandle(m_wakeEvent); m_wakeEvent = nullptr; }
-    m_lastSent = 0;
-}
-
-CommentFetcher::~CommentFetcher()
-{
-    Stop();
 }

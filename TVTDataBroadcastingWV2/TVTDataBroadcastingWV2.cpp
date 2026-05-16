@@ -1871,8 +1871,7 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     std::string ch = iniCh.empty()
         ? CommentFetcher::DetectChannel(
             this->currentChannel.NetworkID,
-            this->currentService.ServiceID,
-            this->currentService.szServiceName)
+            this->currentService.ServiceID)
         : std::string(iniCh.begin(), iniCh.end());
 
     {

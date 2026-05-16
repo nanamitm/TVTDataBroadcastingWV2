@@ -16,7 +16,7 @@ interface ActiveComment {
     createdAt: number;
 }
 
-let DURATION_MS = 8000;
+let DURATION_MS = 4000;
 const DEFAULT_OPACITY = 1.0;
 const FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 const MAX_LANES = 20;
@@ -107,7 +107,7 @@ export class CommentRenderer {
     }
 
     setDuration(ms: number) {
-        DURATION_MS = Math.max(1000, Math.min(30000, ms));
+        DURATION_MS = Math.max(1000, Math.min(5000, ms));
     }
 
     private draw() {

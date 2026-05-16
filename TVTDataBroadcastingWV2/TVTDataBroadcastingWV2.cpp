@@ -1443,12 +1443,12 @@ void CDataBroadcastingWV2::InitWebView2()
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
                     opacityPct = std::max(0, std::min(100, opacityPct));
-                    int durationSec = this->GetIniItem(L"CommentDuration", 8);
-                    durationSec = std::max(1, std::min(30, durationSec));
+                    int durationMs = this->GetIniItem(L"CommentDuration", 4000);
+                    durationMs = std::max(1000, std::min(5000, durationMs));
                     nlohmann::json cfgMsg{
-                        { "type",        "commentConfig"        },
-                        { "opacity",     opacityPct / 100.0     },
-                        { "duration_ms", durationSec * 1000     },
+                        { "type",        "commentConfig"    },
+                        { "opacity",     opacityPct / 100.0 },
+                        { "duration_ms", durationMs         },
                     };
                     std::stringstream cfgSs;
                     cfgSs << cfgMsg;
@@ -2463,8 +2463,8 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         {
             int opacity = pThis->GetIniItem(L"CommentOpacity", 100);
             SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_OPACITY, std::max(0, std::min(100, opacity)), FALSE);
-            int duration = pThis->GetIniItem(L"CommentDuration", 8);
-            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_DURATION, std::max(1, std::min(30, duration)), FALSE);
+            int duration = pThis->GetIniItem(L"CommentDuration", 4000);
+            SetDlgItemInt(hDlg, IDC_EDIT_COMMENT_DURATION, std::max(1000, std::min(5000, duration)), FALSE);
         }
         if (pThis->GetIniItem(L"UseTVTestVolume", 1))
         {
@@ -2533,8 +2533,8 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                     }
                     BOOL validD = FALSE;
                     int duration = (int)GetDlgItemInt(hDlg, IDC_EDIT_COMMENT_DURATION, &validD, FALSE);
-                    if (!validD) duration = 8;
-                    duration = std::max(1, std::min(30, duration));
+                    if (!validD) duration = 4000;
+                    duration = std::max(1000, std::min(5000, duration));
                     WCHAR durationStr[8];
                     swprintf_s(durationStr, L"%d", duration);
                     if (!pThis->SetIniItem(L"CommentDuration", durationStr))
@@ -2549,7 +2549,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                         nlohmann::json cfgMsg{
                             { "type",        "commentConfig"    },
                             { "opacity",     opacity / 100.0    },
-                            { "duration_ms", duration * 1000    },
+                            { "duration_ms", duration           },
                         };
                         std::stringstream cfgSs;
                         cfgSs << cfgMsg;

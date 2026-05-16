@@ -359,8 +359,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool caption = false;
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
-    CommentFetcher m_commentFetcher;   // fallback: REST API polling
-    JkcnslReader   m_jkcnslReader;    // primary: real-time via jkcnsl.exe
+    JkcnslReader   m_jkcnslReader;
     void SendComments(std::vector<Comment> comments);
     void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
@@ -1725,29 +1724,10 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             OutputDebugStringA("\n");
             if (enableComment)
             {
-                auto commentCallback = [this](std::vector<Comment> comments) {
+                this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
-                };
-                // Try jkcnsl.exe first (real-time); fall back to REST API polling
-                auto jkcnslPath = this->GetIniItem(L"JkcnslPath",
-                    (std::filesystem::path(this->baseDirectory).parent_path() / L"jkcnsl.exe").c_str());
-                this->m_jkcnslReader.SetCallback(commentCallback);
-                bool useJkcnsl = false;
-                if (!jkcnslPath.empty()) {
-                    std::string ch;
-                    auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
-                    ch = iniCh.empty() ? CommentFetcher::DetectChannel(
-                        this->currentChannel.NetworkID,
-                        this->currentService.ServiceID,
-                        this->currentService.szServiceName) : std::string(iniCh.begin(), iniCh.end());
-                    useJkcnsl = this->m_jkcnslReader.Start(jkcnslPath, ch);
-                }
-                if (!useJkcnsl) {
-                    // Fallback: REST API polling
-                    this->m_commentFetcher.SetCallback(commentCallback);
-                    this->m_commentFetcher.Start();
-                }
+                });
                 this->UpdateCommentChannel();
             }
         }
@@ -1755,7 +1735,6 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     else
     {
         this->m_jkcnslReader.Stop();
-        this->m_commentFetcher.Stop();
         this->EnablePanelButtons(false);
         this->Disable(false);
     }
@@ -1887,49 +1866,42 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 
 void CDataBroadcastingWV2::UpdateCommentChannel()
 {
-    if (!this->webView)
-    {
-        auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
-        std::string ch;
-        if (!iniCh.empty())
-            ch = std::string(iniCh.begin(), iniCh.end());
-        else
-            ch = CommentFetcher::DetectChannel(
-                this->currentChannel.NetworkID,
-                this->currentService.ServiceID,
-                this->currentService.szServiceName);
-        this->m_commentFetcher.SetChannel(ch);
-        return;
-    }
-    // チャンネル変更時に画面のコメントをクリア
-    nlohmann::json msg{ { "type", "clearComments" } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
-
-    // INIのJikkyoChannelが指定されていればそれを優先
+    // Determine jikkyo channel
     auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
-    std::string ch;
-    if (!iniCh.empty())
-    {
-        ch = std::string(iniCh.begin(), iniCh.end());
-    }
-    else
-    {
-        ch = CommentFetcher::DetectChannel(
+    std::string ch = iniCh.empty()
+        ? CommentFetcher::DetectChannel(
             this->currentChannel.NetworkID,
             this->currentService.ServiceID,
-            this->currentService.szServiceName);
-    }
+            this->currentService.szServiceName)
+        : std::string(iniCh.begin(), iniCh.end());
+
     {
         char logbuf[128];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] SetChannel=%s (NetworkID=%d ServiceID=%d)", ch.c_str(), this->currentChannel.NetworkID, this->currentService.ServiceID);
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel ch=%s", ch.c_str());
         OutputDebugStringA(logbuf);
         OutputDebugStringA("\n");
     }
+
+    if (ch.empty()) return;
+
+    // Clear on-screen comments when channel changes
+    if (this->webView)
+    {
+        nlohmann::json msg{ { "type", "clearComments" } };
+        std::stringstream ss;
+        ss << msg;
+        auto wjson = utf8StrToWString(ss.str().c_str());
+        this->webView->PostWebMessageAsJson(wjson.c_str());
+    }
+
+    // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory)
+    // baseDirectory = "...\\Plugins\\TVTDataBroadcastingWV2"
+    // parent = "...\\Plugins", parent.parent = TVTest folder
+    auto jkcnslPath = std::filesystem::path(this->baseDirectory)
+        .parent_path().parent_path() / L"jkcnsl.exe";
+
     if (!this->m_jkcnslReader.IsRunning()) {
-        this->m_commentFetcher.SetChannel(ch);
+        this->m_jkcnslReader.Start(jkcnslPath, ch);
     }
 }
 

@@ -84,10 +84,26 @@ void JkcnslReader::ReadLoop()
     m_running = false;
 }
 
+// Valid jikkyo channels for jkcnsl L command: jk1-jk9, jk101, jk211
+static bool IsValidJkChannel(const std::string& ch)
+{
+    if (ch.size() < 3 || ch[0] != 'j' || ch[1] != 'k') return false;
+    int n = 0;
+    try { n = std::stoi(ch.substr(2)); } catch (...) { return false; }
+    return (n >= 1 && n <= 9) || n == 101 || n == 211;
+}
+
 bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkChannel)
 {
     if (m_running) return true;
     if (jkChannel.empty()) return false;
+
+    if (!IsValidJkChannel(jkChannel)) {
+        char buf[64];
+        sprintf_s(buf, "channel '%s' is not supported by L command, skipping", jkChannel.c_str());
+        JkDbg(buf);
+        return false;
+    }
 
     // Verify jkcnsl.exe exists
     if (GetFileAttributesW(jkcnslPath.c_str()) == INVALID_FILE_ATTRIBUTES) {

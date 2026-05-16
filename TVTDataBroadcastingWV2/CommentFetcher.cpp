@@ -15,37 +15,20 @@ static void DbgLog(const char* msg)
 }
 
 // BS (NetworkID=4): ServiceID -> jikkyo channel string
+// Only channels supported by jkcnsl L command (jk1-jk9, jk101, jk211)
 static const std::unordered_map<WORD, const char*> kBSChannels = {
-    { 101, "jk191" }, // NHK BS1
-    { 103, "jk193" }, // NHK BS Premium
-    { 141, "jk141" }, // BS Nittele
-    { 151, "jk151" }, // BS Asahi
-    { 161, "jk161" }, // BS-TBS
-    { 171, "jk171" }, // BS TV Tokyo
-    { 181, "jk181" }, // BS Fuji
+    { 101, "jk101" }, // NHK BS1
     { 211, "jk211" }, // WOWOW Live
-    { 222, "jk222" }, // Star Channel 1
-    { 236, "jk236" }, // BS Animax
-    { 252, "jk252" }, // BS SKY Perfect
-    { 265, "jk265" }, // AT-X
-    { 268, "jk268" }, // Disney Channel
-    { 333, "jk333" }, // BS11
-    { 341, "jk341" }, // TwellV
 };
 
 // Terrestrial: ASCII prefix in service name -> jikkyo channel
-// Used only when the service name contains an ASCII-identifiable substring.
-// For ambiguous channels, set JikkyoChannel= in the INI file directly.
+// Only valid L command channels (jk1-jk9)
 static const std::vector<std::pair<const wchar_t*, const char*>> kASCIIKeywords = {
-    { L"NTV",       "jk4"  },
-    { L"TBS",       "jk6"  },
-    { L"TX ",       "jk7"  }, // TV Tokyo (space avoids TX-prefix false match)
-    { L"CX",        "jk8"  },
-    { L"TOKYO MX",  "jk9"  },
-    { L"MBS",       "jk13" },
-    { L"ABC",       "jk15" },
-    { L"ytv",       "jk14" },
-    { L"CBC",       "jk20" },
+    { L"NTV",       "jk4" },
+    { L"TBS",       "jk6" },
+    { L"TX ",       "jk7" }, // space avoids TX-prefix false match
+    { L"CX",        "jk8" },
+    { L"TOKYO MX",  "jk9" },
 };
 
 // --- HTTP GET (HTTPS via WinHTTP) ---

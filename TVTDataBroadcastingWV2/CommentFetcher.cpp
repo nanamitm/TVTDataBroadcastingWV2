@@ -126,7 +126,7 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t fr
         if (!packet.contains("chat")) return result;
 
         auto& chats = packet["chat"];
-        auto process = [&](const nlohmann::json& chat) {
+        auto process = [this, &result](const nlohmann::json& chat) {
             if (!chat.contains("#text")) return;
             time_t date = std::stoll(chat.value("@date", "0"));
             if (date <= m_lastSent) return;

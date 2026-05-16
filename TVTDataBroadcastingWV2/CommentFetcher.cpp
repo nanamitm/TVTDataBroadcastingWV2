@@ -7,6 +7,13 @@
 
 #pragma comment(lib, "winhttp.lib")
 
+static void DbgLog(const char* msg)
+{
+    OutputDebugStringA("[TVTDataBroadcastingWV2] ");
+    OutputDebugStringA(msg);
+    OutputDebugStringA("\n");
+}
+
 // BS (NetworkID=4): ServiceID -> jikkyo channel string
 static const std::unordered_map<WORD, const char*> kBSChannels = {
     { 101, "jk191" }, // NHK BS1
@@ -154,13 +161,6 @@ std::vector<Comment> CommentFetcher::Fetch(const std::string& channel, time_t fr
 }
 
 // --- Background fetch loop ---
-
-static void DbgLog(const char* msg)
-{
-    OutputDebugStringA("[TVTDataBroadcastingWV2] ");
-    OutputDebugStringA(msg);
-    OutputDebugStringA("\n");
-}
 
 void CommentFetcher::FetchLoop()
 {

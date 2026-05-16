@@ -49,7 +49,7 @@ jobs:
       env:
         PLATFORM: ${{ matrix.platform }}
         VERSION: ${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
-      run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
+      run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
 
     - uses: actions/setup-node@v4
       with:

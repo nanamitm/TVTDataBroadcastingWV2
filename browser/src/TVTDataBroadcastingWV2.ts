@@ -615,8 +615,9 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
 }
 
 const commentCanvas = document.getElementById("comment-canvas") as HTMLCanvasElement;
-commentCanvas.width = commentCanvas.offsetWidth;
-commentCanvas.height = commentCanvas.offsetHeight;
+const commentParent = document.getElementById("data-broadcasting-browser")!;
+commentCanvas.width = commentParent.clientWidth || 960;
+commentCanvas.height = commentParent.clientHeight || 540;
 const commentRenderer = new CommentRenderer(commentCanvas);
 commentRenderer.start();
 

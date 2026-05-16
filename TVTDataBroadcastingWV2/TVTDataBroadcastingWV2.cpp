@@ -1860,11 +1860,15 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
 {
     if (!this->webView)
     {
-        // WebView2未初期化時はクリアだけ送らず、チャンネルだけ更新
-        std::string ch = CommentFetcher::DetectChannel(
-            this->currentChannel.NetworkID,
-            this->currentService.ServiceID,
-            this->currentService.szServiceName);
+        auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
+        std::string ch;
+        if (!iniCh.empty())
+            ch = std::string(iniCh.begin(), iniCh.end());
+        else
+            ch = CommentFetcher::DetectChannel(
+                this->currentChannel.NetworkID,
+                this->currentService.ServiceID,
+                this->currentService.szServiceName);
         this->m_commentFetcher.SetChannel(ch);
         return;
     }
@@ -1875,10 +1879,20 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     auto wjson = utf8StrToWString(ss.str().c_str());
     this->webView->PostWebMessageAsJson(wjson.c_str());
 
-    std::string ch = CommentFetcher::DetectChannel(
-        this->currentChannel.NetworkID,
-        this->currentService.ServiceID,
-        this->currentService.szServiceName);
+    // INIのJikkyoChannelが指定されていればそれを優先
+    auto iniCh = this->GetIniItem(L"JikkyoChannel", L"");
+    std::string ch;
+    if (!iniCh.empty())
+    {
+        ch = std::string(iniCh.begin(), iniCh.end());
+    }
+    else
+    {
+        ch = CommentFetcher::DetectChannel(
+            this->currentChannel.NetworkID,
+            this->currentService.ServiceID,
+            this->currentService.szServiceName);
+    }
     this->m_commentFetcher.SetChannel(ch);
 }
 

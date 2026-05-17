@@ -82,7 +82,7 @@ export class CommentRenderer {
         } else {
             const lane = this.freeLane(this.botLane, maxLanes, now);
             this.botLane[lane] = now + DURATION_MS;
-            y = this.canvas.height - laneH * lane - Math.ceil(fontSize * 0.25);
+            y = this.canvas.height - laneH * lane - Math.ceil(fontSize * 0.25) - laneH / 2;
         }
 
         this.comments.push({

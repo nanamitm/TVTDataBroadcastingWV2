@@ -6,6 +6,8 @@
 #define IDD_REMOTE_CONTROL_PANEL        104
 #define IDD_SETTING_NVRAM               105
 #define IDD_INPUT                       106
+#define IDD_MOMENTUM_PANEL              107
+#define IDC_TOGGLE_COMMENT              1055
 #define IDC_KEY_D                       1000
 #define IDC_KEY_LEFT                    1001
 #define IDC_KEY_RIGHT                   1002

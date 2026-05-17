@@ -12,6 +12,7 @@
 #include "InputDialog.h"
 #include "OneSeg.h"
 #include "CommentFetcher.h"
+#include "NetworkServiceIDTable.h"
 #include "JkcnslReader.h"
 #include <shellapi.h>
 
@@ -303,11 +304,28 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     HWND hContainerWnd = nullptr;
     HWND hMessageWnd = nullptr;
     HWND hOneSegWnd = nullptr;
-    HBRUSH hbrPanelBack = nullptr;
+    HBRUSH   hbrPanelBack   = nullptr;
+    COLORREF panelBackColor = RGB(0xF0, 0xF0, 0xF0);
+    COLORREF panelTextColor = RGB(0x00, 0x00, 0x00);
     HBRUSH hbrBRGYBacks[4] = {};
     HFONT hPanelFont = nullptr;
     UINT panelInitialDpi;
     std::vector<std::pair<HWND, RECT>> panelItems;
+    // 勢いパネル
+    struct MomentumChannel {
+        int id;
+        std::string name;
+        std::string video;
+        int force;
+        std::string programTitle;
+    };
+    std::vector<MomentumChannel> momentumChannels;
+    HWND hMomentumPanel = nullptr;
+    wil::com_ptr<ICoreWebView2Environment>  webViewEnv;
+    wil::com_ptr<ICoreWebView2Controller>   momentumWebViewController;
+    wil::com_ptr<ICoreWebView2>             momentumWebView;
+    bool momentumWebViewReady   = false;
+    bool momentumWebViewPending = false;
     wil::com_ptr<IBasicVideo> basicVideo;
     wil::com_ptr<IBaseFilter> vmr7Renderer;
     wil::com_ptr<IBaseFilter> vmr9Renderer;
@@ -361,6 +379,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
     std::string DetectJkChannel() const;
+    std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
+    void SwitchToMomentumChannel(int index);
+    void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
     void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
@@ -371,6 +392,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void Disable(bool finalize);
     void EnablePanelButtons(bool enable);
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl);
+    void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
     void SetNetworkState(bool enable);
     void UpdateNetworkState();
@@ -391,6 +413,11 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
     static INT_PTR CALLBACK RemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static INT_PTR CALLBACK PanelRemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
+    static INT_PTR CALLBACK PanelMomentumDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
+    void InitMomentumWebView(HWND hwnd);
+    void CreateMomentumWebViewController(HWND hwnd);
+    void SendMomentumTheme();
+    void SendMomentumChannels();
     static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
     static LRESULT CALLBACK MessageWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -631,6 +658,14 @@ bool CDataBroadcastingWV2::Initialize()
     panel.ID = 1;
     panel.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     m_pApp->RegisterPanelItem(&panel);
+    TVTest::PanelItemInfo panel2 = {};
+    panel2.Size = sizeof(panel2);
+    panel2.Style = TVTest::PANEL_ITEM_STYLE_NEEDFOCUS;
+    panel2.pszIDText = L"TVTDataBroadcastingWV2MomentumPanel";
+    panel2.pszTitle = L"実況勢い";
+    panel2.ID = 2;
+    panel2.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+    m_pApp->RegisterPanelItem(&panel2);
     TVTest::StatusItemInfo statusItemInfo = {};
     statusItemInfo.Size = sizeof(statusItemInfo);
     statusItemInfo.ID = 1;
@@ -1110,6 +1145,13 @@ void CDataBroadcastingWV2::InitWebView2()
             this->m_pApp->EnablePlugin(false);
             return S_OK;
         }
+        // 環境を保存し、保留中の勢いパネルがあればコントローラーを作成
+        this->webViewEnv = env;
+        if (this->momentumWebViewPending && this->hMomentumPanel)
+        {
+            this->momentumWebViewPending = false;
+            this->CreateMomentumWebViewController(this->hMomentumPanel);
+        }
         wil::unique_cotaskmem_string ver;
         if (SUCCEEDED(env->get_BrowserVersionString(ver.put())))
         {
@@ -1425,6 +1467,22 @@ void CDataBroadcastingWV2::InitWebView2()
                             ShellExecuteW(nullptr, L"open", wuri.c_str(), nullptr, nullptr, SW_SHOW);
                         }
                     }
+                    else if (type == "channelsUpdate")
+                    {
+                        this->momentumChannels.clear();
+                        for (auto& ch : a["channels"])
+                        {
+                            MomentumChannel mc;
+                            mc.id    = ch["id"].get<int>();
+                            mc.name  = ch["name"].get<std::string>();
+                            mc.video = ch["video"].get<std::string>();
+                            mc.force = ch["force"].get<int>();
+                            auto& pt = ch["programTitle"];
+                            mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
+                            this->momentumChannels.push_back(std::move(mc));
+                        }
+                        this->SendMomentumChannels();
+                    }
                 }
                 return S_OK;
             }).Get(), &token);
@@ -1439,6 +1497,19 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateCaptionState(false);
                 this->UpdateVolume();
+                // Send channels WebSocket config
+                {
+                    std::wstring channelsWsUriW = this->GetIniItem(L"ChannelsWsUri", L"ws://localhost:5000/api/channels/ws");
+                    std::string channelsWsUri(channelsWsUriW.begin(), channelsWsUriW.end());
+                    nlohmann::json chMsg{
+                        { "type",   "channelsConfig" },
+                        { "ws_uri", channelsWsUri     },
+                    };
+                    std::stringstream chSs;
+                    chSs << chMsg;
+                    auto chJson = utf8StrToWString(chSs.str().c_str());
+                    this->webView->PostWebMessageAsJson(chJson.c_str());
+                }
                 // Send comment config (opacity + duration + shadow)
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
@@ -1891,14 +1962,13 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     this->webView->PostWebMessageAsJson(wjson.c_str());
 }
 
-std::string CDataBroadcastingWV2::DetectJkChannel() const
+std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId) const
 {
     // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
     // NetCat = 0x4 for BS (NetworkID==4), 0xF for terrestrial
-    WORD  netCat = (this->currentChannel.NetworkID == 4) ? 4 : 0xF;
-    DWORD key    = ((DWORD)netCat << 16) | this->currentService.ServiceID;
+    WORD  netCat = (networkId == 4) ? 4 : 0xF;
+    DWORD key    = ((DWORD)netCat << 16) | serviceId;
 
-    // Build key string e.g. "0xF0430"
     wchar_t keyStr[16];
     swprintf_s(keyStr, L"0x%X", key);
 
@@ -1921,8 +1991,19 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         return buf;
     }
 
-    // Fallback: built-in BS mapping
-    return CommentFetcher::DetectChannel(
+    // Fallback: built-in table
+    // NetworkID=0 はスキャン未実施を意味するため、地上波として見つからない場合はBSとしても検索する
+    auto result = CommentFetcher::DetectChannel(networkId, serviceId);
+    if (!result.empty()) return result;
+    if (networkId != 4) {
+        return CommentFetcher::DetectChannel(4, serviceId);
+    }
+    return "";
+}
+
+std::string CDataBroadcastingWV2::DetectJkChannel() const
+{
+    return this->DetectJkChannelFor(
         this->currentChannel.NetworkID,
         this->currentService.ServiceID);
 }
@@ -2257,13 +2338,15 @@ INT_PTR CALLBACK CDataBroadcastingWV2::RemoteControlDlgProc(HWND hDlg, UINT uMsg
         if (LOWORD(wParam) == IDC_TOGGLE_CAPTION)
         {
             if (SendMessageW((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED)
-            {
                 pThis->OnCommand(IDC_ENABLE_CAPTION);
-            }
             else
-            {
                 pThis->OnCommand(IDC_DISABLE_CAPTION);
-            }
+        }
+        else if (LOWORD(wParam) == IDC_TOGGLE_COMMENT)
+        {
+            bool enabled = SendMessageW((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            pThis->SetIniItem(L"CommentEnabled", enabled ? L"1" : L"0");
+            pThis->UpdateCommentToggle();
         }
         else
         {
@@ -2358,6 +2441,9 @@ INT_PTR CALLBACK CDataBroadcastingWV2::PanelRemoteControlDlgProc(HWND hDlg, UINT
             SetWindowLongW(GetDlgItem(hDlg, IDC_TOGGLE_NETWORK), GWL_STYLE, GetWindowLongW(GetDlgItem(hDlg, IDC_TOGGLE_NETWORK), GWL_STYLE) | WS_VISIBLE);
             pThis->UpdateNetworkToggleButton(hDlg);
         }
+        // コメント表示トグルの初期状態
+        if (pThis->GetIniItem(L"CommentEnabled", 1))
+            SendDlgItemMessageW(hDlg, IDC_TOGGLE_COMMENT, BM_SETCHECK, BST_CHECKED, 0);
         pThis->panelInitialDpi = GetDpi(hDlg);
         // アイテムの初期位置を記録
         pThis->panelItems.clear();
@@ -2628,6 +2714,14 @@ bool CDataBroadcastingWV2::OnColorChange()
     {
         SendMessageW(this->hPanelWnd, WM_APP_ON_PANEL_COLOR_CHANGE, 0, 0);
     }
+    COLORREF newBack = this->m_pApp->GetColor(L"PanelBack");
+    COLORREF newText = this->m_pApp->GetColor(L"PanelText");
+    if (newBack != this->panelBackColor || newText != this->panelTextColor)
+    {
+        this->panelBackColor = newBack;
+        this->panelTextColor = newText;
+        this->SendMomentumTheme();
+    }
     return true;
 }
 
@@ -2638,8 +2732,21 @@ bool CDataBroadcastingWV2::OnPanelItemNotify(TVTest::PanelItemEventInfo* pInfo)
     case TVTest::PANEL_ITEM_EVENT_CREATE:
     {
         auto createEventInfo = CONTAINING_RECORD(pInfo, TVTest::PanelItemCreateEventInfo, EventInfo);
+        if (pInfo->ID == 2)
+        {
+            HWND hWnd = CreateDialogParamW(g_hinstDLL, MAKEINTRESOURCEW(IDD_MOMENTUM_PANEL), createEventInfo->hwndParent,
+                [](HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam) -> INT_PTR {
+                if (uMsg == WM_INITDIALOG)
+                    SetWindowLongPtrW(hDlg, GWLP_USERDATA, lParam);
+                auto pClientData = (void*)GetWindowLongPtrW(hDlg, GWLP_USERDATA);
+                return pClientData ? PanelMomentumDlgProc(hDlg, uMsg, wParam, lParam, pClientData) : 0;
+            }, (LPARAM)this);
+            ShowWindow(hWnd, SW_SHOW);
+            createEventInfo->hwndItem = hWnd;
+            this->hMomentumPanel = hWnd;
+            break;
+        }
         TVTest::ShowDialogInfo Info;
-
         Info.Flags = TVTest::SHOW_DIALOG_FLAG_MODELESS;
         Info.hinst = g_hinstDLL;
         Info.pszTemplate = MAKEINTRESOURCE(IDD_REMOTE_CONTROL_PANEL);
@@ -2689,6 +2796,281 @@ void CDataBroadcastingWV2::SetPanelFont()
         SendMessageW(hWnd, WM_SETFONT, (WPARAM)hFont, 0);
         return true;
     }, (LPARAM)this->hPanelFont);
+}
+
+void CDataBroadcastingWV2::UpdateCommentToggle()
+{
+    if (!this->webView) return;
+    bool enabled = this->GetIniItem(L"CommentEnabled", 1) != 0;
+    double opacity = enabled ? this->GetIniItem(L"CommentOpacity", 100) / 100.0 : 0.0;
+    nlohmann::json msg{{"type", "commentConfig"}, {"opacity", opacity}};
+    std::stringstream ss; ss << msg;
+    auto wstr = utf8StrToWString(ss.str().c_str());
+    this->webView->PostWebMessageAsJson(wstr.c_str());
+}
+
+static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+:root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;height:100vh}
+#w{height:100vh;overflow-y:auto}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
+th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
+   border-bottom:1px solid rgba(128,128,128,.3);cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden}
+th:hover{background:var(--hov)}
+td{padding:1px 4px;white-space:nowrap;overflow:hidden}
+tr:hover td{background:var(--hov)}
+tr.sel td{background:var(--sel)}
+.pe{color:#9acd32}
+#w::-webkit-scrollbar{width:8px}
+#w::-webkit-scrollbar-track{background:transparent}
+#w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
+#w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
+</style></head><body><div id="w"><table>
+<colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
+<thead><tr>
+<th onclick="srt(0)">実況番号<span id="a0"></span></th>
+<th onclick="srt(1)">局名<span id="a1"></span></th>
+<th onclick="srt(2)">勢い<span id="a2">▼</span></th>
+<th onclick="srt(3)">番組<span id="a3"></span></th>
+</tr></thead>
+<tbody id="tb"></tbody>
+</table></div>
+<script>
+let ch=[],sc=2,sa=false,sid=null;
+function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
+function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();}
+function render(){
+  const s=[...ch].sort((a,b)=>{
+    const d=sc===0?a.id-b.id:sc===2?a.force-b.force:sc===1?(a.name||'').localeCompare(b.name||''):(a.programTitle||'').localeCompare(b.programTitle||'');
+    return sa?d:-d;
+  });
+  for(let i=0;i<4;i++)document.getElementById('a'+i).textContent=i===sc?(sa?'▲':'▼'):'';
+  const tb=document.getElementById('tb');
+  tb.innerHTML='';
+  s.forEach(c=>{
+    const col=fc(c.force),tr=document.createElement('tr');
+    if(c.id===sid)tr.className='sel';
+    tr.innerHTML='<td style="color:'+col+'">'+( c.video||'')+'</td><td>'+(c.name||'')+'</td>'
+      +'<td style="color:'+col+'">'+(c.force>=0?c.force:'???')+'</td><td class="pe">'+(c.programTitle||'')+'</td>';
+    tr.addEventListener('click',()=>{sid=c.id;render();window.chrome.webview.postMessage({cmd:'select',id:c.id});});
+    tb.appendChild(tr);
+  });
+}
+function _update(m){
+  if(m.type==='channelsUpdate'){ch=m.channels;render();}
+  else if(m.type==='thm'){
+    const s=document.documentElement.style;
+    s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
+    if(m.sb)s.setProperty('--sb',m.sb);
+    document.body.style.background=m.bg;
+  }
+}
+</script></body></html>)HTML";
+
+static std::string colorToHex(COLORREF c)
+{
+    char buf[8];
+    sprintf_s(buf, "#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+    return buf;
+}
+
+/*static*/ INT_PTR CALLBACK CDataBroadcastingWV2::PanelMomentumDlgProc(
+    HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData)
+{
+    auto pThis = static_cast<CDataBroadcastingWV2*>(pClientData);
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        pThis->panelBackColor = pThis->m_pApp->GetColor(L"PanelBack");
+        pThis->panelTextColor = pThis->m_pApp->GetColor(L"PanelText");
+        pThis->InitMomentumWebView(hDlg);
+        return TRUE;
+    case WM_SIZE:
+        if (pThis->momentumWebViewController)
+        {
+            RECT rc;
+            GetClientRect(hDlg, &rc);
+            pThis->momentumWebViewController->put_Bounds(rc);
+        }
+        return TRUE;
+    case WM_DESTROY:
+        pThis->momentumWebViewReady = false;
+        pThis->momentumWebView = nullptr;
+        if (pThis->momentumWebViewController)
+        {
+            pThis->momentumWebViewController->Close();
+            pThis->momentumWebViewController = nullptr;
+        }
+        pThis->hMomentumPanel = nullptr;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+void CDataBroadcastingWV2::InitMomentumWebView(HWND hwnd)
+{
+    if (this->webViewEnv)
+        this->CreateMomentumWebViewController(hwnd);
+    else
+        this->momentumWebViewPending = true; // データ放送 WebView2 の環境作成後に起動
+}
+
+void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
+{
+    this->webViewEnv->CreateCoreWebView2Controller(hwnd,
+        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+            [this, hwnd](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
+                if (FAILED(hr) || !IsWindow(hwnd)) return S_OK;
+
+                this->momentumWebViewController = ctrl;
+                ctrl->get_CoreWebView2(this->momentumWebView.put());
+
+                wil::com_ptr<ICoreWebView2Settings> settings;
+                this->momentumWebView->get_Settings(settings.put());
+                settings->put_IsScriptEnabled(TRUE);
+                settings->put_AreDefaultContextMenusEnabled(TRUE);
+                settings->put_IsStatusBarEnabled(FALSE);
+                settings->put_AreDevToolsEnabled(TRUE);
+
+                RECT rc; GetClientRect(hwnd, &rc);
+                ctrl->put_Bounds(rc);
+                ctrl->put_IsVisible(TRUE);
+
+                EventRegistrationToken token;
+                this->momentumWebView->add_WebMessageReceived(
+                    Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                        [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                            wil::unique_cotaskmem_string msg;
+                            args->get_WebMessageAsJson(msg.put());
+                            try {
+                                std::wstring ws(msg.get());
+                                std::string s(ws.begin(), ws.end());
+                                auto j = nlohmann::json::parse(s);
+                                if (j["cmd"].get<std::string>() == "select")
+                                    this->SwitchToMomentumChannelById(j["id"].get<int>());
+                            } catch (...) {}
+                            return S_OK;
+                        }
+                    ).Get(), &token);
+
+                this->momentumWebView->add_NavigationCompleted(
+                    Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                        [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                            this->momentumWebViewReady = true;
+                            this->SendMomentumTheme();
+                            this->SendMomentumChannels();
+                            return S_OK;
+                        }
+                    ).Get(), &token);
+
+                this->momentumWebView->NavigateToString(kMomentumHtml);
+                return S_OK;
+            }
+        ).Get());
+}
+
+void CDataBroadcastingWV2::SendMomentumTheme()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    COLORREF bg = this->panelBackColor, fg = this->panelTextColor;
+    COLORREF sb = RGB((GetRValue(bg)+GetRValue(fg))/2, (GetGValue(bg)+GetGValue(fg))/2, (GetBValue(bg)+GetBValue(fg))/2);
+    nlohmann::json msg{{"type","thm"},{"bg",colorToHex(bg)},{"fg",colorToHex(fg)},{"sb",colorToHex(sb)}};
+    std::string script = "_update(" + msg.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::SendMomentumChannels()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json channels = nlohmann::json::array();
+    for (const auto& ch : this->momentumChannels)
+    {
+        channels.push_back({
+            {"id", ch.id}, {"name", ch.name}, {"video", ch.video}, {"force", ch.force},
+            {"programTitle", ch.programTitle.empty() ? nlohmann::json(nullptr) : nlohmann::json(ch.programTitle)},
+        });
+    }
+    nlohmann::json msg{{"type","channelsUpdate"},{"channels",channels}};
+    std::string script = "_update(" + msg.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::SwitchToMomentumChannelById(int id)
+{
+    for (int i = 0; i < (int)this->momentumChannels.size(); i++)
+    {
+        if (this->momentumChannels[i].id == id)
+        {
+            this->SwitchToMomentumChannel(i);
+            return;
+        }
+    }
+}
+
+void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
+{
+    if (index < 0 || index >= (int)this->momentumChannels.size()) return;
+    const auto& target = this->momentumChannels[index];
+    const std::string& targetJk = target.video;
+    if (targetJk.empty()) return;
+
+    // Step 1: 全チューニングスペースを走査（NicoJKと同方式）
+    int spaceNum = 0;
+    this->m_pApp->GetTuningSpace(&spaceNum);
+
+    for (int space = 0; space < spaceNum; space++)
+    {
+        for (int channel = 0; ; channel++)
+        {
+            TVTest::ChannelInfo info = {};
+            info.Size = sizeof(info);
+            if (!this->m_pApp->GetChannelInfo(space, channel, &info)) break;
+
+            if (this->DetectJkChannelFor(info.NetworkID, info.ServiceID) == targetJk)
+            {
+                TVTest::ChannelSelectInfo sel = {};
+                sel.Size      = sizeof(sel);
+                sel.Flags     = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE;
+                sel.Channel   = -1;
+                // 地上波はSpaceで指定、BS/CSはNetworkIDで指定（NicoJKと同方式）
+                if (0x7880 <= info.NetworkID && info.NetworkID <= 0x7FEF) {
+                    sel.Space = space;
+                } else {
+                    sel.Space     = -1;
+                    sel.NetworkID = info.NetworkID;
+                }
+                sel.ServiceID = info.ServiceID;
+                this->m_pApp->SelectChannel(&sel);
+                return;
+            }
+        }
+    }
+
+    // Step 2: 同一BonDriverに見つからない場合のフォールバック
+    // テーブルのNetworkID+ServiceIDでTVTestのチャンネルDBを検索（BS↔地上波跨ぎ）
+    if (targetJk.size() > 2 && targetJk[0] == 'j' && targetJk[1] == 'k')
+    {
+        int jkNum = std::stoi(targetJk.substr(2));
+        for (int j = 0; j < (int)std::size(DEFAULT_NTSID_TABLE); j++)
+        {
+            if ((DEFAULT_NTSID_TABLE[j].jkID & ~0x40000000) != jkNum) continue;
+
+            WORD netCat   = DEFAULT_NTSID_TABLE[j].ntsID & 0xFFFF;
+            WORD serviceId = (WORD)(DEFAULT_NTSID_TABLE[j].ntsID >> 16);
+            WORD networkId = (netCat == 0x0004) ? 4 : 0;
+
+            TVTest::ChannelSelectInfo sel = {};
+            sel.Size      = sizeof(sel);
+            sel.Flags     = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE;
+            sel.NetworkID = networkId;
+            sel.ServiceID = serviceId;
+            sel.Space     = -1;
+            sel.Channel   = -1;
+            if (this->m_pApp->SelectChannel(&sel)) return;
+        }
+    }
 }
 
 bool CDataBroadcastingWV2::OnVolumeChange(int Volume, bool fMute)
@@ -2845,6 +3227,7 @@ void CDataBroadcastingWV2::OnDarkModeChanged(bool fDarkMode)
     {
         this->m_pApp->SetWindowDarkMode(this->hOneSegWnd, this->m_pApp->GetDarkModeStatus() & TVTest::DARK_MODE_STATUS_DIALOG_DARK);
     }
+    this->OnColorChange();
 }
 
 void CDataBroadcastingWV2::UpdateDigitButton()

@@ -513,6 +513,10 @@ type ToWebViewMessage = {
     type: "commentConfig",
     opacity: number,
     duration_ms: number,
+    shadow_color?: string,
+    shadow_enabled?: boolean,
+    outline_enabled?: boolean,
+    font_size_medium?: number,
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -620,6 +624,18 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "commentConfig") {
         commentRenderer.setOpacity(data.opacity);
         commentRenderer.setDuration(data.duration_ms);
+        if (data.shadow_color !== undefined) {
+            commentRenderer.setShadowColor(data.shadow_color);
+        }
+        if (data.shadow_enabled !== undefined) {
+            commentRenderer.setShadowEnabled(data.shadow_enabled);
+        }
+        if (data.outline_enabled !== undefined) {
+            commentRenderer.setOutlineEnabled(data.outline_enabled);
+        }
+        if (data.font_size_medium !== undefined) {
+            commentRenderer.setFontSizeMedium(data.font_size_medium);
+        }
     }
 }
 

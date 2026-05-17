@@ -1439,16 +1439,26 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateCaptionState(false);
                 this->UpdateVolume();
-                // Send comment config (opacity + duration)
+                // Send comment config (opacity + duration + shadow)
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
                     opacityPct = std::max(0, std::min(100, opacityPct));
                     int durationMs = this->GetIniItem(L"CommentDuration", 4000);
                     durationMs = std::max(1000, std::min(5000, durationMs));
+                    std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"rgba(0,0,0,0.7)");
+                    std::string shadowColor(shadowColorW.begin(), shadowColorW.end());
+                    bool shadowEnabled  = this->GetIniItem(L"CommentShadow",  1) != 0;
+                    bool outlineEnabled = this->GetIniItem(L"CommentOutline", 0) != 0;
+                    int fontSizeMedium  = this->GetIniItem(L"CommentFontSize", 24);
+                    fontSizeMedium = std::max(8, std::min(64, fontSizeMedium));
                     nlohmann::json cfgMsg{
-                        { "type",        "commentConfig"    },
-                        { "opacity",     opacityPct / 100.0 },
-                        { "duration_ms", durationMs         },
+                        { "type",              "commentConfig"    },
+                        { "opacity",           opacityPct / 100.0 },
+                        { "duration_ms",       durationMs         },
+                        { "shadow_color",      shadowColor        },
+                        { "shadow_enabled",    shadowEnabled      },
+                        { "outline_enabled",   outlineEnabled     },
+                        { "font_size_medium",  fontSizeMedium     },
                     };
                     std::stringstream cfgSs;
                     cfgSs << cfgMsg;

@@ -1,20 +1,31 @@
 #include "pch.h"
 #include "CommentFetcher.h"
+#include "NetworkServiceIDTable.h"
 #include <sstream>
-#include <unordered_map>
-
-// BS (NetworkID=4): ServiceID -> jikkyo channel
-// Only channels supported by jkcnsl L command (jk1-jk9, jk101, jk211)
-static const std::unordered_map<WORD, const char*> kBSChannels = {
-    { 101, "jk101" }, // NHK BS1
-    { 211, "jk211" }, // WOWOW Live
-};
+#include <unordered_set>
 
 /*static*/ std::string CommentFetcher::DetectChannel(WORD networkId, WORD serviceId)
 {
-    if (networkId == 4) {
-        auto it = kBSChannels.find(serviceId);
-        if (it != kBSChannels.end()) return it->second;
+    // ntsID format: (serviceId << 16) | networkCategory
+    // BS(NetworkID==4) -> 0x0004, terrestrial -> 0x000F
+    WORD  netCat = (networkId == 4) ? 0x0004 : 0x000F;
+    DWORD ntsID  = ((DWORD)serviceId << 16) | netCat;
+
+    // Binary search (table is sorted by ntsID)
+    int lo = 0, hi = (int)std::size(DEFAULT_NTSID_TABLE) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (DEFAULT_NTSID_TABLE[mid].ntsID == ntsID) {
+            int jkID = DEFAULT_NTSID_TABLE[mid].jkID & ~0x40000000; // strip JKID_PRIOR
+            if (jkID <= 0) return "";
+            char buf[16];
+            sprintf_s(buf, "jk%d", jkID);
+            return buf;
+        } else if (DEFAULT_NTSID_TABLE[mid].ntsID < ntsID) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
     }
     return "";
 }
@@ -22,13 +33,10 @@ static const std::unordered_map<WORD, const char*> kBSChannels = {
 /*static*/ void CommentFetcher::ParseMail(const std::string& mail,
     std::string& color, std::string& position, std::string& size)
 {
-    static const std::unordered_map<std::string, std::string> kColors = {
-        {"white","white"}, {"red","red"}, {"blue","blue"}, {"yellow","yellow"},
-        {"green","green"}, {"cyan","cyan"}, {"purple","purple"}, {"black","black"},
-        {"niconicowhite","white"}, {"cadetblue","cadetblue"}, {"maroon","maroon"},
-        {"fuchsia","fuchsia"}, {"lime","lime"}, {"olive","olive"}, {"navy","navy"},
-        {"teal","teal"}, {"silver","silver"}, {"gray","gray"}, {"orange","orange"},
-        {"midori","midori"},
+    static const std::unordered_set<std::string> kColors = {
+        "white", "red", "blue", "yellow", "green", "cyan", "purple", "black",
+        "niconicowhite", "cadetblue", "maroon", "fuchsia", "lime", "olive",
+        "navy", "teal", "silver", "gray", "orange", "midori",
     };
 
     color    = "white";
@@ -42,7 +50,6 @@ static const std::unordered_map<WORD, const char*> kBSChannels = {
         if (token == "shita") { position = "shita"; continue; }
         if (token == "small") { size = "small";     continue; }
         if (token == "big")   { size = "big";       continue; }
-        auto it = kColors.find(token);
-        if (it != kColors.end()) color = it->second;
+        if (kColors.count(token)) color = token;
     }
 }

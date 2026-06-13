@@ -19,12 +19,24 @@ constexpr DWORD kTimeoutMs = 8000;
     if (!CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0)) return false;
     SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
 
-    HANDLE hStdoutRead = nullptr, hStdoutWrite = nullptr;
-    if (!CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0)) {
+    // stdout via an overlapped named pipe so we can read with a timeout. jkcnsl
+    // cancels in-flight commands when it sees 'q', so we must read the command's
+    // terminator ('.'/'!'/'?') BEFORE sending 'q' (otherwise output is empty).
+    WCHAR pipeName[64];
+    swprintf_s(pipeName, L"\\\\.\\pipe\\tvtdbwv2set_%08x_%08x",
+               GetCurrentProcessId(), GetCurrentThreadId());
+    HANDLE hStdoutWrite = CreateNamedPipeW(pipeName, PIPE_ACCESS_OUTBOUND, 0, 1, 8192, 8192, 0, &sa);
+    if (hStdoutWrite == INVALID_HANDLE_VALUE) {
         CloseHandle(hStdinRead); CloseHandle(hStdinWrite);
         return false;
     }
-    SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0);
+    HANDLE hStdoutRead = CreateFileW(pipeName, GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+    if (hStdoutRead == INVALID_HANDLE_VALUE) {
+        CloseHandle(hStdoutWrite);
+        CloseHandle(hStdinRead); CloseHandle(hStdinWrite);
+        return false;
+    }
 
     WCHAR args[64];
     swprintf_s(args, L" -p %u", GetCurrentProcessId());
@@ -52,26 +64,60 @@ constexpr DWORD kTimeoutMs = 8000;
     }
     CloseHandle(pi.hThread);
 
-    // Send the command and quit.
-    std::string line = command + "\r\nq\r\n";
-    DWORD written = 0;
-    WriteFile(hStdinWrite, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
-    CloseHandle(hStdinWrite);
-
-    // Drain stdout until EOF (jkcnsl closes it on exit). Output is tiny, so a
-    // blocking read cannot fill the pipe / deadlock.
-    std::string buf;
-    char chunk[1024];
-    DWORD read = 0;
-    while (ReadFile(hStdoutRead, chunk, sizeof(chunk), &read, nullptr) && read > 0) {
-        buf.append(chunk, read);
+    // 1) Send the command only (no 'q' yet).
+    {
+        std::string line = command + "\r\n";
+        DWORD written = 0;
+        WriteFile(hStdinWrite, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
     }
-    CloseHandle(hStdoutRead);
 
-    if (WaitForSingleObject(pi.hProcess, kTimeoutMs) == WAIT_TIMEOUT) {
+    // 2) Read stdout until a terminator line ('.'/'!'/'?') appears or we time out.
+    std::string buf;
+    HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ULONGLONG deadline = GetTickCount64() + kTimeoutMs;
+    char rb[2048];
+    bool sawTerminator = false;
+    while (ioEvent && !sawTerminator) {
+        ULONGLONG now = GetTickCount64();
+        if (now >= deadline) break;
+        DWORD remain = static_cast<DWORD>(deadline - now);
+
+        OVERLAPPED ol{};
+        ol.hEvent = ioEvent;
+        ResetEvent(ioEvent);
+        DWORD rd = 0;
+        BOOL r = ReadFile(hStdoutRead, rb, sizeof(rb), nullptr, &ol);
+        if (!r && GetLastError() == ERROR_IO_PENDING) {
+            if (WaitForSingleObject(ioEvent, remain) != WAIT_OBJECT_0) { CancelIo(hStdoutRead); break; }
+        } else if (!r) {
+            break; // pipe closed / error
+        }
+        if (!GetOverlappedResult(hStdoutRead, &ol, &rd, FALSE) || rd == 0) break;
+        buf.append(rb, rd);
+
+        // Look for any terminator at a line start.
+        size_t s = 0;
+        while (s <= buf.size()) {
+            char c = (s < buf.size()) ? buf[s] : '\0';
+            if (c == '.' || c == '!' || c == '?') { sawTerminator = true; break; }
+            size_t nl = buf.find('\n', s);
+            if (nl == std::string::npos) break;
+            s = nl + 1;
+        }
+    }
+    if (ioEvent) CloseHandle(ioEvent);
+
+    // 3) Now quit and clean up.
+    {
+        DWORD written = 0;
+        WriteFile(hStdinWrite, "q\r\n", 3, &written, nullptr);
+    }
+    CloseHandle(hStdinWrite);
+    if (WaitForSingleObject(pi.hProcess, 3000) == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
     }
     CloseHandle(pi.hProcess);
+    CloseHandle(hStdoutRead);
 
     // Classify by terminator lines: '.' ok, '!' / '?' error. Collect '-' lines.
     bool ok = false, err = false;

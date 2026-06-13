@@ -235,6 +235,21 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkCh
     return true;
 }
 
+bool JkcnslReader::Post(const std::string& payload)
+{
+    if (!m_running) return false;
+    // jkcnsl uses a line protocol; embedded CR/LF would corrupt the stream.
+    if (payload.find('\n') != std::string::npos || payload.find('\r') != std::string::npos) {
+        return false;
+    }
+    std::string line = "+" + payload + "\r\n";
+    std::lock_guard<std::mutex> lock(m_stdinMutex);
+    if (!m_hStdinWrite) return false;
+    DWORD written = 0;
+    return WriteFile(m_hStdinWrite, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr)
+        && written == line.size();
+}
+
 void JkcnslReader::Stop()
 {
     if (!m_hProcess && !m_hStopEvent) return;
@@ -243,11 +258,14 @@ void JkcnslReader::Stop()
     if (m_hStopEvent) SetEvent(m_hStopEvent);
 
     // 2. Tell jkcnsl to quit gracefully, then close stdin
-    if (m_hStdinWrite) {
-        DWORD written = 0;
-        WriteFile(m_hStdinWrite, "q\r\n", 3, &written, nullptr);
-        CloseHandle(m_hStdinWrite);
-        m_hStdinWrite = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_stdinMutex);
+        if (m_hStdinWrite) {
+            DWORD written = 0;
+            WriteFile(m_hStdinWrite, "q\r\n", 3, &written, nullptr);
+            CloseHandle(m_hStdinWrite);
+            m_hStdinWrite = nullptr;
+        }
     }
 
     // 3. Wait for jkcnsl to exit; forcibly terminate if it takes too long

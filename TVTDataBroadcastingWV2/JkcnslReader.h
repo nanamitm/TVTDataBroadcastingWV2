@@ -3,6 +3,7 @@
 #include "CommentFetcher.h"
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -19,6 +20,11 @@ public:
     bool Start(const std::wstring& jkcnslPath, const std::string& jkChannel);
     void Stop();
     bool IsRunning() const { return m_running; }
+
+    // Post a comment on the open stream. payload is the UTF-8 "[mail]comment"
+    // body; this prepends '+' and appends CRLF. Returns false if not connected
+    // or the write fails.
+    bool Post(const std::string& payload);
     const std::string& GetChannel() const { return m_channel; }
     void SetCallback(Callback cb) { m_callback = std::move(cb); }
 
@@ -30,6 +36,7 @@ private:
     HANDLE m_hStdinWrite = nullptr;
     HANDLE m_hStdoutRead = nullptr; // overlapped read end
     HANDLE m_hStopEvent  = nullptr; // manual-reset, signals ReadLoop to exit
+    std::mutex m_stdinMutex;        // guards writes to / closing of m_hStdinWrite
     std::thread m_thread;
     std::atomic<bool> m_running{ false };
     std::string m_channel;

@@ -380,11 +380,14 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
     CommentNG      m_commentNg;
+    DWORD          m_lastPostTick = 0;
+    std::wstring   m_lastPostComm;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
     void SwitchToMomentumChannel(int index);
     void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
+    void PostComment(const std::wstring& input);
     void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
@@ -1986,6 +1989,61 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     this->webView->PostWebMessageAsJson(wjson.c_str());
 }
 
+// Post a comment to the jikkyo server via the open jkcnsl stream.
+// input may carry an optional "[mail]" prefix (e.g. "[shita green]text") to set
+// color/position/size, mirroring NicoJK's posting box convention.
+void CDataBroadcastingWV2::PostComment(const std::wstring& input)
+{
+    constexpr int   POST_COMMENT_MAX      = 76;   // jkcnsl/nicovideo limit
+    constexpr DWORD POST_COMMENT_INTERVAL = 2000; // anti-spam guard (ms)
+
+    auto sendResult = [this](const char* status, const char* message) {
+        if (!this->momentumWebView || !this->momentumWebViewReady) return;
+        nlohmann::json j{ { "type", "postResult" }, { "status", status }, { "message", message } };
+        std::string script = "_update(" + j.dump() + ")";
+        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    };
+
+    if (!this->m_jkcnslReader.IsRunning()) { sendResult("error", "コメントサーバに接続していません"); return; }
+
+    // Split optional [mail] prefix from the comment body.
+    std::wstring mail, comm;
+    if (!input.empty() && input[0] == L'[')
+    {
+        auto close = input.find(L']');
+        if (close != std::wstring::npos) { mail = input.substr(1, close - 1); comm = input.substr(close + 1); }
+        else                             { comm = input; }
+    }
+    else { comm = input; }
+
+    if (comm.empty()) return;
+    if (GetTickCount() - this->m_lastPostTick < POST_COMMENT_INTERVAL) { sendResult("error", "投稿間隔が短すぎます"); return; }
+    if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", "コメントが長すぎます"); return; }
+    if (comm == this->m_lastPostComm)                                { sendResult("error", "前回と同じコメントです"); return; }
+
+    // Build "[mail]comment"; convert tab/newline to the record separator and drop CR.
+    std::wstring body = L"[" + mail + L"]" + comm;
+    std::wstring cleaned;
+    cleaned.reserve(body.size());
+    for (wchar_t ch : body)
+    {
+        if (ch == L'\t' || ch == L'\n') cleaned.push_back(L'\x1e');
+        else if (ch != L'\r')           cleaned.push_back(ch);
+    }
+
+    std::string payload = wstrToUTF8String(cleaned.c_str());
+    if (this->m_jkcnslReader.Post(payload))
+    {
+        this->m_lastPostTick = GetTickCount();
+        this->m_lastPostComm = comm;
+        sendResult("ok", "投稿しました");
+    }
+    else
+    {
+        sendResult("error", "投稿に失敗しました");
+    }
+}
+
 std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId) const
 {
     // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
@@ -2837,7 +2895,13 @@ static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta 
 :root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;height:100vh}
-#w{height:100vh;overflow-y:auto}
+#post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-bottom:1px solid rgba(128,128,128,.3)}
+#pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
+    border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
+#pi:focus{outline:none;border-color:var(--fg)}
+#pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
+#pr.ok{color:#3a3}#pr.error{color:#d44}
+#w{height:calc(100vh - 30px);overflow-y:auto}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -2851,7 +2915,9 @@ tr.sel td{background:var(--sel)}
 #w::-webkit-scrollbar-track{background:transparent}
 #w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
 #w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
-</style></head><body><div id="w"><table>
+</style></head><body>
+<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span></div>
+<div id="w"><table>
 <colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
 <thead><tr>
 <th onclick="srt(0)">実況番号<span id="a0"></span></th>
@@ -2882,8 +2948,24 @@ function render(){
     tb.appendChild(tr);
   });
 }
+let prTimer=null;
+function showResult(status,msg){
+  const pr=document.getElementById('pr');
+  pr.textContent=msg;pr.className=status;
+  clearTimeout(prTimer);
+  prTimer=setTimeout(()=>{pr.textContent='';pr.className='';},4000);
+}
+const pi=document.getElementById('pi');
+pi.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.isComposing){
+    const t=pi.value;
+    if(t.trim()!==''){window.chrome.webview.postMessage({cmd:'post',text:t});pi.value='';}
+    e.preventDefault();
+  }
+});
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
+  else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
@@ -2972,8 +3054,11 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 std::wstring ws(msg.get());
                                 std::string s(ws.begin(), ws.end());
                                 auto j = nlohmann::json::parse(s);
-                                if (j["cmd"].get<std::string>() == "select")
+                                auto cmd = j["cmd"].get<std::string>();
+                                if (cmd == "select")
                                     this->SwitchToMomentumChannelById(j["id"].get<int>());
+                                else if (cmd == "post")
+                                    this->PostComment(utf8StrToWString(j["text"].get<std::string>().c_str()));
                             } catch (...) {}
                             return S_OK;
                         }

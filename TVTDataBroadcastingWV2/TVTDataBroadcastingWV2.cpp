@@ -15,6 +15,7 @@
 #include "CommentNG.h"
 #include "NetworkServiceIDTable.h"
 #include "JkcnslReader.h"
+#include "JkcnslLogin.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -29,6 +30,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_INPUT (WM_APP + 3)
 #define WM_APP_ENABLE_PLUGIN (WM_APP + 4)
 #define WM_APP_COMMENTS (WM_APP + 5)
+#define WM_APP_LOGIN (WM_APP + 6)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -379,9 +381,12 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
+    JkcnslLogin    m_jkcnslLogin;
     CommentNG      m_commentNg;
     DWORD          m_lastPostTick = 0;
     std::wstring   m_lastPostComm;
+    std::wstring GetJkcnslPath() const;
+    void OnLoginEvent(JkcnslLogin::Event ev, const std::string& message);
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
     void SwitchToMomentumChannel(int index);
@@ -943,6 +948,12 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     {
         auto comments = std::unique_ptr<std::vector<Comment>>(reinterpret_cast<std::vector<Comment>*>(wParam));
         pThis->SendComments(std::move(*comments));
+        break;
+    }
+    case WM_APP_LOGIN:
+    {
+        auto ev = std::unique_ptr<JkcnslLoginEvent>(reinterpret_cast<JkcnslLoginEvent*>(wParam));
+        pThis->OnLoginEvent(ev->event, ev->message);
         break;
     }
     }
@@ -1851,6 +1862,10 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
                 });
+                this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
+                    PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
+                        new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
+                });
                 this->UpdateCommentChannel();
             }
         }
@@ -1997,14 +2012,17 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     constexpr int   POST_COMMENT_MAX      = 76;   // jkcnsl/nicovideo limit
     constexpr DWORD POST_COMMENT_INTERVAL = 2000; // anti-spam guard (ms)
 
-    auto sendResult = [this](const char* status, const char* message) {
+    // Japanese must be authored as wide literals: the project compiles without
+    // /utf-8, so narrow Japanese literals would be CP932 and break json.dump().
+    auto sendResult = [this](const char* status, const wchar_t* message) {
         if (!this->momentumWebView || !this->momentumWebViewReady) return;
-        nlohmann::json j{ { "type", "postResult" }, { "status", status }, { "message", message } };
+        nlohmann::json j{ { "type", "postResult" }, { "status", status },
+                          { "message", wstrToUTF8String(message) } };
         std::string script = "_update(" + j.dump() + ")";
         this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
     };
 
-    if (!this->m_jkcnslReader.IsRunning()) { sendResult("error", "コメントサーバに接続していません"); return; }
+    if (!this->m_jkcnslReader.IsRunning()) { sendResult("error", L"コメントサーバに接続していません"); return; }
 
     // Split optional [mail] prefix from the comment body.
     std::wstring mail, comm;
@@ -2017,9 +2035,9 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     else { comm = input; }
 
     if (comm.empty()) return;
-    if (GetTickCount() - this->m_lastPostTick < POST_COMMENT_INTERVAL) { sendResult("error", "投稿間隔が短すぎます"); return; }
-    if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", "コメントが長すぎます"); return; }
-    if (comm == this->m_lastPostComm)                                { sendResult("error", "前回と同じコメントです"); return; }
+    if (GetTickCount() - this->m_lastPostTick < POST_COMMENT_INTERVAL) { sendResult("error", L"投稿間隔が短すぎます"); return; }
+    if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", L"コメントが長すぎます"); return; }
+    if (comm == this->m_lastPostComm)                                { sendResult("error", L"前回と同じコメントです"); return; }
 
     // Build "[mail]comment"; convert tab/newline to the record separator and drop CR.
     std::wstring body = L"[" + mail + L"]" + comm;
@@ -2036,11 +2054,11 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     {
         this->m_lastPostTick = GetTickCount();
         this->m_lastPostComm = comm;
-        sendResult("ok", "投稿しました");
+        sendResult("ok", L"投稿しました");
     }
     else
     {
-        sendResult("error", "投稿に失敗しました");
+        sendResult("error", L"投稿に失敗しました");
     }
 }
 
@@ -2114,11 +2132,7 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
         this->webView->PostWebMessageAsJson(wjson.c_str());
     }
 
-    // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory)
-    // baseDirectory = "...\\Plugins\\TVTDataBroadcastingWV2"
-    // parent = "...\\Plugins", parent.parent = TVTest folder
-    auto jkcnslPath = std::filesystem::path(this->baseDirectory)
-        .parent_path().parent_path() / L"jkcnsl.exe";
+    auto jkcnslPath = this->GetJkcnslPath();
 
     // Restart if not running or channel changed
     if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() != ch) {
@@ -2127,6 +2141,56 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     if (!this->m_jkcnslReader.IsRunning()) {
         this->m_jkcnslReader.Start(jkcnslPath, ch);
     }
+}
+
+// jkcnsl.exe is always in the TVTest folder (parent of Plugins directory).
+// baseDirectory = "...\\Plugins\\TVTDataBroadcastingWV2"
+// parent = "...\\Plugins", parent.parent = TVTest folder
+std::wstring CDataBroadcastingWV2::GetJkcnslPath() const
+{
+    return (std::filesystem::path(this->baseDirectory)
+        .parent_path().parent_path() / L"jkcnsl.exe").wstring();
+}
+
+// Maps a login event to panel UI text (Japanese authored as wide literals) and
+// pushes it to the momentum panel. Runs on the UI thread (via WM_APP_LOGIN).
+void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string& message)
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+
+    const wchar_t* state = L"progress";
+    std::wstring text;
+    switch (ev)
+    {
+    case JkcnslLogin::Event::Progress:
+        state = L"progress";
+        if      (message == "start-login") text = L"ログインを開始しています…";
+        else if (message == "start-clear") text = L"ログイン情報を削除しています…";
+        else if (!message.empty())         text = utf8StrToWString(message.c_str()); // jkcnsl line (UTF-8)
+        break;
+    case JkcnslLogin::Event::Need2FA:
+        state = L"need2fa";
+        text  = L"2段階認証コードを入力して送信してください。";
+        break;
+    case JkcnslLogin::Event::Success:
+        state = L"success";
+        text  = (message == "clear") ? L"ログイン情報を削除しました。"
+                                     : L"ニコニコログインに成功しました。チャンネル切替または再接続後に反映されます。";
+        break;
+    case JkcnslLogin::Event::Failure:
+        state = L"failure";
+        if      (message == "cancel")     text = L"ログインを中止しました。";
+        else if (message == "disconnect") text = L"jkcnslとの通信が切断されました。";
+        else if (message == "clear")      text = L"ログイン情報の削除に失敗しました。";
+        else                              text = L"ログインに失敗しました。";
+        break;
+    }
+
+    nlohmann::json j{ { "type", "loginStatus" },
+                      { "state", wstrToUTF8String(state) },
+                      { "message", wstrToUTF8String(text.c_str()) } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::SetCaptionState(bool enable)
@@ -2894,14 +2958,29 @@ void CDataBroadcastingWV2::UpdateCommentToggle()
 static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 :root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;height:100vh}
+body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
+     height:100vh;display:flex;flex-direction:column}
 #post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-bottom:1px solid rgba(128,128,128,.3)}
 #pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #pi:focus{outline:none;border-color:var(--fg)}
 #pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
 #pr.ok{color:#3a3}#pr.error{color:#d44}
-#w{height:calc(100vh - 30px);overflow-y:auto}
+#lb{flex:0 0 auto;font:inherit;color:var(--fg);background:var(--bg);
+    border:1px solid var(--sb);border-radius:3px;padding:2px 6px;cursor:pointer}
+#lb:hover{background:var(--hov)}
+#login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
+       border-bottom:1px solid rgba(128,128,128,.3)}
+#login input{font:inherit;color:var(--fg);background:var(--bg);
+       border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
+#login input:focus{outline:none;border-color:var(--fg)}
+#login .row{display:flex;gap:4px}
+#login button{font:inherit;color:var(--fg);background:var(--bg);
+       border:1px solid var(--sb);border-radius:3px;padding:2px 8px;cursor:pointer}
+#login button:hover{background:var(--hov)}
+#ls{font-size:8pt;min-height:1.2em;white-space:normal;word-break:break-all}
+#ls.success{color:#3a3}#ls.failure{color:#d44}
+#w{flex:1;min-height:0;overflow-y:auto}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -2916,7 +2995,21 @@ tr.sel td{background:var(--sel)}
 #w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
 #w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
 </style></head><body>
-<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span></div>
+<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">ﾛｸﾞｲﾝ</button></div>
+<div id="login" hidden>
+<input id="lm" type="text" placeholder="メールアドレス" autocomplete="off">
+<input id="lp" type="password" placeholder="パスワード" autocomplete="off">
+<div class="row" id="otprow" hidden>
+  <input id="lo" type="text" inputmode="numeric" placeholder="2段階認証コード" style="flex:1">
+  <button id="losend">送信</button>
+</div>
+<div class="row">
+  <button id="ldo">ログイン</button>
+  <button id="lcancel">中止</button>
+  <button id="lclear" style="margin-left:auto">情報削除</button>
+</div>
+<div id="ls"></div>
+</div>
 <div id="w"><table>
 <colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
 <thead><tr>
@@ -2963,9 +3056,31 @@ pi.addEventListener('keydown',e=>{
     e.preventDefault();
   }
 });
+const $=id=>document.getElementById(id);
+function setLogin(s,msg){
+  const ls=$('ls');ls.textContent=msg||'';
+  ls.className=(s==='success'||s==='failure')?s:'';
+  $('otprow').hidden=(s!=='need2fa');
+  if(s==='need2fa')$('lo').focus();
+  if(s==='success'||s==='failure')$('lo').value='';
+}
+$('lb').addEventListener('click',()=>{$('login').hidden=!$('login').hidden;});
+$('ldo').addEventListener('click',()=>{
+  const mail=$('lm').value.trim(),password=$('lp').value;
+  if(mail===''||password===''){setLogin('failure','メールとパスワードを入力してください。');return;}
+  setLogin('progress','');window.chrome.webview.postMessage({cmd:'login',mail,password});
+});
+$('losend').addEventListener('click',()=>{
+  const otp=$('lo').value.trim();
+  if(otp!=='')window.chrome.webview.postMessage({cmd:'loginOtp',otp});
+});
+$('lo').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){$('losend').click();e.preventDefault();}});
+$('lclear').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginClear'});});
+$('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
+  else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
@@ -3051,14 +3166,23 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                             wil::unique_cotaskmem_string msg;
                             args->get_WebMessageAsJson(msg.put());
                             try {
-                                std::wstring ws(msg.get());
-                                std::string s(ws.begin(), ws.end());
-                                auto j = nlohmann::json::parse(s);
+                                // Proper wide->UTF-8 (naive truncation would corrupt
+                                // Japanese in posted comments / credentials).
+                                auto j = nlohmann::json::parse(wstrToUTF8String(msg.get()));
                                 auto cmd = j["cmd"].get<std::string>();
                                 if (cmd == "select")
                                     this->SwitchToMomentumChannelById(j["id"].get<int>());
                                 else if (cmd == "post")
                                     this->PostComment(utf8StrToWString(j["text"].get<std::string>().c_str()));
+                                else if (cmd == "login")
+                                    this->m_jkcnslLogin.Login(this->GetJkcnslPath(),
+                                        j["mail"].get<std::string>(), j["password"].get<std::string>());
+                                else if (cmd == "loginOtp")
+                                    this->m_jkcnslLogin.SubmitOtp(j["otp"].get<std::string>());
+                                else if (cmd == "loginClear")
+                                    this->m_jkcnslLogin.ClearLogin(this->GetJkcnslPath());
+                                else if (cmd == "loginCancel")
+                                    this->m_jkcnslLogin.Cancel();
                             } catch (...) {}
                             return S_OK;
                         }

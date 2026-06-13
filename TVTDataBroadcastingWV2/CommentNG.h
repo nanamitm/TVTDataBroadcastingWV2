@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "pch.h"
 #include "CommentFetcher.h"
 #include <regex>

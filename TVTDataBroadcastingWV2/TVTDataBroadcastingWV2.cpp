@@ -16,6 +16,7 @@
 #include "NetworkServiceIDTable.h"
 #include "JkcnslReader.h"
 #include "JkcnslLogin.h"
+#include "JkcnslSettings.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -1866,6 +1867,19 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                     PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
                         new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
                 });
+                // Configure the comment source (jkcnsl cache_server_url) before
+                // connecting. "(keep)" leaves jkcnsl's own setting untouched;
+                // "nico"/"none" clears it (direct nicovideo path).
+                {
+                    auto cacheUrlW = this->GetIniItem(L"CommentCacheServerUrl", L"(keep)");
+                    if (cacheUrlW != L"(keep)")
+                    {
+                        std::string url;
+                        if (cacheUrlW != L"nico" && cacheUrlW != L"none")
+                            url = wstrToUTF8String(cacheUrlW.c_str());
+                        JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), url);
+                    }
+                }
                 this->UpdateCommentChannel();
             }
         }

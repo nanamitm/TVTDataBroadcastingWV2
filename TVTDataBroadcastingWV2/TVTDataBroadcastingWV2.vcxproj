@@ -252,6 +252,7 @@
     <ClInclude Include="CommentNG.h" />
     <ClInclude Include="JkcnslReader.h" />
     <ClInclude Include="JkcnslLogin.h" />
+    <ClInclude Include="JkcnslSettings.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
     <ClInclude Include="OneSeg.h" />
@@ -264,6 +265,7 @@
     <ClCompile Include="CommentNG.cpp" />
     <ClCompile Include="JkcnslReader.cpp" />
     <ClCompile Include="JkcnslLogin.cpp" />
+    <ClCompile Include="JkcnslSettings.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
     <ClCompile Include="OneSeg.cpp" />

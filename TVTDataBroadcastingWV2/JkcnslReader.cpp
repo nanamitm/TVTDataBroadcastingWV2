@@ -52,11 +52,26 @@ static bool IsValidJkChannel(const std::string& ch)
     return true;
 }
 
+void JkcnslReader::SetConnected(bool connected)
+{
+    if (m_connected.exchange(connected) != connected && m_connCallback) {
+        m_connCallback(connected);
+    }
+}
+
 void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf)
 {
     for (DWORD i = 0; i < size; i++) {
         if (buf[i] == '\n') {
             if (!lineBuf.empty() && lineBuf.back() == '\r') lineBuf.pop_back();
+            // Track connection state by jkcnsl's line markers:
+            //   '*' stream opened, '-' data flowing => connected
+            //   '.'/'!'/'?' stream closed => disconnected
+            if (!lineBuf.empty()) {
+                char c0 = lineBuf[0];
+                if (c0 == '*' || c0 == '-')              SetConnected(true);
+                else if (c0 == '.' || c0 == '!' || c0 == '?') SetConnected(false);
+            }
             Comment c;
             if (ParseChatLine(lineBuf, c) && m_callback) {
                 std::vector<Comment> batch;
@@ -136,6 +151,7 @@ void JkcnslReader::ReadLoop()
 
     CloseHandle(ioEvent);
     JkDbg("ReadLoop ended");
+    SetConnected(false);
     m_running = false;
 }
 

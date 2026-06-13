@@ -33,6 +33,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_COMMENTS (WM_APP + 5)
 #define WM_APP_LOGIN (WM_APP + 6)
 #define WM_APP_AUTH (WM_APP + 7)
+#define WM_APP_CONN (WM_APP + 8)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -392,6 +393,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void RefreshAuthState();   // query jkcnsl login state on a worker thread
     void PushAuthState();      // push the cached auth state to the momentum panel
     bool m_loggedIn = false;
+    bool m_streamConnected = false;
     std::wstring m_loginMail;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
@@ -967,6 +969,12 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
         pThis->m_loggedIn = info->loggedIn;
         pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
+        pThis->PushAuthState();
+        break;
+    }
+    case WM_APP_CONN:
+    {
+        pThis->m_streamConnected = (wParam != 0);
         pThis->PushAuthState();
         break;
     }
@@ -1876,6 +1884,9 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
                 });
+                this->m_jkcnslReader.SetConnectionCallback([this](bool connected) {
+                    PostMessageW(this->hMessageWnd, WM_APP_CONN, connected ? 1 : 0, 0);
+                });
                 this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
                     PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
                         new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
@@ -2242,6 +2253,7 @@ void CDataBroadcastingWV2::PushAuthState()
     if (!this->momentumWebView || !this->momentumWebViewReady) return;
     nlohmann::json j{ { "type", "authState" },
                       { "loggedIn", this->m_loggedIn },
+                      { "connected", this->m_streamConnected },
                       { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
     std::string script = "_update(" + j.dump() + ")";
     this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
@@ -3115,17 +3127,20 @@ pi.addEventListener('keydown',e=>{
 });
 const $=id=>document.getElementById(id);
 let authKnown=false;
-function setAuth(loggedIn,mail){
+function setAuth(loggedIn,connected,mail){
   authKnown=true;
-  pi.disabled=!loggedIn;
-  pi.classList.toggle('authin',loggedIn);
-  pi.placeholder=loggedIn?'コメントを投稿 (Enterで送信)':'ログインするとコメントを投稿できます';
+  const canPost=loggedIn&&connected;
+  pi.disabled=!canPost;
+  pi.classList.toggle('authin',canPost);
+  pi.placeholder = !loggedIn ? 'ログインするとコメントを投稿できます'
+                 : !connected ? '接続中…'
+                 : 'コメントを投稿 (Enterで送信)';
   const lb=$('lb');
   lb.classList.toggle('authin',loggedIn);
   lb.title=loggedIn?('ログイン中'+(mail?': '+mail:'')):'ニコニコログイン';
 }
 // 状態が分かるまでは無効化しておく
-pi.disabled=true;pi.placeholder='ログイン状態を確認中…';
+pi.disabled=true;pi.placeholder='状態を確認中…';
 function setLogin(s,msg){
   const ls=$('ls');ls.textContent=msg||'';
   ls.className=(s==='success'||s==='failure')?s:'';
@@ -3150,7 +3165,7 @@ function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
-  else if(m.type==='authState'){setAuth(m.loggedIn,m.mail);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);

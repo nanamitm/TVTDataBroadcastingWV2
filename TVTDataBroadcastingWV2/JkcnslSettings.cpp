@@ -91,6 +91,31 @@ constexpr DWORD kTimeoutMs = 8000;
     return ok && !err;
 }
 
+/*static*/ bool JkcnslSettings::QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out)
+{
+    out = LoginInfo{};
+    std::string output;
+    // "S" with no argument dumps all settings as "-key value" lines.
+    if (!RunCommand(jkcnslPath, "S", &output)) return false;
+
+    size_t start = 0;
+    while (start <= output.size()) {
+        size_t nl = output.find('\n', start);
+        std::string line = output.substr(start, (nl == std::string::npos ? output.size() : nl) - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        auto sp = line.find(' ');
+        std::string key = (sp == std::string::npos) ? line : line.substr(0, sp);
+        std::string val = (sp == std::string::npos) ? ""   : line.substr(sp + 1);
+        if (key == "nicovideo_cookie" && !val.empty()) out.loggedIn = true;
+        else if (key == "mail")                        out.mail = val;
+
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return true;
+}
+
 /*static*/ bool JkcnslSettings::SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url)
 {
     // "Scache_server_url {url}" sets it; "Scache_server_url" (no arg) clears it.

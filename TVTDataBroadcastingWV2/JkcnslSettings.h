@@ -8,6 +8,15 @@
 class JkcnslSettings
 {
 public:
+    struct LoginInfo {
+        bool        loggedIn = false; // a nicovideo_cookie is stored
+        std::string mail;             // configured login mail (may be empty)
+    };
+
+    // Query jkcnsl's current login state ("S" with no argument). Returns false
+    // if the query itself failed (jkcnsl missing / no response).
+    static bool QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out);
+
     // Run a single jkcnsl command (e.g. "Scache_server_url https://...") then
     // quit. Returns true if jkcnsl acknowledged it with a '.' terminator.
     // Optionally captures jkcnsl's '-' output lines (without the leading '-').

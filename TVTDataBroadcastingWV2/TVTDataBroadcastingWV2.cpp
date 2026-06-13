@@ -32,6 +32,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_ENABLE_PLUGIN (WM_APP + 4)
 #define WM_APP_COMMENTS (WM_APP + 5)
 #define WM_APP_LOGIN (WM_APP + 6)
+#define WM_APP_AUTH (WM_APP + 7)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -388,6 +389,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::wstring   m_lastPostComm;
     std::wstring GetJkcnslPath() const;
     void OnLoginEvent(JkcnslLogin::Event ev, const std::string& message);
+    void RefreshAuthState();   // query jkcnsl login state on a worker thread
+    void PushAuthState();      // push the cached auth state to the momentum panel
+    bool m_loggedIn = false;
+    std::wstring m_loginMail;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
     void SwitchToMomentumChannel(int index);
@@ -955,6 +960,14 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     {
         auto ev = std::unique_ptr<JkcnslLoginEvent>(reinterpret_cast<JkcnslLoginEvent*>(wParam));
         pThis->OnLoginEvent(ev->event, ev->message);
+        break;
+    }
+    case WM_APP_AUTH:
+    {
+        auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
+        pThis->m_loggedIn = info->loggedIn;
+        pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
+        pThis->PushAuthState();
         break;
     }
     }
@@ -1880,6 +1893,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                         JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), url);
                     }
                 }
+                this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
         }
@@ -2203,6 +2217,32 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
     nlohmann::json j{ { "type", "loginStatus" },
                       { "state", wstrToUTF8String(state) },
                       { "message", wstrToUTF8String(text.c_str()) } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+
+    // A completed login/clear changes the authenticated state.
+    if (ev == JkcnslLogin::Event::Success) this->RefreshAuthState();
+}
+
+// Queries jkcnsl's login state on a detached worker (the query spawns jkcnsl,
+// which can take a second), then marshals the result back via WM_APP_AUTH.
+void CDataBroadcastingWV2::RefreshAuthState()
+{
+    std::wstring path = this->GetJkcnslPath();
+    HWND hwnd = this->hMessageWnd;
+    std::thread([path, hwnd]() {
+        JkcnslSettings::LoginInfo info;
+        JkcnslSettings::QueryLogin(path, info);
+        PostMessageW(hwnd, WM_APP_AUTH, reinterpret_cast<WPARAM>(new JkcnslSettings::LoginInfo(info)), 0);
+    }).detach();
+}
+
+void CDataBroadcastingWV2::PushAuthState()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json j{ { "type", "authState" },
+                      { "loggedIn", this->m_loggedIn },
+                      { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
     std::string script = "_update(" + j.dump() + ")";
     this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
 }
@@ -2978,11 +3018,14 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 #pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #pi:focus{outline:none;border-color:var(--fg)}
+#pi.authin{border-color:#3a8a3a;background:rgba(60,160,60,.14)}
+#pi:disabled{opacity:.5;cursor:not-allowed;background:rgba(128,128,128,.18)}
 #pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
 #pr.ok{color:#3a3}#pr.error{color:#d44}
 #lb{flex:0 0 auto;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 6px;cursor:pointer}
 #lb:hover{background:var(--hov)}
+#lb.authin{border-color:#3a8a3a;color:#3a8a3a}
 #login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
        border-bottom:1px solid rgba(128,128,128,.3)}
 #login input{font:inherit;color:var(--fg);background:var(--bg);
@@ -3071,6 +3114,18 @@ pi.addEventListener('keydown',e=>{
   }
 });
 const $=id=>document.getElementById(id);
+let authKnown=false;
+function setAuth(loggedIn,mail){
+  authKnown=true;
+  pi.disabled=!loggedIn;
+  pi.classList.toggle('authin',loggedIn);
+  pi.placeholder=loggedIn?'コメントを投稿 (Enterで送信)':'ログインするとコメントを投稿できます';
+  const lb=$('lb');
+  lb.classList.toggle('authin',loggedIn);
+  lb.title=loggedIn?('ログイン中'+(mail?': '+mail:'')):'ニコニコログイン';
+}
+// 状態が分かるまでは無効化しておく
+pi.disabled=true;pi.placeholder='ログイン状態を確認中…';
 function setLogin(s,msg){
   const ls=$('ls');ls.textContent=msg||'';
   ls.className=(s==='success'||s==='failure')?s:'';
@@ -3095,6 +3150,7 @@ function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.mail);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
@@ -3208,6 +3264,7 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                             this->momentumWebViewReady = true;
                             this->SendMomentumTheme();
                             this->SendMomentumChannels();
+                            this->PushAuthState();
                             return S_OK;
                         }
                     ).Get(), &token);

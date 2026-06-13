@@ -9,6 +9,8 @@ struct Comment {
     std::string color;    // CSS color name
     std::string position; // "naka" / "ue" / "shita"
     std::string size;     // "small" / "medium" / "big"
+    std::string userId;   // chat user_id (for user NG)
+    std::string mail;     // raw mail field (for command NG, e.g. "184")
     time_t date = 0;      // Unix timestamp
 };
 

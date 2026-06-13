@@ -249,6 +249,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CommentFetcher.h" />
+    <ClInclude Include="CommentNG.h" />
     <ClInclude Include="JkcnslReader.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
@@ -259,6 +260,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />
+    <ClCompile Include="CommentNG.cpp" />
     <ClCompile Include="JkcnslReader.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />

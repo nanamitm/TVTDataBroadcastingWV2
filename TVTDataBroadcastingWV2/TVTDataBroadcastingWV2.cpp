@@ -12,6 +12,7 @@
 #include "InputDialog.h"
 #include "OneSeg.h"
 #include "CommentFetcher.h"
+#include "CommentNG.h"
 #include "NetworkServiceIDTable.h"
 #include "JkcnslReader.h"
 #include <shellapi.h>
@@ -378,6 +379,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
+    CommentNG      m_commentNg;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
     void SwitchToMomentumChannel(int index);
@@ -1483,6 +1485,25 @@ void CDataBroadcastingWV2::InitWebView2()
                         }
                         this->SendMomentumChannels();
                     }
+                    else if (type == "addNgUser")
+                    {
+                        auto& v = a["userId"];
+                        if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
+                    }
+                    else if (type == "removeNgUser")
+                    {
+                        auto& v = a["userId"];
+                        if (v.is_string()) this->m_commentNg.RemoveUser(v.get<std::string>());
+                    }
+                    else if (type == "addNgRegex")
+                    {
+                        auto& v = a["pattern"];
+                        if (v.is_string()) this->m_commentNg.AddRegex(v.get<std::string>());
+                    }
+                    else if (type == "reloadNg")
+                    {
+                        this->m_commentNg.Load(this->iniFile);
+                    }
                 }
                 return S_OK;
             }).Get(), &token);
@@ -1822,6 +1843,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             OutputDebugStringA("\n");
             if (enableComment)
             {
+                this->m_commentNg.Load(this->iniFile);
                 this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
@@ -1947,6 +1969,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     nlohmann::json arr = nlohmann::json::array();
     for (auto& c : comments)
     {
+        if (this->m_commentNg.IsNG(c)) continue;
         arr.push_back({
             { "text",     c.text     },
             { "color",    c.color    },
@@ -1955,6 +1978,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
             { "date",     c.date     },
         });
     }
+    if (arr.empty()) return;
     nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
     std::stringstream ss;
     ss << msg;

@@ -46,7 +46,9 @@ static bool IsValidJkChannel(const std::string& ch)
     out.text = xml.substr(contentStart + 1, contentEnd - contentStart - 1);
     if (out.text.empty()) return false;
 
-    CommentFetcher::ParseMail(GetXmlAttr(xml, "mail"), out.color, out.position, out.size);
+    out.userId = GetXmlAttr(xml, "user_id");
+    out.mail   = GetXmlAttr(xml, "mail");
+    CommentFetcher::ParseMail(out.mail, out.color, out.position, out.size);
     return true;
 }
 

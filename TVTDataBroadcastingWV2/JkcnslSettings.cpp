@@ -155,6 +155,7 @@ constexpr DWORD kTimeoutMs = 8000;
         std::string val = (sp == std::string::npos) ? ""   : line.substr(sp + 1);
         if (key == "nicovideo_cookie" && !val.empty()) out.loggedIn = true;
         else if (key == "mail")                        out.mail = val;
+        else if (key == "cache_server_url")            out.cacheServerUrl = val;
 
         if (nl == std::string::npos) break;
         start = nl + 1;

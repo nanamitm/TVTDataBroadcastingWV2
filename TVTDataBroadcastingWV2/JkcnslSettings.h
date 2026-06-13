@@ -11,6 +11,7 @@ public:
     struct LoginInfo {
         bool        loggedIn = false; // a nicovideo_cookie is stored
         std::string mail;             // configured login mail (may be empty)
+        std::string cacheServerUrl;   // jkcnsl cache_server_url (empty => nicovideo)
     };
 
     // Query jkcnsl's current login state ("S" with no argument). Returns false

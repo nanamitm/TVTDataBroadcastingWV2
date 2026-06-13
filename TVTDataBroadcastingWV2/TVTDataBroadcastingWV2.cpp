@@ -394,6 +394,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void PushAuthState();      // push the cached auth state to the momentum panel
     bool m_loggedIn = false;
     bool m_streamConnected = false;
+    bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
     std::wstring m_loginMail;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
@@ -969,6 +970,7 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
         pThis->m_loggedIn = info->loggedIn;
         pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
+        pThis->m_postTargetRefuge = !info->cacheServerUrl.empty();
         pThis->PushAuthState();
         break;
     }
@@ -2251,9 +2253,16 @@ void CDataBroadcastingWV2::RefreshAuthState()
 void CDataBroadcastingWV2::PushAuthState()
 {
     if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    // Post box colour by target (NicoJK-style): nico vs refuge, INI-configurable.
+    std::wstring nicoColW   = this->GetIniItem(L"NicoEditBoxColor",   L"#bbbbff");
+    std::wstring refugeColW = this->GetIniItem(L"RefugeEditBoxColor", L"#ffbbbb");
+    std::wstring boxColW    = this->m_postTargetRefuge ? refugeColW : nicoColW;
+
     nlohmann::json j{ { "type", "authState" },
                       { "loggedIn", this->m_loggedIn },
                       { "connected", this->m_streamConnected },
+                      { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
+                      { "boxColor", wstrToUTF8String(boxColW.c_str()) },
                       { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
     std::string script = "_update(" + j.dump() + ")";
     this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
@@ -3026,11 +3035,10 @@ static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta 
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
      height:100vh;display:flex;flex-direction:column}
-#post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-bottom:1px solid rgba(128,128,128,.3)}
+#post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-top:1px solid rgba(128,128,128,.3)}
 #pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #pi:focus{outline:none;border-color:var(--fg)}
-#pi.authin{border-color:#3a8a3a;background:rgba(60,160,60,.14)}
 #pi:disabled{opacity:.5;cursor:not-allowed;background:rgba(128,128,128,.18)}
 #pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
 #pr.ok{color:#3a3}#pr.error{color:#d44}
@@ -3039,7 +3047,7 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 #lb:hover{background:var(--hov)}
 #lb.authin{border-color:#3a8a3a;color:#3a8a3a}
 #login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
-       border-bottom:1px solid rgba(128,128,128,.3)}
+       border-top:1px solid rgba(128,128,128,.3)}
 #login input{font:inherit;color:var(--fg);background:var(--bg);
        border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #login input:focus{outline:none;border-color:var(--fg)}
@@ -3064,7 +3072,16 @@ tr.sel td{background:var(--sel)}
 #w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
 #w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
 </style></head><body>
-<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">ﾛｸﾞｲﾝ</button></div>
+<div id="w"><table>
+<colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
+<thead><tr>
+<th onclick="srt(0)">実況番号<span id="a0"></span></th>
+<th onclick="srt(1)">局名<span id="a1"></span></th>
+<th onclick="srt(2)">勢い<span id="a2">▼</span></th>
+<th onclick="srt(3)">番組<span id="a3"></span></th>
+</tr></thead>
+<tbody id="tb"></tbody>
+</table></div>
 <div id="login" hidden>
 <input id="lm" type="text" placeholder="メールアドレス" autocomplete="off">
 <input id="lp" type="password" placeholder="パスワード" autocomplete="off">
@@ -3079,16 +3096,7 @@ tr.sel td{background:var(--sel)}
 </div>
 <div id="ls"></div>
 </div>
-<div id="w"><table>
-<colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
-<thead><tr>
-<th onclick="srt(0)">実況番号<span id="a0"></span></th>
-<th onclick="srt(1)">局名<span id="a1"></span></th>
-<th onclick="srt(2)">勢い<span id="a2">▼</span></th>
-<th onclick="srt(3)">番組<span id="a3"></span></th>
-</tr></thead>
-<tbody id="tb"></tbody>
-</table></div>
+<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">ﾛｸﾞｲﾝ</button></div>
 <script>
 let ch=[],sc=2,sa=false,sid=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
@@ -3127,20 +3135,31 @@ pi.addEventListener('keydown',e=>{
 });
 const $=id=>document.getElementById(id);
 let authKnown=false;
-function setAuth(loggedIn,connected,mail){
+function pickFg(hex){
+  let h=(hex||'').replace('#','');
+  if(h.length===3)h=h.split('').map(c=>c+c).join('');
+  const r=parseInt(h.substr(0,2),16)||0,g=parseInt(h.substr(2,2),16)||0,b=parseInt(h.substr(4,2),16)||0;
+  return (r*299+g*587+b*114)/1000>=160?'#000':'#fff';
+}
+function setAuth(loggedIn,connected,mail,boxColor){
   authKnown=true;
-  const canPost=loggedIn&&connected;
-  pi.disabled=!canPost;
-  pi.classList.toggle('authin',canPost);
-  pi.placeholder = !loggedIn ? 'ログインするとコメントを投稿できます'
-                 : !connected ? '接続中…'
-                 : 'コメントを投稿 (Enterで送信)';
+  // NicoJK流: 未接続なら投稿欄を隠す
+  pi.style.display=connected?'':'none';
+  if(connected){
+    pi.disabled=!loggedIn;
+    if(loggedIn&&boxColor){
+      pi.style.background=boxColor;pi.style.color=pickFg(boxColor);pi.style.borderColor=boxColor;
+    }else{
+      pi.style.background='';pi.style.color='';pi.style.borderColor='';
+    }
+    pi.placeholder=loggedIn?'コメントを投稿 (Enterで送信)':'ログインが必要です';
+  }
   const lb=$('lb');
   lb.classList.toggle('authin',loggedIn);
   lb.title=loggedIn?('ログイン中'+(mail?': '+mail:'')):'ニコニコログイン';
 }
-// 状態が分かるまでは無効化しておく
-pi.disabled=true;pi.placeholder='状態を確認中…';
+// 状態が分かるまで投稿欄は隠す
+pi.style.display='none';
 function setLogin(s,msg){
   const ls=$('ls');ls.textContent=msg||'';
   ls.className=(s==='success'||s==='failure')?s:'';
@@ -3165,7 +3184,7 @@ function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
-  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);

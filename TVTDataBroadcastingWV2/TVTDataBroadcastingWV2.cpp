@@ -3127,7 +3127,7 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 #cmdpop{position:absolute;left:4px;right:4px;bottom:34px;z-index:10;display:flex;gap:6px;padding:6px;
         background:var(--bg);border:1px solid var(--sb);border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
 #cmdpop .po{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
-.pg{display:flex;align-items:center;gap:4px;min-height:20px}
+.pg{display:flex;align-items:center;gap:4px;min-height:20px;flex-wrap:wrap}
 .pl{width:3em;flex-shrink:0;opacity:.7;font-size:9pt;text-align:right}
 .cg{display:grid;grid-template-columns:repeat(5,20px);gap:3px}
 .cc{width:20px;height:16px;border-radius:3px;cursor:pointer;border:1px solid var(--sb);
@@ -3225,7 +3225,8 @@ tr.sel td{background:var(--sel)}
 <div class="po">
 <div class="pg"><span class="pl">色</span><div class="cg"><div class="cc c0 on" data-c="" title="白"></div><div class="cc c1" data-c="red" title="赤"></div><div class="cc c2" data-c="pink" title="ピンク"></div><div class="cc c3" data-c="orange" title="橙"></div><div class="cc c4" data-c="yellow" title="黄"></div><div class="cc c5" data-c="green" title="緑"></div><div class="cc c6" data-c="cyan" title="水色"></div><div class="cc c7" data-c="blue" title="青"></div><div class="cc c8" data-c="purple" title="紫"></div><div class="cc c9" data-c="black" title="黒"></div></div></div>
 <div class="pg"><span class="pl">位置</span><button class="tb on" data-p="">流れる</button><button class="tb" data-p="ue">上</button><button class="tb" data-p="shita">下</button></div>
-<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button><button id="anon" class="tb" title="184(匿名)で投稿">184</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
+<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button></div>
+<div class="pg"><span class="pl"></span><button id="anon" class="tb" title="184(匿名)で投稿">匿名(184)</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
 </div>
 <div id="pv"><div id="pt" class="naka">コメント</div></div>
 </div>

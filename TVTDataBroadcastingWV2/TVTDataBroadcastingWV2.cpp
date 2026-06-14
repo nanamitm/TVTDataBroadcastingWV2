@@ -2021,25 +2021,49 @@ void CDataBroadcastingWV2::UpdateVolume()
 
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
-    if (!this->webView || !this->webViewLoaded || comments.empty()) return;
+    if (comments.empty()) return;
+
+    // arr  = comments to render on the canvas (NG-filtered)
+    // logArr = all comments for the panel log list (NG ones flagged)
     nlohmann::json arr = nlohmann::json::array();
+    nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
-        if (this->m_commentNg.IsNG(c)) continue;
-        arr.push_back({
-            { "text",     c.text     },
-            { "color",    c.color    },
-            { "position", c.position },
-            { "size",     c.size     },
-            { "date",     c.date     },
+        bool ng = this->m_commentNg.IsNG(c);
+        if (!ng)
+        {
+            arr.push_back({
+                { "text",     c.text     },
+                { "color",    c.color    },
+                { "position", c.position },
+                { "size",     c.size     },
+                { "date",     c.date     },
+            });
+        }
+        logArr.push_back({
+            { "text",   c.text   },
+            { "color",  c.color  },
+            { "userId", c.userId },
+            { "date",   c.date   },
+            { "ng",     ng       },
         });
     }
-    if (arr.empty()) return;
-    nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+
+    // Flowing comments -> data-broadcasting WebView canvas.
+    if (this->webView && this->webViewLoaded && !arr.empty())
+    {
+        nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
+        std::stringstream ss; ss << msg;
+        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+    }
+
+    // Comment log list -> momentum panel WebView.
+    if (this->momentumWebView && this->momentumWebViewReady)
+    {
+        nlohmann::json m{ { "type", "commentLog" }, { "items", logArr } };
+        std::string script = "_update(" + m.dump() + ")";
+        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    }
 }
 
 // Post a comment to the jikkyo server via the open jkcnsl stream.
@@ -3126,6 +3150,19 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 #ls{font-size:8pt;min-height:1.2em;white-space:normal;word-break:break-all}
 #ls.success{color:#3a3}#ls.failure{color:#d44}
 #w{flex:1;min-height:0;overflow-y:auto}
+#tabs{display:flex;flex:0 0 auto;border-bottom:1px solid rgba(128,128,128,.3)}
+#tabs button{flex:1;font:inherit;color:var(--fg);background:transparent;border:none;
+   padding:3px 0;cursor:pointer;opacity:.6;border-bottom:2px solid transparent}
+#tabs button.on{opacity:1;border-bottom-color:var(--fg);font-weight:bold}
+#tabs button:hover{background:var(--hov)}
+#log{flex:1;min-height:0;overflow-y:auto;font-size:9pt;padding:1px 0}
+#log::-webkit-scrollbar{width:8px}
+#log::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
+.le{display:flex;gap:5px;padding:1px 5px;white-space:nowrap}
+.le:hover{background:var(--hov)}
+.le .lt{flex:0 0 auto;opacity:.55;font-size:8pt;font-variant-numeric:tabular-nums}
+.le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -3140,6 +3177,7 @@ tr.sel td{background:var(--sel)}
 #w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
 #w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
 </style></head><body>
+<div id="tabs"><button id="tabF" class="on">勢い</button><button id="tabL">ログ</button></div>
 <div id="w"><table>
 <colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
 <thead><tr>
@@ -3150,6 +3188,7 @@ tr.sel td{background:var(--sel)}
 </tr></thead>
 <tbody id="tb"></tbody>
 </table></div>
+<div id="log" hidden></div>
 <div id="login" hidden>
 <input id="lm" type="text" placeholder="メールアドレス" autocomplete="off">
 <input id="lp" type="password" placeholder="パスワード" autocomplete="off">
@@ -3289,9 +3328,42 @@ $('losend').addEventListener('click',()=>{
 $('lo').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){$('losend').click();e.preventDefault();}});
 $('lclear').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginClear'});});
 $('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
+// コメントログ一覧 / タブ切替
+const logEl=$('log');
+let atBottom=true;
+logEl.addEventListener('scroll',()=>{atBottom=logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-8;});
+function showTab(f){
+  $('tabF').classList.toggle('on',f);$('tabL').classList.toggle('on',!f);
+  $('w').hidden=!f;logEl.hidden=f;
+  if(!f&&atBottom)logEl.scrollTop=logEl.scrollHeight;
+}
+$('tabF').addEventListener('click',()=>showTab(true));
+$('tabL').addEventListener('click',()=>showTab(false));
+function logAdd(items){
+  const frag=document.createDocumentFragment();
+  (items||[]).forEach(d=>{
+    const e=document.createElement('div');e.className='le'+(d.ng?' ng':'');
+    if(d.userId)e.dataset.u=d.userId;
+    const tm=new Date((d.date||0)*1000);
+    const lt=document.createElement('span');lt.className='lt';
+    lt.textContent=('0'+tm.getHours()).slice(-2)+':'+('0'+tm.getMinutes()).slice(-2)+':'+('0'+tm.getSeconds()).slice(-2);
+    const lx=document.createElement('span');lx.className='lx';
+    if(d.color)lx.style.color=d.color;lx.textContent=d.text;
+    e.append(lt,lx);frag.appendChild(e);
+  });
+  logEl.appendChild(frag);
+  while(logEl.childElementCount>500)logEl.removeChild(logEl.firstChild);
+  if(!logEl.hidden&&atBottom)logEl.scrollTop=logEl.scrollHeight;
+}
+logEl.addEventListener('contextmenu',e=>{
+  e.preventDefault();const it=e.target.closest('.le');if(!it||!it.dataset.u)return;
+  if(confirm('このユーザをNGに追加しますか?'))
+    window.chrome.webview.postMessage({cmd:'ngUser',userId:it.dataset.u});
+});
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
+  else if(m.type==='commentLog'){logAdd(m.items);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
   else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
@@ -3407,6 +3479,11 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 {
                                     this->SetIniItem(L"MomentumSortColumn", std::to_wstring(j["col"].get<int>()).c_str());
                                     this->SetIniItem(L"MomentumSortAscending", j["asc"].get<bool>() ? L"1" : L"0");
+                                }
+                                else if (cmd == "ngUser")
+                                {
+                                    auto& v = j["userId"];
+                                    if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
                                 }
                             } catch (...) {}
                             return S_OK;

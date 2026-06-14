@@ -36,6 +36,11 @@ void CommentLogWriter::Close()
 
 bool CommentLogWriter::Open(int jkID, time_t date)
 {
+    // Ensure the base folder exists, then the jk{ID} subfolder.
+    if (GetFileAttributesW(m_folder.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        !CreateDirectoryW(m_folder.c_str(), nullptr)) {
+        return false;
+    }
     wchar_t dir[64];
     swprintf_s(dir, L"\\jk%d", jkID);
     std::wstring path = m_folder + dir;

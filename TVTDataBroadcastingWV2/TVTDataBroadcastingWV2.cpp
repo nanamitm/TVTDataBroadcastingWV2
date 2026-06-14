@@ -19,6 +19,7 @@
 #include "JkcnslSettings.h"
 #include "JikkyoStreamTable.h"
 #include "CommentLogWriter.h"
+#include "CommentLogReader.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -53,6 +54,7 @@ struct DeferralResponse
 
 #define IDT_SHOW_EVR_WINDOW 1
 #define IDT_RESIZE 2
+#define IDT_PLAYBACK 3
 
 struct UsedKey
 {
@@ -441,8 +443,14 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     CommentNG      m_commentNg;
     JikkyoStreamTable m_chTable;
     CommentLogWriter  m_logWriter;
+    CommentLogReader  m_logReader;
+    std::wstring   m_logFolder;
+    bool           m_playbackActive = false; // playing recorded comments synced to TOT
+    long long      m_playbackLastT = 0;       // last emitted broadcast time
     int            m_currentJkID = -1; // jkID of the current channel (for logging)
     bool           m_mixing = false; // RefugeMixing active for the current stream
+    void PlaybackTick();
+    void ClearOnScreenComments();
     DWORD          m_lastPostTick = 0;
     std::wstring   m_lastPostComm;
     std::wstring GetJkcnslPath() const;
@@ -794,6 +802,11 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         {
             SetWindowPos(pThis->hVideoWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             KillTimer(hWnd, wParam);
+            break;
+        }
+        case IDT_PLAYBACK:
+        {
+            pThis->PlaybackTick();
             break;
         }
         case IDT_RESIZE:
@@ -1962,9 +1975,13 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 // separate from NicoJK's to avoid conflicts.
                 {
                     bool logEnabled = this->GetIniItem(L"LogfileMode", 0) != 0;
-                    auto logFolder  = this->GetIniItem(L"LogfileFolder", L"");
-                    this->m_logWriter.Configure(logFolder, logEnabled);
+                    this->m_logFolder = this->GetIniItem(L"LogfileFolder", L"");
+                    this->m_logWriter.Configure(this->m_logFolder, logEnabled);
                 }
+                // Playback sync: poll TOT and feed recorded comments during file
+                // playback. Needs a log folder.
+                if (!this->m_logFolder.empty())
+                    SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
                 this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
@@ -1974,6 +1991,9 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     {
         this->m_jkcnslReader.Stop();
         this->m_logWriter.Close();
+        KillTimer(this->hMessageWnd, IDT_PLAYBACK);
+        this->m_playbackActive = false;
+        this->m_playbackLastT = 0;
         this->EnablePanelButtons(false);
         this->Disable(false);
     }
@@ -2107,8 +2127,9 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
-        // Record raw chat to the logfile (live comments only, before replace/NG).
-        if (!c.past) this->m_logWriter.Write(this->m_currentJkID, c.date, c.raw);
+        // Record raw chat to the logfile (live comments only; never during playback).
+        if (!c.past && !this->m_playbackActive)
+            this->m_logWriter.Write(this->m_currentJkID, c.date, c.raw);
 
         this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
         // Past (backfilled) comments go to the log only, never flow on the canvas.
@@ -2211,6 +2232,64 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     }
 }
 
+void CDataBroadcastingWV2::ClearOnScreenComments()
+{
+    if (!this->webView) return;
+    nlohmann::json msg{ { "type", "clearComments" } };
+    std::stringstream ss; ss << msg;
+    this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+}
+
+// Polls the broadcast clock (TOT). When it is well behind real time we are
+// playing a recorded file: stop the live stream and feed recorded comments from
+// the log, synced to the advancing broadcast time.
+void CDataBroadcastingWV2::PlaybackTick()
+{
+    long long T = this->packetQueue.getBroadcastTime();
+    long long now = static_cast<long long>(time(nullptr));
+    bool shouldPlayback = (T != 0) && (now - T > 60); // >60s behind => playback
+
+    if (shouldPlayback && !this->m_playbackActive)
+    {
+        this->m_playbackActive = true;
+        this->m_jkcnslReader.Stop();   // stop live comments
+        this->m_logWriter.Close();     // stop recording during playback
+        this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
+        this->ClearOnScreenComments();
+        this->m_playbackLastT = 0;     // force initial seek
+    }
+    else if (!shouldPlayback && this->m_playbackActive)
+    {
+        this->m_playbackActive = false;
+        this->ClearOnScreenComments();
+        this->UpdateCommentChannel();  // resume live
+        return;
+    }
+
+    if (!this->m_playbackActive) return;
+
+    // Channel changed during playback -> reconfigure for the new jkID.
+    if (this->m_logReader.JkID() != this->m_currentJkID)
+    {
+        this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
+        this->m_playbackLastT = 0;
+        this->ClearOnScreenComments();
+    }
+
+    // Seek / jump (including the initial position).
+    if (this->m_playbackLastT == 0 || llabs(T - this->m_playbackLastT) > 5)
+    {
+        this->m_logReader.Seek(T);
+        this->ClearOnScreenComments();
+        this->m_playbackLastT = T;
+        return;
+    }
+
+    auto cs = this->m_logReader.Read(this->m_playbackLastT, T);
+    this->m_playbackLastT = T;
+    if (!cs.empty()) this->SendComments(std::move(cs));
+}
+
 std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId) const
 {
     // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
@@ -2266,6 +2345,8 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
     if (jkID <= 0) return;
     this->m_currentJkID = jkID;
+    // During playback the live stream stays off; PlaybackTick drives the log.
+    if (this->m_playbackActive) return;
 
     JikkyoStream st;
     bool have = this->m_chTable.Resolve(jkID, st);

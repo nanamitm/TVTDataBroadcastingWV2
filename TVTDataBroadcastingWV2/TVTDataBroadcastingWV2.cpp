@@ -3074,6 +3074,7 @@ void CDataBroadcastingWV2::UpdateCommentToggle()
 static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 :root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
 *{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none!important}
 body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
      height:100vh;display:flex;flex-direction:column}
 #post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-top:1px solid rgba(128,128,128,.3)}
@@ -3207,6 +3208,8 @@ function setLogin(s,msg){
   $('otprow').hidden=(s!=='need2fa');
   if(s==='need2fa')$('lo').focus();
   if(s==='success'||s==='failure')$('lo').value='';
+  // 成功したらフォームを自動的に畳む(メッセージを少し見せてから)
+  if(s==='success')setTimeout(()=>{$('login').hidden=true;},2000);
 }
 $('lb').addEventListener('click',()=>{$('login').hidden=!$('login').hidden;});
 $('ldo').addEventListener('click',()=>{

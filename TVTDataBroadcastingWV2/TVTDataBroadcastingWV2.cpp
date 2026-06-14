@@ -3076,12 +3076,38 @@ static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta 
 *{box-sizing:border-box;margin:0;padding:0}
 [hidden]{display:none!important}
 body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
-     height:100vh;display:flex;flex-direction:column}
+     height:100vh;display:flex;flex-direction:column;position:relative}
 #post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-top:1px solid rgba(128,128,128,.3)}
 #pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #pi:focus{outline:none;border-color:var(--fg)}
 #pi:disabled{opacity:.5;cursor:not-allowed;background:rgba(128,128,128,.18)}
+#cb{flex:0 0 auto;width:24px;height:24px;border:1px solid var(--sb);border-radius:3px;cursor:pointer;
+    background:var(--bg);color:var(--fg);font-size:12pt;line-height:1;display:flex;align-items:center;justify-content:center}
+#cb.open{background:var(--hov)}
+#cmdpop{position:absolute;left:4px;right:4px;bottom:34px;z-index:10;display:flex;gap:6px;padding:6px;
+        background:var(--bg);border:1px solid var(--sb);border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+#cmdpop .po{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.pg{display:flex;align-items:center;gap:4px;min-height:20px}
+.pl{width:3em;flex-shrink:0;opacity:.7;font-size:9pt;text-align:right}
+.cg{display:grid;grid-template-columns:repeat(5,20px);gap:3px}
+.cc{width:20px;height:16px;border-radius:3px;cursor:pointer;border:1px solid var(--sb);
+    display:flex;align-items:center;justify-content:center;font-size:9pt;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.65)}
+.cc.on::after{content:'✓'}
+.c0{background:#fff;border-color:#aaa;color:#111;text-shadow:none}
+.c1{background:#e00}.c2{background:#f7a}.c3{background:#f80}.c4{background:#fd0}
+.c5{background:#0b0}.c6{background:#0cc}.c7{background:#00e}.c8{background:#808}.c9{background:#222}
+.tb{flex-shrink:0;padding:0 4px;height:16px;line-height:16px;border:1px solid var(--fg);border-radius:3px;
+    cursor:pointer;background:transparent;color:var(--fg);font-size:9pt;opacity:.6}
+.tb.on{background:var(--fg);color:var(--bg);opacity:1}
+.db{margin-left:auto;flex-shrink:0;padding:0 6px;height:18px;border:1px solid var(--sb);border-radius:3px;
+    cursor:pointer;background:transparent;color:inherit;font-size:9pt;opacity:.75}
+#pv{width:92px;min-height:62px;flex-shrink:0;border:1px solid var(--sb);border-radius:4px;position:relative;overflow:hidden}
+#pv::before{content:'';position:absolute;left:8px;right:8px;top:50%;border-top:1px dashed rgba(128,128,128,.35)}
+#pt{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;max-width:80px;overflow:hidden;
+    text-overflow:ellipsis;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.28);font-size:11pt;color:var(--fg)}
+#pt.ue{top:6px}#pt.naka{top:50%;transform:translate(-50%,-50%)}#pt.shita{bottom:6px}
+#pt.big{font-size:14pt}#pt.small{font-size:9pt}
 #pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
 #pr.ok{color:#3a3}#pr.error{color:#d44}
 #lb{flex:0 0 auto;font:inherit;color:var(--fg);background:var(--bg);
@@ -3138,7 +3164,15 @@ tr.sel td{background:var(--sel)}
 </div>
 <div id="ls"></div>
 </div>
-<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
+<div id="cmdpop" hidden>
+<div class="po">
+<div class="pg"><span class="pl">色</span><div class="cg"><div class="cc c0 on" data-c="" title="白"></div><div class="cc c1" data-c="red" title="赤"></div><div class="cc c2" data-c="pink" title="ピンク"></div><div class="cc c3" data-c="orange" title="橙"></div><div class="cc c4" data-c="yellow" title="黄"></div><div class="cc c5" data-c="green" title="緑"></div><div class="cc c6" data-c="cyan" title="水色"></div><div class="cc c7" data-c="blue" title="青"></div><div class="cc c8" data-c="purple" title="紫"></div><div class="cc c9" data-c="black" title="黒"></div></div></div>
+<div class="pg"><span class="pl">位置</span><button class="tb on" data-p="">流れる</button><button class="tb" data-p="ue">上</button><button class="tb" data-p="shita">下</button></div>
+<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
+</div>
+<div id="pv"><div id="pt" class="naka">コメント</div></div>
+</div>
+<div id="post"><button id="cb" title="コマンド選択">▷</button><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
 <script>
 let ch=[],sc=2,sa=false,sid=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
@@ -3168,14 +3202,45 @@ function showResult(status,msg){
   prTimer=setTimeout(()=>{pr.textContent='';pr.className='';},4000);
 }
 const pi=document.getElementById('pi');
+let sc='',sp='',ss='';
 pi.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.isComposing){
     const t=pi.value;
-    if(t.trim()!==''){window.chrome.webview.postMessage({cmd:'post',text:t});pi.value='';}
+    if(t.trim()!==''){
+      const mail=[sc,sp,ss].filter(Boolean).join(' ');
+      window.chrome.webview.postMessage({cmd:'post',text:t,mail});
+      pi.value='';
+    }
     e.preventDefault();
   }
 });
 const $=id=>document.getElementById(id);
+// コマンド選択(色/位置/サイズ) ボタン
+(function(){
+  let open=false;
+  const TR={'':{'':'▷','big':'▶','small':'▹'},'ue':{'':'△','big':'▲','small':'▵'},'shita':{'':'▽','big':'▼','small':'▿'}};
+  const CL={'':'','red':'#d00','pink':'#e88','orange':'#e70','yellow':'#b90','green':'#090','cyan':'#088','blue':'#00b','purple':'#707','black':'#555'};
+  const pop=$('cmdpop'),cb=$('cb');
+  function upd(){
+    cb.textContent=TR[sp][ss];const col=CL[sc];
+    cb.style.color=col||'';cb.style.borderColor=col?col+'99':'';
+    const pt=$('pt');pt.style.color=col||'var(--fg)';pt.className=(sp||'naka')+(ss?' '+ss:'');
+  }
+  function close(){if(open){open=false;cb.classList.remove('open');pop.hidden=true;}}
+  cb.addEventListener('mousedown',e=>e.preventDefault());
+  cb.addEventListener('click',()=>{open=!open;cb.classList.toggle('open',open);pop.hidden=!open;});
+  pop.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();});
+  pi.addEventListener('focus',close);
+  $('w').addEventListener('mousedown',close);
+  const cc=[...pop.querySelectorAll('[data-c]')];
+  cc.forEach(b=>b.addEventListener('click',()=>{sc=b.dataset.c;cc.forEach(x=>x.classList.toggle('on',x.dataset.c===sc));upd();}));
+  const pb=[...pop.querySelectorAll('[data-p]')];
+  pb.forEach(b=>b.addEventListener('click',()=>{sp=b.dataset.p;pb.forEach(x=>x.classList.toggle('on',x.dataset.p===sp));upd();}));
+  const sb=[...pop.querySelectorAll('[data-s]')];
+  sb.forEach(b=>b.addEventListener('click',()=>{ss=b.dataset.s;sb.forEach(x=>x.classList.toggle('on',x.dataset.s===ss));upd();}));
+  $('db').addEventListener('click',()=>{sc='';sp='';ss='';cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
+  upd();
+})();
 let authKnown=false;
 function pickFg(hex){
   let h=(hex||'').replace('#','');
@@ -3322,7 +3387,13 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 if (cmd == "select")
                                     this->SwitchToMomentumChannelById(j["id"].get<int>());
                                 else if (cmd == "post")
-                                    this->PostComment(utf8StrToWString(j["text"].get<std::string>().c_str()));
+                                {
+                                    std::string text = j["text"].get<std::string>();
+                                    std::string mail = j.value("mail", "");
+                                    // Reuse PostComment's "[mail]text" parsing.
+                                    std::string input = mail.empty() ? text : ("[" + mail + "]" + text);
+                                    this->PostComment(utf8StrToWString(input.c_str()));
+                                }
                                 else if (cmd == "login")
                                     this->m_jkcnslLogin.Login(this->GetJkcnslPath(),
                                         j["mail"].get<std::string>(), j["password"].get<std::string>());

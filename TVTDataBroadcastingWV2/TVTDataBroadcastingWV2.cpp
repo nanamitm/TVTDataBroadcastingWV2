@@ -3094,9 +3094,9 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 .cc{width:20px;height:16px;border-radius:3px;cursor:pointer;border:1px solid var(--sb);
     display:flex;align-items:center;justify-content:center;font-size:9pt;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.65)}
 .cc.on::after{content:'✓'}
-.c0{background:#fff;border-color:#aaa;color:#111;text-shadow:none}
-.c1{background:#e00}.c2{background:#f7a}.c3{background:#f80}.c4{background:#fd0}
-.c5{background:#0b0}.c6{background:#0cc}.c7{background:#00e}.c8{background:#808}.c9{background:#222}
+.cc.c0{background:#fff;border-color:#aaa;color:#111;text-shadow:none}
+.cc.c1{background:#e00}.cc.c2{background:#f7a}.cc.c3{background:#f80}.cc.c4{background:#fd0}
+.cc.c5{background:#0b0}.cc.c6{background:#0cc}.cc.c7{background:#00e}.cc.c8{background:#808}.cc.c9{background:#222}
 .tb{flex-shrink:0;padding:0 4px;height:16px;line-height:16px;border:1px solid var(--fg);border-radius:3px;
     cursor:pointer;background:transparent;color:var(--fg);font-size:9pt;opacity:.6}
 .tb.on{background:var(--fg);color:var(--bg);opacity:1}

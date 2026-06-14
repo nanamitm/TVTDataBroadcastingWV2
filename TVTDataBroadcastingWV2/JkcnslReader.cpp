@@ -41,6 +41,7 @@ static void JkDbg(const char* msg)
 
     out.userId = GetXmlAttr(xml, "user_id");
     out.mail   = GetXmlAttr(xml, "mail");
+    out.raw    = xml; // the raw <chat ...>...</chat> tag (for logfile recording)
     out.refuge = xml.find("x_refuge=\"1\"") != std::string::npos
               || xml.find("nx_jikkyo=\"1\"") != std::string::npos;
     CommentFetcher::ParseMail(out.mail, out.color, out.position, out.size);

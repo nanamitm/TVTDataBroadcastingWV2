@@ -18,6 +18,7 @@
 #include "JkcnslLogin.h"
 #include "JkcnslSettings.h"
 #include "JikkyoStreamTable.h"
+#include "CommentLogWriter.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -388,6 +389,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     JkcnslLogin    m_jkcnslLogin;
     CommentNG      m_commentNg;
     JikkyoStreamTable m_chTable;
+    CommentLogWriter  m_logWriter;
+    int            m_currentJkID = -1; // jkID of the current channel (for logging)
     bool           m_mixing = false; // RefugeMixing active for the current stream
     DWORD          m_lastPostTick = 0;
     std::wstring   m_lastPostComm;
@@ -1904,6 +1907,13 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 // L{chatStreamID} would be routed through the cache).
                 this->m_chTable.Load(this->iniFile);
                 JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), "");
+                // Comment log recording (NicoJK-compatible). Use a folder
+                // separate from NicoJK's to avoid conflicts.
+                {
+                    bool logEnabled = this->GetIniItem(L"LogfileMode", 0) != 0;
+                    auto logFolder  = this->GetIniItem(L"LogfileFolder", L"");
+                    this->m_logWriter.Configure(logFolder, logEnabled);
+                }
                 this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
@@ -1912,6 +1922,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     else
     {
         this->m_jkcnslReader.Stop();
+        this->m_logWriter.Close();
         this->EnablePanelButtons(false);
         this->Disable(false);
     }
@@ -2030,6 +2041,9 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
+        // Record raw chat to the logfile (live comments only, before replace/NG).
+        if (!c.past) this->m_logWriter.Write(this->m_currentJkID, c.date, c.raw);
+
         this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
         // Past (backfilled) comments go to the log only, never flow on the canvas.
         if (!c.past && !this->m_commentNg.IsNG(c))
@@ -2185,6 +2199,7 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     int jkID = 0;
     for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
     if (jkID <= 0) return;
+    this->m_currentJkID = jkID;
 
     JikkyoStream st;
     bool have = this->m_chTable.Resolve(jkID, st);

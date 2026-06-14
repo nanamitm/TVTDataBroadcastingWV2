@@ -254,6 +254,7 @@
     <ClInclude Include="JkcnslLogin.h" />
     <ClInclude Include="JkcnslSettings.h" />
     <ClInclude Include="JikkyoStreamTable.h" />
+    <ClInclude Include="CommentLogWriter.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
     <ClInclude Include="OneSeg.h" />
@@ -268,6 +269,7 @@
     <ClCompile Include="JkcnslLogin.cpp" />
     <ClCompile Include="JkcnslSettings.cpp" />
     <ClCompile Include="JikkyoStreamTable.cpp" />
+    <ClCompile Include="CommentLogWriter.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
     <ClCompile Include="OneSeg.cpp" />

@@ -395,6 +395,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void OnLoginEvent(JkcnslLogin::Event ev, const std::string& message);
     void RefreshAuthState();   // query jkcnsl login state on a worker thread
     void PushAuthState();      // push the cached auth state to the momentum panel
+    void PushNgUsers();        // push the NG user list to the momentum panel
     bool m_loggedIn = false;
     bool m_streamConnected = false;
     bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
@@ -2029,8 +2030,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
-        bool ng = this->m_commentNg.IsNG(c);
-        if (!ng)
+        if (!this->m_commentNg.IsNG(c))
         {
             arr.push_back({
                 { "text",     c.text     },
@@ -2040,12 +2040,13 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
                 { "date",     c.date     },
             });
         }
+        // nb = NG by regex/command (fixed); user NG is applied live in the panel.
         logArr.push_back({
             { "text",   c.text   },
             { "color",  c.color  },
             { "userId", c.userId },
             { "date",   c.date   },
-            { "ng",     ng       },
+            { "nb",     this->m_commentNg.IsNGExceptUser(c) },
         });
     }
 
@@ -2329,6 +2330,16 @@ void CDataBroadcastingWV2::PushAuthState()
                       { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
                       { "boxColor", wstrToUTF8String(boxColW.c_str()) },
                       { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::PushNgUsers()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json users = nlohmann::json::array();
+    for (const auto& u : this->m_commentNg.GetUsers()) users.push_back(u);
+    nlohmann::json j{ { "type", "ngUsers" }, { "users", users } };
     std::string script = "_update(" + j.dump() + ")";
     this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
 }
@@ -3339,11 +3350,18 @@ function showTab(f){
 }
 $('tabF').addEventListener('click',()=>showTab(true));
 $('tabL').addEventListener('click',()=>showTab(false));
+let ngUsers=new Set();
+function applyNg(e){
+  const u=e.dataset.u;
+  const ng=e.dataset.nb==='1'||(u&&ngUsers.has(u));
+  e.classList.toggle('ng',ng);
+}
 function logAdd(items){
   const frag=document.createDocumentFragment();
   (items||[]).forEach(d=>{
-    const e=document.createElement('div');e.className='le'+(d.ng?' ng':'');
+    const e=document.createElement('div');e.className='le';
     if(d.userId)e.dataset.u=d.userId;
+    e.dataset.nb=d.nb?'1':'0';applyNg(e);
     const tm=new Date((d.date||0)*1000);
     const lt=document.createElement('span');lt.className='lt';
     lt.textContent=('0'+tm.getHours()).slice(-2)+':'+('0'+tm.getMinutes()).slice(-2)+':'+('0'+tm.getSeconds()).slice(-2);
@@ -3355,15 +3373,24 @@ function logAdd(items){
   while(logEl.childElementCount>500)logEl.removeChild(logEl.firstChild);
   if(!logEl.hidden&&atBottom)logEl.scrollTop=logEl.scrollHeight;
 }
+function setNgUsers(list){
+  ngUsers=new Set(list||[]);
+  [...logEl.children].forEach(applyNg);
+}
 logEl.addEventListener('contextmenu',e=>{
   e.preventDefault();const it=e.target.closest('.le');if(!it||!it.dataset.u)return;
-  if(confirm('このユーザをNGに追加しますか?'))
-    window.chrome.webview.postMessage({cmd:'ngUser',userId:it.dataset.u});
+  const u=it.dataset.u;
+  if(ngUsers.has(u)){
+    if(confirm('このユーザのNGを解除しますか?'))window.chrome.webview.postMessage({cmd:'unNgUser',userId:u});
+  }else{
+    if(confirm('このユーザをNGに追加しますか?'))window.chrome.webview.postMessage({cmd:'ngUser',userId:u});
+  }
 });
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
   else if(m.type==='commentLog'){logAdd(m.items);}
+  else if(m.type==='ngUsers'){setNgUsers(m.users);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
   else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
@@ -3483,7 +3510,14 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 else if (cmd == "ngUser")
                                 {
                                     auto& v = j["userId"];
-                                    if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
+                                    if (v.is_string() && this->m_commentNg.AddUser(v.get<std::string>()))
+                                        this->PushNgUsers();
+                                }
+                                else if (cmd == "unNgUser")
+                                {
+                                    auto& v = j["userId"];
+                                    if (v.is_string() && this->m_commentNg.RemoveUser(v.get<std::string>()))
+                                        this->PushNgUsers();
                                 }
                             } catch (...) {}
                             return S_OK;
@@ -3505,6 +3539,7 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                             }
                             this->SendMomentumChannels();
                             this->PushAuthState();
+                            this->PushNgUsers();
                             return S_OK;
                         }
                     ).Get(), &token);

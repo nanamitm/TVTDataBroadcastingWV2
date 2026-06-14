@@ -91,11 +91,20 @@ void CommentNG::Load(const std::wstring& iniPath)
 
 bool CommentNG::IsNG(const Comment& c) const
 {
-    if (!c.userId.empty()) {
-        for (const auto& u : m_users) {
-            if (u == c.userId) return true;
-        }
+    return IsNGUser(c) || IsNGExceptUser(c);
+}
+
+bool CommentNG::IsNGUser(const Comment& c) const
+{
+    if (c.userId.empty()) return false;
+    for (const auto& u : m_users) {
+        if (u == c.userId) return true;
     }
+    return false;
+}
+
+bool CommentNG::IsNGExceptUser(const Comment& c) const
+{
     if (!c.mail.empty() && !m_commands.empty()) {
         auto tokens = SplitMailTokens(c.mail);
         for (const auto& tok : tokens) {

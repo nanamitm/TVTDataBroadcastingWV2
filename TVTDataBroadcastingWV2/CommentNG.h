@@ -22,6 +22,13 @@ public:
 
     // Returns true if the comment should be hidden.
     bool IsNG(const Comment& c) const;
+    // NG by user_id only.
+    bool IsNGUser(const Comment& c) const;
+    // NG by regex/command (everything except user_id).
+    bool IsNGExceptUser(const Comment& c) const;
+
+    // Current NG user_id list (for UI display).
+    const std::vector<std::string>& GetUsers() const { return m_users; }
 
     // Add a user_id to the NG list and persist to the INI.
     // Returns false if the id is empty or already present.

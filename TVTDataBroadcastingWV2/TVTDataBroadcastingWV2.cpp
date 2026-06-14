@@ -3221,7 +3221,7 @@ tr.sel td{background:var(--sel)}
 <div class="po">
 <div class="pg"><span class="pl">色</span><div class="cg"><div class="cc c0 on" data-c="" title="白"></div><div class="cc c1" data-c="red" title="赤"></div><div class="cc c2" data-c="pink" title="ピンク"></div><div class="cc c3" data-c="orange" title="橙"></div><div class="cc c4" data-c="yellow" title="黄"></div><div class="cc c5" data-c="green" title="緑"></div><div class="cc c6" data-c="cyan" title="水色"></div><div class="cc c7" data-c="blue" title="青"></div><div class="cc c8" data-c="purple" title="紫"></div><div class="cc c9" data-c="black" title="黒"></div></div></div>
 <div class="pg"><span class="pl">位置</span><button class="tb on" data-p="">流れる</button><button class="tb" data-p="ue">上</button><button class="tb" data-p="shita">下</button></div>
-<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
+<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button><button id="anon" class="tb" title="184(匿名)で投稿">184</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
 </div>
 <div id="pv"><div id="pt" class="naka">コメント</div></div>
 </div>
@@ -3255,12 +3255,12 @@ function showResult(status,msg){
   prTimer=setTimeout(()=>{pr.textContent='';pr.className='';},4000);
 }
 const pi=document.getElementById('pi');
-let mcol='',mpos='',msz='';
+let mcol='',mpos='',msz='',manon=false;
 pi.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.isComposing){
     const t=pi.value;
     if(t.trim()!==''){
-      const mail=[mcol,mpos,msz].filter(Boolean).join(' ');
+      const mail=[manon?'184':'',mcol,mpos,msz].filter(Boolean).join(' ');
       window.chrome.webview.postMessage({cmd:'post',text:t,mail});
       pi.value='';
     }
@@ -3291,7 +3291,9 @@ const $=id=>document.getElementById(id);
   pb.forEach(b=>b.addEventListener('click',()=>{mpos=b.dataset.p;pb.forEach(x=>x.classList.toggle('on',x.dataset.p===mpos));upd();}));
   const sb=[...pop.querySelectorAll('[data-s]')];
   sb.forEach(b=>b.addEventListener('click',()=>{msz=b.dataset.s;sb.forEach(x=>x.classList.toggle('on',x.dataset.s===msz));upd();}));
-  $('db').addEventListener('click',()=>{mcol='';mpos='';msz='';cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
+  const an=$('anon');
+  an.addEventListener('click',()=>{manon=!manon;an.classList.toggle('on',manon);});
+  $('db').addEventListener('click',()=>{mcol='';mpos='';msz='';manon=false;an.classList.remove('on');cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
   upd();
 })();
 let authKnown=false;

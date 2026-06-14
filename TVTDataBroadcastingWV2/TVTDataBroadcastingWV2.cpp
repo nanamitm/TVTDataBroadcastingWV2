@@ -3202,12 +3202,12 @@ function showResult(status,msg){
   prTimer=setTimeout(()=>{pr.textContent='';pr.className='';},4000);
 }
 const pi=document.getElementById('pi');
-let sc='',sp='',ss='';
+let mcol='',mpos='',msz='';
 pi.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.isComposing){
     const t=pi.value;
     if(t.trim()!==''){
-      const mail=[sc,sp,ss].filter(Boolean).join(' ');
+      const mail=[mcol,mpos,msz].filter(Boolean).join(' ');
       window.chrome.webview.postMessage({cmd:'post',text:t,mail});
       pi.value='';
     }
@@ -3222,9 +3222,9 @@ const $=id=>document.getElementById(id);
   const CL={'':'','red':'#d00','pink':'#e88','orange':'#e70','yellow':'#b90','green':'#090','cyan':'#088','blue':'#00b','purple':'#707','black':'#555'};
   const pop=$('cmdpop'),cb=$('cb');
   function upd(){
-    cb.textContent=TR[sp][ss];const col=CL[sc];
+    cb.textContent=TR[mpos][msz];const col=CL[mcol];
     cb.style.color=col||'';cb.style.borderColor=col?col+'99':'';
-    const pt=$('pt');pt.style.color=col||'var(--fg)';pt.className=(sp||'naka')+(ss?' '+ss:'');
+    const pt=$('pt');pt.style.color=col||'var(--fg)';pt.className=(mpos||'naka')+(msz?' '+msz:'');
   }
   function close(){if(open){open=false;cb.classList.remove('open');pop.hidden=true;}}
   cb.addEventListener('mousedown',e=>e.preventDefault());
@@ -3233,12 +3233,12 @@ const $=id=>document.getElementById(id);
   pi.addEventListener('focus',close);
   $('w').addEventListener('mousedown',close);
   const cc=[...pop.querySelectorAll('[data-c]')];
-  cc.forEach(b=>b.addEventListener('click',()=>{sc=b.dataset.c;cc.forEach(x=>x.classList.toggle('on',x.dataset.c===sc));upd();}));
+  cc.forEach(b=>b.addEventListener('click',()=>{mcol=b.dataset.c;cc.forEach(x=>x.classList.toggle('on',x.dataset.c===mcol));upd();}));
   const pb=[...pop.querySelectorAll('[data-p]')];
-  pb.forEach(b=>b.addEventListener('click',()=>{sp=b.dataset.p;pb.forEach(x=>x.classList.toggle('on',x.dataset.p===sp));upd();}));
+  pb.forEach(b=>b.addEventListener('click',()=>{mpos=b.dataset.p;pb.forEach(x=>x.classList.toggle('on',x.dataset.p===mpos));upd();}));
   const sb=[...pop.querySelectorAll('[data-s]')];
-  sb.forEach(b=>b.addEventListener('click',()=>{ss=b.dataset.s;sb.forEach(x=>x.classList.toggle('on',x.dataset.s===ss));upd();}));
-  $('db').addEventListener('click',()=>{sc='';sp='';ss='';cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
+  sb.forEach(b=>b.addEventListener('click',()=>{msz=b.dataset.s;sb.forEach(x=>x.classList.toggle('on',x.dataset.s===msz));upd();}));
+  $('db').addEventListener('click',()=>{mcol='';mpos='';msz='';cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
   upd();
 })();
 let authKnown=false;

@@ -2,11 +2,11 @@
 //
 #include "resource.h"
 /////////////////////////////////////////////////////////////////////////////
-// “ú–{Œê (“ú–{) resources
+// æ—¥æœ¬èªž (æ—¥æœ¬) resources
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_JPN)
 LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
-#pragma code_page(932)
+#pragma code_page(65001)
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -16,20 +16,20 @@ LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
 IDD_REMOTE_CONTROL DIALOGEX 0, 0, 87, 312
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 EXSTYLE WS_EX_TOOLWINDOW
-CAPTION "ƒŠƒ‚ƒRƒ“"
+CAPTION "ãƒªãƒ¢ã‚³ãƒ³"
 FONT 9, "Meiryo UI", 0, 0, 0x1
 BEGIN
-    PUSHBUTTON      "ª",IDC_KEY_UP,30,6,24,24
-    PUSHBUTTON      "©",IDC_KEY_LEFT,6,30,24,24
-    PUSHBUTTON      "Œˆ’è",IDC_KEY_ENTER,30,30,24,24
-    PUSHBUTTON      "¨",IDC_KEY_RIGHT,54,30,24,24
-    PUSHBUTTON      "«",IDC_KEY_DOWN,30,54,24,24
+    PUSHBUTTON      "ä¸Š",IDC_KEY_UP,30,6,24,24
+    PUSHBUTTON      "å·¦",IDC_KEY_LEFT,6,30,24,24
+    PUSHBUTTON      "æ±ºå®š",IDC_KEY_ENTER,30,30,24,24
+    PUSHBUTTON      "å³",IDC_KEY_RIGHT,54,30,24,24
+    PUSHBUTTON      "ä¸‹",IDC_KEY_DOWN,30,54,24,24
     PUSHBUTTON      "d",IDC_KEY_D,6,78,24,24
-    PUSHBUTTON      "–ß‚é",IDC_KEY_BACK,54,78,24,24
-    PUSHBUTTON      "Â",IDC_KEY_BLUE,6,108,18,12
-    PUSHBUTTON      "Ô",IDC_KEY_RED,24,108,18,12
-    PUSHBUTTON      "—Î",IDC_KEY_GREEN,42,108,18,12
-    PUSHBUTTON      "‰©",IDC_KEY_YELLOW,60,108,18,12
+    PUSHBUTTON      "æˆ»ã‚‹",IDC_KEY_BACK,54,78,24,24
+    PUSHBUTTON      "é’",IDC_KEY_BLUE,6,108,18,12
+    PUSHBUTTON      "èµ¤",IDC_KEY_RED,24,108,18,12
+    PUSHBUTTON      "ç·‘",IDC_KEY_GREEN,42,108,18,12
+    PUSHBUTTON      "é»„",IDC_KEY_YELLOW,60,108,18,12
     LTEXT           "",IDC_STATIC_BLUE,8,121,14,2
     LTEXT           "",IDC_STATIC_RED,26,121,14,2
     LTEXT           "",IDC_STATIC_GREEN,44,121,14,2
@@ -47,29 +47,29 @@ BEGIN
     PUSHBUTTON      "11",IDC_KEY_11,30,198,24,24
     PUSHBUTTON      "12",IDC_KEY_12,54,198,24,24
     PUSHBUTTON      "0",IDC_KEY_0,6,222,24,24
-    CONTROL         "Žš–‹",IDC_TOGGLE_CAPTION,"Button",BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP,30,222,24,24
-    PUSHBUTTON      "Ý’è",IDC_KEY_SETTINGS,54,222,24,24
-    PUSHBUTTON      "Ä“Ç‚Ýž‚Ý",IDC_KEY_RELOAD,6,252,72,18
-    PUSHBUTTON      "ŠJ”­ŽÒƒc[ƒ‹",IDC_KEY_DEVTOOL,6,270,72,18
-    PUSHBUTTON      "’ÊM‹@”\‚ð–³Œø‰»",IDC_TOGGLE_NETWORK,6,288,72,18,NOT WS_VISIBLE
+    CONTROL         "å­—å¹•",IDC_TOGGLE_CAPTION,"Button",BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP,30,222,24,24
+    PUSHBUTTON      "è¨­å®š",IDC_KEY_SETTINGS,54,222,24,24
+    PUSHBUTTON      "å†èª­ã¿è¾¼ã¿",IDC_KEY_RELOAD,6,252,72,18
+    PUSHBUTTON      "é–‹ç™ºè€…ãƒ„ãƒ¼ãƒ«",IDC_KEY_DEVTOOL,6,270,72,18
+    PUSHBUTTON      "é€šä¿¡æ©Ÿèƒ½ã‚’ç„¡åŠ¹åŒ–",IDC_TOGGLE_NETWORK,6,288,72,18,NOT WS_VISIBLE
 END
 
 IDD_REMOTE_CONTROL_PANEL DIALOGEX 0, 0, 72, 300
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_CAPTION
-CAPTION "ƒŠƒ‚ƒRƒ“"
+CAPTION "ãƒªãƒ¢ã‚³ãƒ³"
 FONT 9, "Meiryo UI", 0, 0, 0x1
 BEGIN
-    PUSHBUTTON      "ª",IDC_KEY_UP,24,0,24,24
-    PUSHBUTTON      "©",IDC_KEY_LEFT,0,24,24,24
-    PUSHBUTTON      "Œˆ’è",IDC_KEY_ENTER,24,24,24,24
-    PUSHBUTTON      "¨",IDC_KEY_RIGHT,48,24,24,24
-    PUSHBUTTON      "«",IDC_KEY_DOWN,24,48,24,24
+    PUSHBUTTON      "ä¸Š",IDC_KEY_UP,24,0,24,24
+    PUSHBUTTON      "å·¦",IDC_KEY_LEFT,0,24,24,24
+    PUSHBUTTON      "æ±ºå®š",IDC_KEY_ENTER,24,24,24,24
+    PUSHBUTTON      "å³",IDC_KEY_RIGHT,48,24,24,24
+    PUSHBUTTON      "ä¸‹",IDC_KEY_DOWN,24,48,24,24
     PUSHBUTTON      "d",IDC_KEY_D_OR_ENABLE_PLUGIN,0,72,24,24
-    PUSHBUTTON      "–ß‚é",IDC_KEY_BACK,48,72,24,24
-    PUSHBUTTON      "Â",IDC_KEY_BLUE,0,102,18,12
-    PUSHBUTTON      "Ô",IDC_KEY_RED,18,102,18,12
-    PUSHBUTTON      "—Î",IDC_KEY_GREEN,36,102,18,12
-    PUSHBUTTON      "‰©",IDC_KEY_YELLOW,54,102,18,12
+    PUSHBUTTON      "æˆ»ã‚‹",IDC_KEY_BACK,48,72,24,24
+    PUSHBUTTON      "é’",IDC_KEY_BLUE,0,102,18,12
+    PUSHBUTTON      "èµ¤",IDC_KEY_RED,18,102,18,12
+    PUSHBUTTON      "ç·‘",IDC_KEY_GREEN,36,102,18,12
+    PUSHBUTTON      "é»„",IDC_KEY_YELLOW,54,102,18,12
     LTEXT           "",IDC_STATIC_BLUE,2,115,14,2
     LTEXT           "",IDC_STATIC_RED,20,115,14,2
     LTEXT           "",IDC_STATIC_GREEN,38,115,14,2
@@ -87,54 +87,61 @@ BEGIN
     PUSHBUTTON      "11",IDC_KEY_11,24,192,24,24
     PUSHBUTTON      "12",IDC_KEY_12,48,192,24,24
     PUSHBUTTON      "0",IDC_KEY_0,0,216,24,24
-    CONTROL         "Žš–‹",IDC_TOGGLE_CAPTION,"Button",BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP,24,216,24,24
-    PUSHBUTTON      "Ý’è",IDC_KEY_SETTINGS,48,216,24,24
-    PUSHBUTTON      "Ä“Ç‚Ýž‚Ý",IDC_KEY_RELOAD,0,246,72,18
-    PUSHBUTTON      "ŠJ”­ŽÒƒc[ƒ‹",IDC_KEY_DEVTOOL,0,264,72,18
-    PUSHBUTTON      "’ÊM‹@”\‚ð–³Œø‰»",IDC_TOGGLE_NETWORK,0,282,72,18,NOT WS_VISIBLE
+    CONTROL         "å­—å¹•",IDC_TOGGLE_CAPTION,"Button",BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP,24,216,24,24
+    PUSHBUTTON      "è¨­å®š",IDC_KEY_SETTINGS,48,216,24,24
+    PUSHBUTTON      "å†èª­ã¿è¾¼ã¿",IDC_KEY_RELOAD,0,246,72,18
+    PUSHBUTTON      "é–‹ç™ºè€…ãƒ„ãƒ¼ãƒ«",IDC_KEY_DEVTOOL,0,264,72,18
+    CONTROL         "ã‚³ãƒ¡ãƒ³ãƒˆ",IDC_TOGGLE_COMMENT,"Button",BS_AUTOCHECKBOX|BS_PUSHLIKE|WS_TABSTOP,0,282,72,18
+    PUSHBUTTON      "é€šä¿¡æ©Ÿèƒ½ã‚’ç„¡åŠ¹åŒ–",IDC_TOGGLE_NETWORK,0,282,72,18,NOT WS_VISIBLE
 END
 
 IDD_SETTING DIALOGEX 0, 0, 150, 138
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "TVTDataBroadcastingWV2‚ÌÝ’è"
+CAPTION "TVTDataBroadcastingWV2ã®è¨­å®š"
 FONT 9, "Meiryo UI", 400, 0, 0x80
 BEGIN
-    CONTROL         "ƒvƒ‰ƒOƒCƒ“—LŒøŽž‚ÉƒŠƒ‚ƒRƒ“‚ð•\Ž¦‚µ‚È‚¢",IDC_CHECK_DISABLE_REMOTECON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,6,139,10
-    CONTROL         "TVTest‹N“®Žž‚Éƒvƒ‰ƒOƒCƒ“‚ð—LŒø‚É‚·‚é",IDC_CHECK_AUTOENABLE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,18,139,10
-    CONTROL         "‘O‰ñ‚ÌŽš–‹ó‘Ô‚ð‹N“®Žž‚É•œŒ³‚·‚é",IDC_CHECK_RESTORE_CAPTION_STATE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,30,139,10
-    PUSHBUTTON      "—X•Ö”Ô†E•Û‘¶—Ìˆæ‚ÌÝ’è",IDC_BUTTON_NVRAM_SETTING,6,96,96,14
-    CONTROL         "‰¹—Ê‚ðTVTest‚Æ˜A“®‚·‚é",IDC_CHECK_USE_TVTEST_VOLUME,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,42,139,10
-    CONTROL         "”Žšƒ{ƒ^ƒ“‚ªŽg‚í‚ê‚Ä‚¢‚È‚¯‚ê‚ÎTVTest‚É“n‚·",IDC_CHECK_USE_TVTEST_CHANNEL_COMMAND,
+    CONTROL         "ãƒ—ãƒ©ã‚°ã‚¤ãƒ³èµ·å‹•æ™‚ã«ãƒªãƒ¢ã‚³ãƒ³ã‚’è¡¨ç¤ºã—ãªã„",IDC_CHECK_DISABLE_REMOTECON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,6,139,10
+    CONTROL         "TVTestèµ·å‹•æ™‚ã«ãƒ—ãƒ©ã‚°ã‚¤ãƒ³ã‚’æœ‰åŠ¹ã«ã™ã‚‹",IDC_CHECK_AUTOENABLE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,18,139,10
+    CONTROL         "å‰å›žã®å­—å¹•çŠ¶æ…‹ã‚’èµ·å‹•æ™‚ã«å¾©å…ƒã™ã‚‹",IDC_CHECK_RESTORE_CAPTION_STATE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,30,139,10
+    PUSHBUTTON      "éƒµä¾¿ç•ªå·ãƒ»ä¿å­˜é ˜åŸŸã®è¨­å®š",IDC_BUTTON_NVRAM_SETTING,6,96,96,14
+    CONTROL         "éŸ³é‡ã‚’TVTestã¨é€£å‹•ã™ã‚‹",IDC_CHECK_USE_TVTEST_VOLUME,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,42,139,10
+    CONTROL         "é¸å±€ãƒœã‚¿ãƒ³ã‚’ä½¿ã£ã¦ã„ãªã„ã¨ãTVTestã«æ¸¡ã™",IDC_CHECK_USE_TVTEST_CHANNEL_COMMAND,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,54,139,10
     LTEXT           "Comment opacity (0-100):",IDC_STATIC,6,68,100,8
     EDITTEXT        IDC_EDIT_COMMENT_OPACITY,108,65,30,12,ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP
     LTEXT           "Comment duration (ms):",IDC_STATIC,6,80,100,8
     EDITTEXT        IDC_EDIT_COMMENT_DURATION,108,77,30,12,ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP
     DEFPUSHBUTTON   "OK",IDOK,42,120,50,14
-    PUSHBUTTON      "ƒLƒƒƒ“ƒZƒ‹",IDCANCEL,96,120,50,14
+    PUSHBUTTON      "ã‚­ãƒ£ãƒ³ã‚»ãƒ«",IDCANCEL,96,120,50,14
 END
 
 IDD_SETTING_NVRAM DIALOGEX 0, 0, 150, 108
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "TVTDataBroadcastingWV2‚ÌNVRAMÝ’è"
+CAPTION "TVTDataBroadcastingWV2ã®NVRAMè¨­å®š"
 FONT 9, "Meiryo UI", 400, 0, 0x80
 BEGIN
-    LTEXT           "—X•Ö”Ô†",IDC_STATIC,6,6,48,8
+    LTEXT           "éƒµä¾¿ç•ªå·",IDC_STATIC,6,6,48,8
     EDITTEXT        IDC_EDIT_ZIP,6,18,138,12,ES_UPPERCASE | ES_AUTOHSCROLL | ES_NUMBER | WS_DISABLED
-    LTEXT           "’nˆæ",IDC_STATIC,6,36,48,8
+    LTEXT           "åœ°åŸŸ",IDC_STATIC,6,36,48,8
     COMBOBOX        IDC_COMBO_REGION,6,48,138,30,CBS_DROPDOWNLIST | WS_DISABLED | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "•Û‘¶—Ìˆæ‚ð‘SÁ‹Ž",IDC_BUTTON_DELETE_NVRAM,6,66,72,14
+    PUSHBUTTON      "ä¿å­˜é ˜åŸŸã‚’å…¨æ¶ˆåŽ»",IDC_BUTTON_DELETE_NVRAM,6,66,72,14
     DEFPUSHBUTTON   "OK",IDOK,42,90,50,14
-    PUSHBUTTON      "ƒLƒƒƒ“ƒZƒ‹",IDCANCEL,96,90,50,14
+    PUSHBUTTON      "ã‚­ãƒ£ãƒ³ã‚»ãƒ«",IDCANCEL,96,90,50,14
+END
+
+IDD_MOMENTUM_PANEL DIALOGEX 0, 0, 200, 300
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS
+FONT 9, "Meiryo UI", 0, 0, 0x1
+BEGIN
 END
 
 IDD_INPUT DIALOGEX 0, 0, 234, 42
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "•¶Žš“ü—Í"
+CAPTION "æ–‡å­—å…¥åŠ›"
 FONT 9, "Meiryo UI", 400, 0, 0x80
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,126,24,50,14
-    PUSHBUTTON      "ƒLƒƒƒ“ƒZƒ‹",IDCANCEL,180,24,50,14
+    PUSHBUTTON      "ã‚­ãƒ£ãƒ³ã‚»ãƒ«",IDCANCEL,180,24,50,14
     EDITTEXT        IDC_INPUT,6,6,222,14,ES_AUTOHSCROLL
 END
 
@@ -145,17 +152,17 @@ END
 // TEXTINCLUDE
 //
 
-1 TEXTINCLUDE 
+1 TEXTINCLUDE
 BEGIN
     "resource.h\0"
 END
 
-2 TEXTINCLUDE 
+2 TEXTINCLUDE
 BEGIN
     "\0"
 END
 
-3 TEXTINCLUDE 
+3 TEXTINCLUDE
 BEGIN
     "\r\n"
     "\0"
@@ -247,7 +254,7 @@ END
 
 IDB_PLUGIN              BITMAP                  "Icon16.bmp"
 
-#endif    // “ú–{Œê (“ú–{) resources
+#endif    // æ—¥æœ¬èªž (æ—¥æœ¬) resources
 /////////////////////////////////////////////////////////////////////////////
 
 
@@ -261,4 +268,3 @@ IDB_PLUGIN              BITMAP                  "Icon16.bmp"
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-

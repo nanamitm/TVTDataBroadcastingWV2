@@ -10,13 +10,6 @@ static void JkDbg(const char* msg)
 }
 
 // Valid jikkyo channels for jkcnsl L command: jk1-jk9, jk101, jk211
-static bool IsValidJkChannel(const std::string& ch)
-{
-    if (ch.size() < 3 || ch[0] != 'j' || ch[1] != 'k') return false;
-    int n = 0;
-    try { n = std::stoi(ch.substr(2)); } catch (...) { return false; }
-    return (n >= 1 && n <= 9) || n == 101 || n == 211;
-}
 
 /*static*/ std::string JkcnslReader::GetXmlAttr(const std::string& xml, const std::string& attr)
 {
@@ -46,8 +39,20 @@ static bool IsValidJkChannel(const std::string& ch)
     out.text = xml.substr(contentStart + 1, contentEnd - contentStart - 1);
     if (out.text.empty()) return false;
 
-    CommentFetcher::ParseMail(GetXmlAttr(xml, "mail"), out.color, out.position, out.size);
+    out.userId = GetXmlAttr(xml, "user_id");
+    out.mail   = GetXmlAttr(xml, "mail");
+    out.raw    = xml; // the raw <chat ...>...</chat> tag (for logfile recording)
+    out.refuge = xml.find("x_refuge=\"1\"") != std::string::npos
+              || xml.find("nx_jikkyo=\"1\"") != std::string::npos;
+    CommentFetcher::ParseMail(out.mail, out.color, out.position, out.size);
     return true;
+}
+
+void JkcnslReader::SetConnected(bool connected)
+{
+    if (m_connected.exchange(connected) != connected && m_connCallback) {
+        m_connCallback(connected);
+    }
 }
 
 void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf)
@@ -55,8 +60,20 @@ void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineB
     for (DWORD i = 0; i < size; i++) {
         if (buf[i] == '\n') {
             if (!lineBuf.empty() && lineBuf.back() == '\r') lineBuf.pop_back();
+            // Track connection state by jkcnsl's line markers:
+            //   '*' stream opened, '-' data flowing => connected
+            //   '.'/'!'/'?' stream closed => disconnected
+            if (!lineBuf.empty()) {
+                char c0 = lineBuf[0];
+                if (c0 == '*' || c0 == '-')              SetConnected(true);
+                else if (c0 == '.' || c0 == '!' || c0 == '?') SetConnected(false);
+            }
+            // Past comments are backfilled inside <x_past_chat_begin>..<end>.
+            if (lineBuf.find("x_past_chat_begin") != std::string::npos)      m_inPastChat = true;
+            else if (lineBuf.find("x_past_chat_end") != std::string::npos)   m_inPastChat = false;
             Comment c;
             if (ParseChatLine(lineBuf, c) && m_callback) {
+                c.past = m_inPastChat;
                 std::vector<Comment> batch;
                 batch.push_back(std::move(c));
                 m_callback(std::move(batch));
@@ -134,20 +151,15 @@ void JkcnslReader::ReadLoop()
 
     CloseHandle(ioEvent);
     JkDbg("ReadLoop ended");
+    SetConnected(false);
     m_running = false;
 }
 
-bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkChannel)
+bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& streamCommand)
 {
     if (m_running) return true;
-    if (jkChannel.empty()) return false;
-
-    if (!IsValidJkChannel(jkChannel)) {
-        char buf[64];
-        sprintf_s(buf, "channel '%s' not supported by L command, skipping", jkChannel.c_str());
-        JkDbg(buf);
-        return false;
-    }
+    if (streamCommand.empty()) return false;
+    if (streamCommand.find_first_of("\r\n") != std::string::npos) return false;
 
     if (GetFileAttributesW(jkcnslPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         JkDbg("jkcnsl.exe not found");
@@ -219,18 +231,34 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkCh
 
     CloseHandle(pi.hThread);
     m_hProcess = pi.hProcess;
-    m_channel  = jkChannel;
+    m_channel  = streamCommand;
+    m_inPastChat = false;
     m_running  = true;
 
     m_thread = std::thread([this] { ReadLoop(); });
 
-    // Send stream command
-    std::string cmd = "L" + jkChannel + "\r\n";
+    // Send the full stream command (e.g. "Lch2646436" or "R1 wss://.../watch/jk141").
+    std::string cmd = streamCommand + "\r\n";
     JkDbg(("Sending: " + cmd).c_str());
     DWORD written = 0;
     WriteFile(m_hStdinWrite, cmd.c_str(), static_cast<DWORD>(cmd.size()), &written, nullptr);
 
     return true;
+}
+
+bool JkcnslReader::Post(const std::string& payload)
+{
+    if (!m_running) return false;
+    // jkcnsl uses a line protocol; embedded CR/LF would corrupt the stream.
+    if (payload.find('\n') != std::string::npos || payload.find('\r') != std::string::npos) {
+        return false;
+    }
+    std::string line = "+" + payload + "\r\n";
+    std::lock_guard<std::mutex> lock(m_stdinMutex);
+    if (!m_hStdinWrite) return false;
+    DWORD written = 0;
+    return WriteFile(m_hStdinWrite, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr)
+        && written == line.size();
 }
 
 void JkcnslReader::Stop()
@@ -241,11 +269,14 @@ void JkcnslReader::Stop()
     if (m_hStopEvent) SetEvent(m_hStopEvent);
 
     // 2. Tell jkcnsl to quit gracefully, then close stdin
-    if (m_hStdinWrite) {
-        DWORD written = 0;
-        WriteFile(m_hStdinWrite, "q\r\n", 3, &written, nullptr);
-        CloseHandle(m_hStdinWrite);
-        m_hStdinWrite = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_stdinMutex);
+        if (m_hStdinWrite) {
+            DWORD written = 0;
+            WriteFile(m_hStdinWrite, "q\r\n", 3, &written, nullptr);
+            CloseHandle(m_hStdinWrite);
+            m_hStdinWrite = nullptr;
+        }
     }
 
     // 3. Wait for jkcnsl to exit; forcibly terminate if it takes too long

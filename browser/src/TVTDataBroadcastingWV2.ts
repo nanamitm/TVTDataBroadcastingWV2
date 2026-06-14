@@ -1,4 +1,5 @@
 import { CommentData, CommentRenderer } from "./comment";
+import { ChannelInfo, ChannelsClient } from "./channels";
 import { ComponentPMT, ResponseMessage } from "../web-bml/server/ws_api";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "../web-bml/client/bml_browser";
 import { decodeTS } from "../web-bml/server/decode_ts";
@@ -362,6 +363,9 @@ type FromWebViewMessage = {
     type: "startBrowser",
     uri: string,
     fullscreen: boolean,
+} | {
+    type: "channelsUpdate",
+    channels: ChannelInfo[],
 };
 
 bmlBrowser.addEventListener("videochanged", (evt) => {
@@ -512,7 +516,14 @@ type ToWebViewMessage = {
 } | {
     type: "commentConfig",
     opacity: number,
-    duration_ms: number,
+    duration_ms?: number,
+    shadow_color?: string,
+    shadow_enabled?: boolean,
+    outline_enabled?: boolean,
+    font_size_medium?: number,
+} | {
+    type: "channelsConfig",
+    ws_uri: string,
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -619,9 +630,32 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         commentRenderer.clear();
     } else if (data.type === "commentConfig") {
         commentRenderer.setOpacity(data.opacity);
-        commentRenderer.setDuration(data.duration_ms);
+        if (data.duration_ms !== undefined) {
+            commentRenderer.setDuration(data.duration_ms);
+        }
+        if (data.shadow_color !== undefined) {
+            commentRenderer.setShadowColor(data.shadow_color);
+        }
+        if (data.shadow_enabled !== undefined) {
+            commentRenderer.setShadowEnabled(data.shadow_enabled);
+        }
+        if (data.outline_enabled !== undefined) {
+            commentRenderer.setOutlineEnabled(data.outline_enabled);
+        }
+        if (data.font_size_medium !== undefined) {
+            commentRenderer.setFontSizeMedium(data.font_size_medium);
+        }
+    } else if (data.type === "channelsConfig") {
+        if (channelsClient) {
+            channelsClient.close();
+        }
+        channelsClient = new ChannelsClient(data.ws_uri, (channels) => {
+            postMessage({ type: "channelsUpdate", channels });
+        });
     }
 }
+
+let channelsClient: ChannelsClient | null = null;
 
 const commentCanvas = document.getElementById("comment-canvas") as HTMLCanvasElement;
 const commentParent = document.getElementById("data-broadcasting-browser")!;

@@ -18,14 +18,15 @@ interface ActiveComment {
 
 let DURATION_MS = 4000;
 const DEFAULT_OPACITY = 1.0;
-const FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
+const DEFAULT_SHADOW_COLOR = "rgba(0,0,0,0.7)";
+let FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 const MAX_LANES = 20;
 
 // ニコニコ実況の色名 → CSS色
 const COLOR_MAP: Record<string, string> = {
     white: "white", red: "red", blue: "#4169e1", yellow: "yellow",
     green: "#00b300", cyan: "cyan", purple: "#cc00cc", black: "black",
-    niconicowhite: "white", cadetblue: "cadetblue", maroon: "maroon",
+    niconicowhite: "#cccc99", cadetblue: "cadetblue", maroon: "maroon",
     fuchsia: "fuchsia", lime: "lime", olive: "olive", navy: "navy",
     teal: "teal", silver: "silver", gray: "gray", orange: "orange",
     midori: "#00b300",
@@ -37,6 +38,9 @@ export class CommentRenderer {
     private comments: ActiveComment[] = [];
     private rafId = 0;
     private opacity = DEFAULT_OPACITY;
+    private shadowColor = DEFAULT_SHADOW_COLOR;
+    private shadowEnabled = true;
+    private outlineEnabled = true;
     // レーンごとの「次にコメントを追加できる時刻」
     private nakaLane: number[] = new Array(MAX_LANES).fill(0);
     private topLane: number[] = new Array(MAX_LANES).fill(0);
@@ -78,7 +82,7 @@ export class CommentRenderer {
         } else {
             const lane = this.freeLane(this.botLane, maxLanes, now);
             this.botLane[lane] = now + DURATION_MS;
-            y = this.canvas.height - laneH * lane;
+            y = this.canvas.height - laneH * lane - Math.ceil(fontSize * 0.25) - laneH / 2;
         }
 
         this.comments.push({
@@ -110,6 +114,22 @@ export class CommentRenderer {
         DURATION_MS = Math.max(1000, Math.min(5000, ms));
     }
 
+    setShadowColor(color: string) {
+        this.shadowColor = color;
+    }
+
+    setShadowEnabled(enabled: boolean) {
+        this.shadowEnabled = enabled;
+    }
+
+    setOutlineEnabled(enabled: boolean) {
+        this.outlineEnabled = enabled;
+    }
+
+    setFontSizeMedium(medium: number) {
+        FONT_SIZE = { small: Math.round(medium * 0.75), medium, big: Math.round(medium * 1.5) };
+    }
+
     private draw() {
         const { canvas, ctx } = this;
         const now = performance.now();
@@ -128,10 +148,17 @@ export class CommentRenderer {
             }
 
             ctx.font = `bold ${c.fontSize}px sans-serif`;
-            ctx.lineWidth = Math.max(2, c.fontSize / 8);
-            ctx.strokeStyle = "rgba(0,0,0,0.85)";
-            ctx.lineJoin = "round";
-            ctx.strokeText(c.text, x, c.y);
+            if (this.shadowEnabled) {
+                const shadowOffset = Math.max(1, c.fontSize / 15);
+                ctx.fillStyle = this.shadowColor;
+                ctx.fillText(c.text, x + shadowOffset, c.y + shadowOffset);
+            }
+            if (this.outlineEnabled) {
+                ctx.lineWidth = Math.max(2, c.fontSize / 8);
+                ctx.strokeStyle = "rgba(0,0,0,0.85)";
+                ctx.lineJoin = "round";
+                ctx.strokeText(c.text, x, c.y);
+            }
             ctx.fillStyle = c.color;
             ctx.fillText(c.text, x, c.y);
         }

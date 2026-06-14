@@ -12,7 +12,14 @@
 #include "InputDialog.h"
 #include "OneSeg.h"
 #include "CommentFetcher.h"
+#include "CommentNG.h"
+#include "NetworkServiceIDTable.h"
 #include "JkcnslReader.h"
+#include "JkcnslLogin.h"
+#include "JkcnslSettings.h"
+#include "JikkyoStreamTable.h"
+#include "CommentLogWriter.h"
+#include "CommentLogReader.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -27,6 +34,9 @@ using namespace Microsoft::WRL;
 #define WM_APP_INPUT (WM_APP + 3)
 #define WM_APP_ENABLE_PLUGIN (WM_APP + 4)
 #define WM_APP_COMMENTS (WM_APP + 5)
+#define WM_APP_LOGIN (WM_APP + 6)
+#define WM_APP_AUTH (WM_APP + 7)
+#define WM_APP_CONN (WM_APP + 8)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -44,6 +54,7 @@ struct DeferralResponse
 
 #define IDT_SHOW_EVR_WINDOW 1
 #define IDT_RESIZE 2
+#define IDT_PLAYBACK 3
 
 struct UsedKey
 {
@@ -73,6 +84,10 @@ private:
     int pcrPID = -1;
     DWORD pcr = 0;
     DWORD lastBlockPCR = 0;
+    // Broadcast wall-clock from TDT/TOT (PID 0x0014), with the PCR at that moment
+    // for interpolation. totUnix==0 means unknown.
+    std::atomic<long long> totUnix{ 0 };
+    std::atomic<DWORD>     pcrAtTot{ 0 };
 public:
     static constexpr size_t packetSize = 188;
     static constexpr size_t packetBlockSize = packetSize * 500;
@@ -125,6 +140,41 @@ public:
                     // PCRを取得する。時計演算の便利のため下位1bitは捨てる
                     this->pcrPIDCandidates.clear();
                     this->pcr = (static_cast<DWORD>(packet[6]) << 24) | (packet[7] << 16) | (packet[8] << 8) | packet[9];
+                }
+            }
+        }
+
+        // TDT/TOT (PID 0x0014): broadcast wall-clock time.
+        if (pid == 0x0014 && !transportErrorIndicator && !!(adaptationFieldControl & 1))
+        {
+            bool pusi = !!(packet[1] & 0x40);
+            if (pusi)
+            {
+                int off = 4;
+                if (adaptationFieldControl & 2) off += 1 + packet[4]; // skip adaptation field
+                if (off < static_cast<int>(packetSize))
+                {
+                    off += 1 + packet[off]; // pointer_field
+                    if (off + 8 <= static_cast<int>(packetSize))
+                    {
+                        BYTE tableId = packet[off];
+                        if (tableId == 0x70 || tableId == 0x73) // TDT / TOT
+                        {
+                            const BYTE* t = packet + off + 3; // skip table_id + section_length(2)
+                            int mjd = (t[0] << 8) | t[1];
+                            int hh = (t[2] >> 4) * 10 + (t[2] & 0xf);
+                            int mm = (t[3] >> 4) * 10 + (t[3] & 0xf);
+                            int ss = (t[4] >> 4) * 10 + (t[4] & 0xf);
+                            if (mjd > 40587 && hh < 24 && mm < 60 && ss < 60)
+                            {
+                                // MJD 40587 = 1970-01-01. ARIB time is JST(UTC+9).
+                                long long unixT = static_cast<long long>(mjd - 40587) * 86400
+                                                + hh * 3600 + mm * 60 + ss - 32400;
+                                this->totUnix.store(unixT);
+                                this->pcrAtTot.store(this->pcr);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -204,6 +254,18 @@ public:
     {
         std::lock_guard<std::mutex> lock(this->queueMutex);
         this->pidsToExclude.swap(pids);
+    }
+
+    // Current broadcast Unix time (JST converted to UTC seconds), interpolated
+    // from the last TOT with the PCR delta. Returns 0 if unknown.
+    // Callable from any thread.
+    long long getBroadcastTime() const
+    {
+        long long base = this->totUnix.load();
+        if (base == 0) return 0;
+        // pcr is the upper 32 bits of the 33-bit PCR base (LSB dropped) => 45kHz.
+        DWORD d = this->pcr - this->pcrAtTot.load();
+        return base + static_cast<long long>(static_cast<int32_t>(d)) / 45000;
     }
 };
 
@@ -303,11 +365,28 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     HWND hContainerWnd = nullptr;
     HWND hMessageWnd = nullptr;
     HWND hOneSegWnd = nullptr;
-    HBRUSH hbrPanelBack = nullptr;
+    HBRUSH   hbrPanelBack   = nullptr;
+    COLORREF panelBackColor = RGB(0xF0, 0xF0, 0xF0);
+    COLORREF panelTextColor = RGB(0x00, 0x00, 0x00);
     HBRUSH hbrBRGYBacks[4] = {};
     HFONT hPanelFont = nullptr;
     UINT panelInitialDpi;
     std::vector<std::pair<HWND, RECT>> panelItems;
+    // 勢いパネル
+    struct MomentumChannel {
+        int id;
+        std::string name;
+        std::string video;
+        int force;
+        std::string programTitle;
+    };
+    std::vector<MomentumChannel> momentumChannels;
+    HWND hMomentumPanel = nullptr;
+    wil::com_ptr<ICoreWebView2Environment>  webViewEnv;
+    wil::com_ptr<ICoreWebView2Controller>   momentumWebViewController;
+    wil::com_ptr<ICoreWebView2>             momentumWebView;
+    bool momentumWebViewReady   = false;
+    bool momentumWebViewPending = false;
     wil::com_ptr<IBasicVideo> basicVideo;
     wil::com_ptr<IBaseFilter> vmr7Renderer;
     wil::com_ptr<IBaseFilter> vmr9Renderer;
@@ -360,8 +439,35 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
+    JkcnslLogin    m_jkcnslLogin;
+    CommentNG      m_commentNg;
+    JikkyoStreamTable m_chTable;
+    CommentLogWriter  m_logWriter;
+    CommentLogReader  m_logReader;
+    std::wstring   m_logFolder;
+    bool           m_playbackActive = false; // playing recorded comments synced to TOT
+    long long      m_playbackLastT = 0;       // last emitted broadcast time
+    int            m_currentJkID = -1; // jkID of the current channel (for logging)
+    bool           m_mixing = false; // RefugeMixing active for the current stream
+    void PlaybackTick();
+    void ClearOnScreenComments();
+    DWORD          m_lastPostTick = 0;
+    std::wstring   m_lastPostComm;
+    std::wstring GetJkcnslPath() const;
+    void OnLoginEvent(JkcnslLogin::Event ev, const std::string& message);
+    void RefreshAuthState();   // query jkcnsl login state on a worker thread
+    void PushAuthState();      // push the cached auth state to the momentum panel
+    void PushNgUsers();        // push the NG user list to the momentum panel
+    bool m_loggedIn = false;
+    bool m_streamConnected = false;
+    bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
+    std::wstring m_loginMail;
     std::string DetectJkChannel() const;
+    std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
+    void SwitchToMomentumChannel(int index);
+    void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
+    void PostComment(const std::wstring& input);
     void UpdateCommentChannel();
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
@@ -371,6 +477,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void Disable(bool finalize);
     void EnablePanelButtons(bool enable);
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl);
+    void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
     void SetNetworkState(bool enable);
     void UpdateNetworkState();
@@ -391,6 +498,11 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
     static INT_PTR CALLBACK RemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static INT_PTR CALLBACK PanelRemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
+    static INT_PTR CALLBACK PanelMomentumDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
+    void InitMomentumWebView(HWND hwnd);
+    void CreateMomentumWebViewController(HWND hwnd);
+    void SendMomentumTheme();
+    void SendMomentumChannels();
     static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
     static LRESULT CALLBACK MessageWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -631,6 +743,14 @@ bool CDataBroadcastingWV2::Initialize()
     panel.ID = 1;
     panel.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     m_pApp->RegisterPanelItem(&panel);
+    TVTest::PanelItemInfo panel2 = {};
+    panel2.Size = sizeof(panel2);
+    panel2.Style = TVTest::PANEL_ITEM_STYLE_NEEDFOCUS;
+    panel2.pszIDText = L"TVTDataBroadcastingWV2MomentumPanel";
+    panel2.pszTitle = L"実況勢い";
+    panel2.ID = 2;
+    panel2.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+    m_pApp->RegisterPanelItem(&panel2);
     TVTest::StatusItemInfo statusItemInfo = {};
     statusItemInfo.Size = sizeof(statusItemInfo);
     statusItemInfo.ID = 1;
@@ -682,6 +802,11 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         {
             SetWindowPos(pThis->hVideoWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             KillTimer(hWnd, wParam);
+            break;
+        }
+        case IDT_PLAYBACK:
+        {
+            pThis->PlaybackTick();
             break;
         }
         case IDT_RESIZE:
@@ -905,6 +1030,28 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         pThis->SendComments(std::move(*comments));
         break;
     }
+    case WM_APP_LOGIN:
+    {
+        auto ev = std::unique_ptr<JkcnslLoginEvent>(reinterpret_cast<JkcnslLoginEvent*>(wParam));
+        pThis->OnLoginEvent(ev->event, ev->message);
+        break;
+    }
+    case WM_APP_AUTH:
+    {
+        auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
+        pThis->m_loggedIn = info->loggedIn;
+        pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
+        // m_postTargetRefuge is driven by the chosen per-channel source
+        // (UpdateCommentChannel), not the global cache_server_url.
+        pThis->PushAuthState();
+        break;
+    }
+    case WM_APP_CONN:
+    {
+        pThis->m_streamConnected = (wParam != 0);
+        pThis->PushAuthState();
+        break;
+    }
     }
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
@@ -1109,6 +1256,13 @@ void CDataBroadcastingWV2::InitWebView2()
             MessageBoxW(this->m_pApp->GetAppWindow(), (std::wstring(L"WebView2を初期化できませんでした。(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)\nHRESULT = 0x") + buf).c_str(), L"TVTDataBroadcastingWV2", MB_ICONERROR | MB_OK);
             this->m_pApp->EnablePlugin(false);
             return S_OK;
+        }
+        // 環境を保存し、保留中の勢いパネルがあればコントローラーを作成
+        this->webViewEnv = env;
+        if (this->momentumWebViewPending && this->hMomentumPanel)
+        {
+            this->momentumWebViewPending = false;
+            this->CreateMomentumWebViewController(this->hMomentumPanel);
         }
         wil::unique_cotaskmem_string ver;
         if (SUCCEEDED(env->get_BrowserVersionString(ver.put())))
@@ -1425,6 +1579,41 @@ void CDataBroadcastingWV2::InitWebView2()
                             ShellExecuteW(nullptr, L"open", wuri.c_str(), nullptr, nullptr, SW_SHOW);
                         }
                     }
+                    else if (type == "channelsUpdate")
+                    {
+                        this->momentumChannels.clear();
+                        for (auto& ch : a["channels"])
+                        {
+                            MomentumChannel mc;
+                            mc.id    = ch["id"].get<int>();
+                            mc.name  = ch["name"].get<std::string>();
+                            mc.video = ch["video"].get<std::string>();
+                            mc.force = ch["force"].get<int>();
+                            auto& pt = ch["programTitle"];
+                            mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
+                            this->momentumChannels.push_back(std::move(mc));
+                        }
+                        this->SendMomentumChannels();
+                    }
+                    else if (type == "addNgUser")
+                    {
+                        auto& v = a["userId"];
+                        if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
+                    }
+                    else if (type == "removeNgUser")
+                    {
+                        auto& v = a["userId"];
+                        if (v.is_string()) this->m_commentNg.RemoveUser(v.get<std::string>());
+                    }
+                    else if (type == "addNgRegex")
+                    {
+                        auto& v = a["pattern"];
+                        if (v.is_string()) this->m_commentNg.AddRegex(v.get<std::string>());
+                    }
+                    else if (type == "reloadNg")
+                    {
+                        this->m_commentNg.Load(this->iniFile);
+                    }
                 }
                 return S_OK;
             }).Get(), &token);
@@ -1439,16 +1628,39 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateCaptionState(false);
                 this->UpdateVolume();
-                // Send comment config (opacity + duration)
+                // Send channels WebSocket config
+                {
+                    std::wstring channelsWsUriW = this->GetIniItem(L"ChannelsWsUri", L"ws://localhost:5000/api/channels/ws");
+                    std::string channelsWsUri(channelsWsUriW.begin(), channelsWsUriW.end());
+                    nlohmann::json chMsg{
+                        { "type",   "channelsConfig" },
+                        { "ws_uri", channelsWsUri     },
+                    };
+                    std::stringstream chSs;
+                    chSs << chMsg;
+                    auto chJson = utf8StrToWString(chSs.str().c_str());
+                    this->webView->PostWebMessageAsJson(chJson.c_str());
+                }
+                // Send comment config (opacity + duration + shadow)
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
                     opacityPct = std::max(0, std::min(100, opacityPct));
                     int durationMs = this->GetIniItem(L"CommentDuration", 4000);
                     durationMs = std::max(1000, std::min(5000, durationMs));
+                    std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"rgba(0,0,0,0.7)");
+                    std::string shadowColor(shadowColorW.begin(), shadowColorW.end());
+                    bool shadowEnabled  = this->GetIniItem(L"CommentShadow",  1) != 0;
+                    bool outlineEnabled = this->GetIniItem(L"CommentOutline", 0) != 0;
+                    int fontSizeMedium  = this->GetIniItem(L"CommentFontSize", 24);
+                    fontSizeMedium = std::max(8, std::min(64, fontSizeMedium));
                     nlohmann::json cfgMsg{
-                        { "type",        "commentConfig"    },
-                        { "opacity",     opacityPct / 100.0 },
-                        { "duration_ms", durationMs         },
+                        { "type",              "commentConfig"    },
+                        { "opacity",           opacityPct / 100.0 },
+                        { "duration_ms",       durationMs         },
+                        { "shadow_color",      shadowColor        },
+                        { "shadow_enabled",    shadowEnabled      },
+                        { "outline_enabled",   outlineEnabled     },
+                        { "font_size_medium",  fontSizeMedium     },
                     };
                     std::stringstream cfgSs;
                     cfgSs << cfgMsg;
@@ -1741,10 +1953,36 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             OutputDebugStringA("\n");
             if (enableComment)
             {
+                this->m_commentNg.Load(this->iniFile);
                 this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
                     PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
                         new std::vector<Comment>(std::move(comments))), 0);
                 });
+                this->m_jkcnslReader.SetConnectionCallback([this](bool connected) {
+                    PostMessageW(this->hMessageWnd, WM_APP_CONN, connected ? 1 : 0, 0);
+                });
+                this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
+                    PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
+                        new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
+                });
+                // NicoJK-style connection model: refuge via the R command +
+                // RefugeUri, nicovideo via the L command + chatStreamID. This
+                // does NOT use jkcnsl's cache_server_url, so clear it (otherwise
+                // L{chatStreamID} would be routed through the cache).
+                this->m_chTable.Load(this->iniFile);
+                JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), "");
+                // Comment log recording (NicoJK-compatible). Use a folder
+                // separate from NicoJK's to avoid conflicts.
+                {
+                    bool logEnabled = this->GetIniItem(L"LogfileMode", 0) != 0;
+                    this->m_logFolder = this->GetIniItem(L"LogfileFolder", L"");
+                    this->m_logWriter.Configure(this->m_logFolder, logEnabled);
+                }
+                // Playback sync: poll TOT and feed recorded comments during file
+                // playback. Needs a log folder.
+                if (!this->m_logFolder.empty())
+                    SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
+                this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
         }
@@ -1752,6 +1990,10 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     else
     {
         this->m_jkcnslReader.Stop();
+        this->m_logWriter.Close();
+        KillTimer(this->hMessageWnd, IDT_PLAYBACK);
+        this->m_playbackActive = false;
+        this->m_playbackLastT = 0;
         this->EnablePanelButtons(false);
         this->Disable(false);
     }
@@ -1862,33 +2104,199 @@ void CDataBroadcastingWV2::UpdateVolume()
 
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
-    if (!this->webView || !this->webViewLoaded || comments.empty()) return;
+    if (comments.empty()) return;
+
+    // Phase B verification: broadcast time (TOT) vs real time (diff~0 live, large on playback).
+    {
+        static DWORD lastTotLog = 0;
+        DWORD now = GetTickCount();
+        if (now - lastTotLog > 10000)
+        {
+            lastTotLog = now;
+            long long bt = this->packetQueue.getBroadcastTime();
+            long long rt = static_cast<long long>(time(nullptr));
+            char buf[160];
+            sprintf_s(buf, "[TVTDataBroadcastingWV2] TOT broadcast=%lld real=%lld diff=%lld\n", bt, rt, rt - bt);
+            OutputDebugStringA(buf);
+        }
+    }
+
+    // arr  = comments to render on the canvas (NG-filtered)
+    // logArr = all comments for the panel log list (NG ones flagged)
     nlohmann::json arr = nlohmann::json::array();
+    nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
-        arr.push_back({
-            { "text",     c.text     },
-            { "color",    c.color    },
-            { "position", c.position },
-            { "size",     c.size     },
-            { "date",     c.date     },
+        // Record raw chat to the logfile (live comments only; never during playback).
+        if (!c.past && !this->m_playbackActive)
+            this->m_logWriter.Write(this->m_currentJkID, c.date, c.raw);
+
+        this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
+        // Past (backfilled) comments go to the log only, never flow on the canvas.
+        if (!c.past && !this->m_commentNg.IsNG(c))
+        {
+            arr.push_back({
+                { "text",     c.text     },
+                { "color",    c.color    },
+                { "position", c.position },
+                { "size",     c.size     },
+                { "date",     c.date     },
+            });
+        }
+        // nb = NG by regex/command (fixed); user NG is applied live in the panel.
+        logArr.push_back({
+            { "text",   c.text   },
+            { "color",  c.color  },
+            { "userId", c.userId },
+            { "date",   c.date   },
+            { "refuge", c.refuge },
+            { "past",   c.past   },
+            { "nb",     this->m_commentNg.IsNGExceptUser(c) },
         });
     }
-    nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+
+    // Flowing comments -> data-broadcasting WebView canvas.
+    if (this->webView && this->webViewLoaded && !arr.empty())
+    {
+        nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
+        std::stringstream ss; ss << msg;
+        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+    }
+
+    // Comment log list -> momentum panel WebView.
+    if (this->momentumWebView && this->momentumWebViewReady)
+    {
+        nlohmann::json m{ { "type", "commentLog" }, { "items", logArr } };
+        std::string script = "_update(" + m.dump() + ")";
+        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    }
 }
 
-std::string CDataBroadcastingWV2::DetectJkChannel() const
+// Post a comment to the jikkyo server via the open jkcnsl stream.
+// input may carry an optional "[mail]" prefix (e.g. "[shita green]text") to set
+// color/position/size, mirroring NicoJK's posting box convention.
+void CDataBroadcastingWV2::PostComment(const std::wstring& input)
+{
+    constexpr int   POST_COMMENT_MAX      = 76;   // jkcnsl/nicovideo limit
+    constexpr DWORD POST_COMMENT_INTERVAL = 2000; // anti-spam guard (ms)
+
+    // Japanese must be authored as wide literals: the project compiles without
+    // /utf-8, so narrow Japanese literals would be CP932 and break json.dump().
+    auto sendResult = [this](const char* status, const wchar_t* message) {
+        if (!this->momentumWebView || !this->momentumWebViewReady) return;
+        nlohmann::json j{ { "type", "postResult" }, { "status", status },
+                          { "message", wstrToUTF8String(message) } };
+        std::string script = "_update(" + j.dump() + ")";
+        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    };
+
+    if (!this->m_jkcnslReader.IsRunning()) { sendResult("error", L"コメントサーバに接続していません"); return; }
+
+    // Split optional [mail] prefix from the comment body.
+    std::wstring mail, comm;
+    if (!input.empty() && input[0] == L'[')
+    {
+        auto close = input.find(L']');
+        if (close != std::wstring::npos) { mail = input.substr(1, close - 1); comm = input.substr(close + 1); }
+        else                             { comm = input; }
+    }
+    else { comm = input; }
+
+    if (comm.empty()) return;
+    if (GetTickCount() - this->m_lastPostTick < POST_COMMENT_INTERVAL) { sendResult("error", L"投稿間隔が短すぎます"); return; }
+    if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", L"コメントが長すぎます"); return; }
+    if (comm == this->m_lastPostComm)                                { sendResult("error", L"前回と同じコメントです"); return; }
+
+    // Build "[mail]comment"; in mixing mode append the post target (nico/refuge)
+    // to the mail field so jkcnsl routes the post to the right upstream.
+    std::wstring targetTok = this->m_mixing ? (this->m_postTargetRefuge ? L" refuge" : L" nico") : L"";
+    std::wstring body = L"[" + mail + targetTok + L"]" + comm;
+    std::wstring cleaned;
+    cleaned.reserve(body.size());
+    for (wchar_t ch : body)
+    {
+        if (ch == L'\t' || ch == L'\n') cleaned.push_back(L'\x1e');
+        else if (ch != L'\r')           cleaned.push_back(ch);
+    }
+
+    std::string payload = wstrToUTF8String(cleaned.c_str());
+    if (this->m_jkcnslReader.Post(payload))
+    {
+        this->m_lastPostTick = GetTickCount();
+        this->m_lastPostComm = comm;
+        sendResult("ok", L"投稿しました");
+    }
+    else
+    {
+        sendResult("error", L"投稿に失敗しました");
+    }
+}
+
+void CDataBroadcastingWV2::ClearOnScreenComments()
+{
+    if (!this->webView) return;
+    nlohmann::json msg{ { "type", "clearComments" } };
+    std::stringstream ss; ss << msg;
+    this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+}
+
+// Polls the broadcast clock (TOT). When it is well behind real time we are
+// playing a recorded file: stop the live stream and feed recorded comments from
+// the log, synced to the advancing broadcast time.
+void CDataBroadcastingWV2::PlaybackTick()
+{
+    long long T = this->packetQueue.getBroadcastTime();
+    long long now = static_cast<long long>(time(nullptr));
+    bool shouldPlayback = (T != 0) && (now - T > 60); // >60s behind => playback
+
+    if (shouldPlayback && !this->m_playbackActive)
+    {
+        this->m_playbackActive = true;
+        this->m_jkcnslReader.Stop();   // stop live comments
+        this->m_logWriter.Close();     // stop recording during playback
+        this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
+        this->ClearOnScreenComments();
+        this->m_playbackLastT = 0;     // force initial seek
+    }
+    else if (!shouldPlayback && this->m_playbackActive)
+    {
+        this->m_playbackActive = false;
+        this->ClearOnScreenComments();
+        this->UpdateCommentChannel();  // resume live
+        return;
+    }
+
+    if (!this->m_playbackActive) return;
+
+    // Channel changed during playback -> reconfigure for the new jkID.
+    if (this->m_logReader.JkID() != this->m_currentJkID)
+    {
+        this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
+        this->m_playbackLastT = 0;
+        this->ClearOnScreenComments();
+    }
+
+    // Seek / jump (including the initial position).
+    if (this->m_playbackLastT == 0 || llabs(T - this->m_playbackLastT) > 5)
+    {
+        this->m_logReader.Seek(T);
+        this->ClearOnScreenComments();
+        this->m_playbackLastT = T;
+        return;
+    }
+
+    auto cs = this->m_logReader.Read(this->m_playbackLastT, T);
+    this->m_playbackLastT = T;
+    if (!cs.empty()) this->SendComments(std::move(cs));
+}
+
+std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId) const
 {
     // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
     // NetCat = 0x4 for BS (NetworkID==4), 0xF for terrestrial
-    WORD  netCat = (this->currentChannel.NetworkID == 4) ? 4 : 0xF;
-    DWORD key    = ((DWORD)netCat << 16) | this->currentService.ServiceID;
+    WORD  netCat = (networkId == 4) ? 4 : 0xF;
+    DWORD key    = ((DWORD)netCat << 16) | serviceId;
 
-    // Build key string e.g. "0xF0430"
     wchar_t keyStr[16];
     swprintf_s(keyStr, L"0x%X", key);
 
@@ -1911,49 +2319,195 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         return buf;
     }
 
-    // Fallback: built-in BS mapping
-    return CommentFetcher::DetectChannel(
+    // Fallback: built-in table
+    // NetworkID=0 はスキャン未実施を意味するため、地上波として見つからない場合はBSとしても検索する
+    auto result = CommentFetcher::DetectChannel(networkId, serviceId);
+    if (!result.empty()) return result;
+    if (networkId != 4) {
+        return CommentFetcher::DetectChannel(4, serviceId);
+    }
+    return "";
+}
+
+std::string CDataBroadcastingWV2::DetectJkChannel() const
+{
+    return this->DetectJkChannelFor(
         this->currentChannel.NetworkID,
         this->currentService.ServiceID);
 }
 
 void CDataBroadcastingWV2::UpdateCommentChannel()
 {
-    // Determine jikkyo channel: [Channels] in our INI or NicoJK.ini, then built-in BS map
-    std::string ch = this->DetectJkChannel();
+    // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
+    std::string video = this->DetectJkChannel();
+    if (video.empty()) return;
+    int jkID = 0;
+    for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
+    if (jkID <= 0) return;
+    this->m_currentJkID = jkID;
+    // During playback the live stream stays off; PlaybackTick drives the log.
+    if (this->m_playbackActive) return;
 
+    JikkyoStream st;
+    bool have = this->m_chTable.Resolve(jkID, st);
+
+    std::string refugeUri = wstrToUTF8String(this->GetIniItem(L"RefugeUri", L"").c_str());
+    bool mixing  = this->GetIniItem(L"RefugeMixing", 0) != 0;
+    bool dropFwd = this->GetIniItem(L"DropForwardedComment", 0) != 0;
+    bool postToRefuge = this->GetIniItem(L"PostToRefuge", 0) != 0;
+    const std::string cookie; // empty: jkcnsl uses its stored login session
+
+    // NicoJK connection decision (NicoJK.cpp ~4305):
+    //   refuge available + RefugeUri set  -> R command (optionally mixed with nico)
+    //   else nico chatStreamID + (no RefugeUri or mixing) -> L command
+    std::string cmd;
+    bool isMix = false, targetRefuge = false;
+    if (have && !st.refugeChatStreamID.empty() && !refugeUri.empty())
     {
+        std::string uri = refugeUri;
+        std::string jkStr = "jk" + std::to_string(jkID);
+        for (size_t i; (i = uri.find("{jkID}")) != std::string::npos;)
+            uri.replace(i, 6, jkStr);
+        for (size_t i; (i = uri.find("{chatStreamID}")) != std::string::npos;)
+            uri.replace(i, 14, st.refugeChatStreamID);
+
+        isMix = mixing && !st.chatStreamID.empty();
+        int type = (dropFwd || isMix) ? 2 : 1;
+        cmd = "R" + std::to_string(type) + " " + uri;
+        if (isMix) cmd += " " + st.chatStreamID + " " + cookie; // R2 {uri} {nicoId} {cookie}
+        targetRefuge = isMix ? postToRefuge : true;
+    }
+    else if (have && !st.chatStreamID.empty() && (refugeUri.empty() || mixing))
+    {
+        cmd = "L" + st.chatStreamID + (cookie.empty() ? "" : (" " + cookie));
+        targetRefuge = false;
+    }
+    else
+    {
+        // Channel not supported (no stream id) -> disconnect, like NicoJK.
         char logbuf[128];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel ch=%s", ch.c_str());
-        OutputDebugStringA(logbuf);
-        OutputDebugStringA("\n");
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
+        OutputDebugStringA(logbuf); OutputDebugStringA("\n");
+        if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
+        return;
     }
 
-    if (ch.empty()) return;
+    {
+        char logbuf[256];
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d cmd=%s", jkID, cmd.c_str());
+        OutputDebugStringA(logbuf); OutputDebugStringA("\n");
+    }
 
-    // Clear on-screen comments when channel changes
+    // No change: already streaming this exact command.
+    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() == cmd) return;
+
+    // Clear on-screen comments when the stream changes.
     if (this->webView)
     {
         nlohmann::json msg{ { "type", "clearComments" } };
-        std::stringstream ss;
-        ss << msg;
-        auto wjson = utf8StrToWString(ss.str().c_str());
-        this->webView->PostWebMessageAsJson(wjson.c_str());
+        std::stringstream ss; ss << msg;
+        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
     }
 
-    // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory)
-    // baseDirectory = "...\\Plugins\\TVTDataBroadcastingWV2"
-    // parent = "...\\Plugins", parent.parent = TVTest folder
-    auto jkcnslPath = std::filesystem::path(this->baseDirectory)
-        .parent_path().parent_path() / L"jkcnsl.exe";
+    this->m_mixing = isMix;
+    this->m_postTargetRefuge = targetRefuge;
+    if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
+    this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd);
+    this->PushAuthState(); // reflect the new post target colour
+}
 
-    // Restart if not running or channel changed
-    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() != ch) {
-        this->m_jkcnslReader.Stop();
+// jkcnsl.exe is always in the TVTest folder (parent of Plugins directory).
+// baseDirectory = "...\\Plugins\\TVTDataBroadcastingWV2"
+// parent = "...\\Plugins", parent.parent = TVTest folder
+std::wstring CDataBroadcastingWV2::GetJkcnslPath() const
+{
+    return (std::filesystem::path(this->baseDirectory)
+        .parent_path().parent_path() / L"jkcnsl.exe").wstring();
+}
+
+// Maps a login event to panel UI text (Japanese authored as wide literals) and
+// pushes it to the momentum panel. Runs on the UI thread (via WM_APP_LOGIN).
+void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string& message)
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+
+    const wchar_t* state = L"progress";
+    std::wstring text;
+    switch (ev)
+    {
+    case JkcnslLogin::Event::Progress:
+        state = L"progress";
+        if      (message == "start-login") text = L"ログインを開始しています…";
+        else if (message == "start-clear") text = L"ログイン情報を削除しています…";
+        else if (!message.empty())         text = utf8StrToWString(message.c_str()); // jkcnsl line (UTF-8)
+        break;
+    case JkcnslLogin::Event::Need2FA:
+        state = L"need2fa";
+        text  = L"2段階認証コードを入力して送信してください。";
+        break;
+    case JkcnslLogin::Event::Success:
+        state = L"success";
+        text  = (message == "clear") ? L"ログイン情報を削除しました。"
+                                     : L"ニコニコログインに成功しました。チャンネル切替または再接続後に反映されます。";
+        break;
+    case JkcnslLogin::Event::Failure:
+        state = L"failure";
+        if      (message == "cancel")     text = L"ログインを中止しました。";
+        else if (message == "disconnect") text = L"jkcnslとの通信が切断されました。";
+        else if (message == "clear")      text = L"ログイン情報の削除に失敗しました。";
+        else                              text = L"ログインに失敗しました。";
+        break;
     }
-    if (!this->m_jkcnslReader.IsRunning()) {
-        this->m_jkcnslReader.Start(jkcnslPath, ch);
-    }
+
+    nlohmann::json j{ { "type", "loginStatus" },
+                      { "state", wstrToUTF8String(state) },
+                      { "message", wstrToUTF8String(text.c_str()) } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+
+    // A completed login/clear changes the authenticated state.
+    if (ev == JkcnslLogin::Event::Success) this->RefreshAuthState();
+}
+
+// Queries jkcnsl's login state on a detached worker (the query spawns jkcnsl,
+// which can take a second), then marshals the result back via WM_APP_AUTH.
+void CDataBroadcastingWV2::RefreshAuthState()
+{
+    std::wstring path = this->GetJkcnslPath();
+    HWND hwnd = this->hMessageWnd;
+    std::thread([path, hwnd]() {
+        JkcnslSettings::LoginInfo info;
+        JkcnslSettings::QueryLogin(path, info);
+        PostMessageW(hwnd, WM_APP_AUTH, reinterpret_cast<WPARAM>(new JkcnslSettings::LoginInfo(info)), 0);
+    }).detach();
+}
+
+void CDataBroadcastingWV2::PushAuthState()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    // Post box colour by target (NicoJK-style): nico vs refuge, INI-configurable.
+    std::wstring nicoColW   = this->GetIniItem(L"NicoEditBoxColor",   L"#bbbbff");
+    std::wstring refugeColW = this->GetIniItem(L"RefugeEditBoxColor", L"#ffbbbb");
+    std::wstring boxColW    = this->m_postTargetRefuge ? refugeColW : nicoColW;
+
+    nlohmann::json j{ { "type", "authState" },
+                      { "loggedIn", this->m_loggedIn },
+                      { "connected", this->m_streamConnected },
+                      { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
+                      { "boxColor", wstrToUTF8String(boxColW.c_str()) },
+                      { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::PushNgUsers()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json users = nlohmann::json::array();
+    for (const auto& u : this->m_commentNg.GetUsers()) users.push_back(u);
+    nlohmann::json j{ { "type", "ngUsers" }, { "users", users } };
+    std::string script = "_update(" + j.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::SetCaptionState(bool enable)
@@ -2247,13 +2801,15 @@ INT_PTR CALLBACK CDataBroadcastingWV2::RemoteControlDlgProc(HWND hDlg, UINT uMsg
         if (LOWORD(wParam) == IDC_TOGGLE_CAPTION)
         {
             if (SendMessageW((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED)
-            {
                 pThis->OnCommand(IDC_ENABLE_CAPTION);
-            }
             else
-            {
                 pThis->OnCommand(IDC_DISABLE_CAPTION);
-            }
+        }
+        else if (LOWORD(wParam) == IDC_TOGGLE_COMMENT)
+        {
+            bool enabled = SendMessageW((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            pThis->SetIniItem(L"CommentEnabled", enabled ? L"1" : L"0");
+            pThis->UpdateCommentToggle();
         }
         else
         {
@@ -2348,6 +2904,9 @@ INT_PTR CALLBACK CDataBroadcastingWV2::PanelRemoteControlDlgProc(HWND hDlg, UINT
             SetWindowLongW(GetDlgItem(hDlg, IDC_TOGGLE_NETWORK), GWL_STYLE, GetWindowLongW(GetDlgItem(hDlg, IDC_TOGGLE_NETWORK), GWL_STYLE) | WS_VISIBLE);
             pThis->UpdateNetworkToggleButton(hDlg);
         }
+        // コメント表示トグルの初期状態
+        if (pThis->GetIniItem(L"CommentEnabled", 1))
+            SendDlgItemMessageW(hDlg, IDC_TOGGLE_COMMENT, BM_SETCHECK, BST_CHECKED, 0);
         pThis->panelInitialDpi = GetDpi(hDlg);
         // アイテムの初期位置を記録
         pThis->panelItems.clear();
@@ -2618,6 +3177,14 @@ bool CDataBroadcastingWV2::OnColorChange()
     {
         SendMessageW(this->hPanelWnd, WM_APP_ON_PANEL_COLOR_CHANGE, 0, 0);
     }
+    COLORREF newBack = this->m_pApp->GetColor(L"PanelBack");
+    COLORREF newText = this->m_pApp->GetColor(L"PanelText");
+    if (newBack != this->panelBackColor || newText != this->panelTextColor)
+    {
+        this->panelBackColor = newBack;
+        this->panelTextColor = newText;
+        this->SendMomentumTheme();
+    }
     return true;
 }
 
@@ -2628,8 +3195,21 @@ bool CDataBroadcastingWV2::OnPanelItemNotify(TVTest::PanelItemEventInfo* pInfo)
     case TVTest::PANEL_ITEM_EVENT_CREATE:
     {
         auto createEventInfo = CONTAINING_RECORD(pInfo, TVTest::PanelItemCreateEventInfo, EventInfo);
+        if (pInfo->ID == 2)
+        {
+            HWND hWnd = CreateDialogParamW(g_hinstDLL, MAKEINTRESOURCEW(IDD_MOMENTUM_PANEL), createEventInfo->hwndParent,
+                [](HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam) -> INT_PTR {
+                if (uMsg == WM_INITDIALOG)
+                    SetWindowLongPtrW(hDlg, GWLP_USERDATA, lParam);
+                auto pClientData = (void*)GetWindowLongPtrW(hDlg, GWLP_USERDATA);
+                return pClientData ? PanelMomentumDlgProc(hDlg, uMsg, wParam, lParam, pClientData) : 0;
+            }, (LPARAM)this);
+            ShowWindow(hWnd, SW_SHOW);
+            createEventInfo->hwndItem = hWnd;
+            this->hMomentumPanel = hWnd;
+            break;
+        }
         TVTest::ShowDialogInfo Info;
-
         Info.Flags = TVTest::SHOW_DIALOG_FLAG_MODELESS;
         Info.hinst = g_hinstDLL;
         Info.pszTemplate = MAKEINTRESOURCE(IDD_REMOTE_CONTROL_PANEL);
@@ -2679,6 +3259,572 @@ void CDataBroadcastingWV2::SetPanelFont()
         SendMessageW(hWnd, WM_SETFONT, (WPARAM)hFont, 0);
         return true;
     }, (LPARAM)this->hPanelFont);
+}
+
+void CDataBroadcastingWV2::UpdateCommentToggle()
+{
+    if (!this->webView) return;
+    bool enabled = this->GetIniItem(L"CommentEnabled", 1) != 0;
+    double opacity = enabled ? this->GetIniItem(L"CommentOpacity", 100) / 100.0 : 0.0;
+    nlohmann::json msg{{"type", "commentConfig"}, {"opacity", opacity}};
+    std::stringstream ss; ss << msg;
+    auto wstr = utf8StrToWString(ss.str().c_str());
+    this->webView->PostWebMessageAsJson(wstr.c_str());
+}
+
+static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+:root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
+     height:100vh;display:flex;flex-direction:column;position:relative}
+#post{display:flex;align-items:center;gap:4px;padding:3px 4px;border-top:1px solid rgba(128,128,128,.3)}
+#pi{flex:1;min-width:0;font:inherit;color:var(--fg);background:var(--bg);
+    border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
+#pi:focus{outline:none;border-color:var(--fg)}
+#pi:disabled{opacity:.5;cursor:not-allowed;background:rgba(128,128,128,.18)}
+#cb{flex:0 0 auto;width:24px;height:24px;border:1px solid var(--sb);border-radius:3px;cursor:pointer;
+    background:var(--bg);color:var(--fg);font-size:12pt;line-height:1;display:flex;align-items:center;justify-content:center}
+#cb.open{background:var(--hov)}
+#cmdpop{position:absolute;left:4px;right:4px;bottom:34px;z-index:10;display:flex;gap:6px;padding:6px;
+        background:var(--bg);border:1px solid var(--sb);border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+#cmdpop .po{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.pg{display:flex;align-items:center;gap:4px;min-height:20px;flex-wrap:wrap}
+.pl{width:3em;flex-shrink:0;opacity:.7;font-size:9pt;text-align:right}
+.cg{display:grid;grid-template-columns:repeat(5,20px);gap:3px}
+.cc{width:20px;height:16px;border-radius:3px;cursor:pointer;border:1px solid var(--sb);
+    display:flex;align-items:center;justify-content:center;font-size:9pt;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.65)}
+.cc.on::after{content:'✓'}
+.cc.c0{background:#fff;border-color:#aaa;color:#111;text-shadow:none}
+.cc.c1{background:#e00}.cc.c2{background:#f7a}.cc.c3{background:#f80}.cc.c4{background:#fd0}
+.cc.c5{background:#0b0}.cc.c6{background:#0cc}.cc.c7{background:#00e}.cc.c8{background:#808}.cc.c9{background:#222}
+.tb{flex-shrink:0;padding:0 4px;height:16px;line-height:16px;border:1px solid var(--fg);border-radius:3px;
+    cursor:pointer;background:transparent;color:var(--fg);font-size:9pt;opacity:.6}
+.tb.on{background:var(--fg);color:var(--bg);opacity:1}
+.db{margin-left:auto;flex-shrink:0;padding:0 6px;height:18px;border:1px solid var(--sb);border-radius:3px;
+    cursor:pointer;background:transparent;color:inherit;font-size:9pt;opacity:.75}
+#pv{width:92px;min-height:62px;flex-shrink:0;border:1px solid var(--sb);border-radius:4px;position:relative;overflow:hidden}
+#pv::before{content:'';position:absolute;left:8px;right:8px;top:50%;border-top:1px dashed rgba(128,128,128,.35)}
+#pt{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;max-width:80px;overflow:hidden;
+    text-overflow:ellipsis;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.28);font-size:11pt;color:var(--fg)}
+#pt.ue{top:6px}#pt.naka{top:50%;transform:translate(-50%,-50%)}#pt.shita{bottom:6px}
+#pt.big{font-size:14pt}#pt.small{font-size:9pt}
+#pr{font-size:8pt;white-space:nowrap;overflow:hidden;max-width:40%}
+#pr.ok{color:#3a3}#pr.error{color:#d44}
+#lb{flex:0 0 auto;font:inherit;color:var(--fg);background:var(--bg);
+    border:1px solid var(--sb);border-radius:3px;padding:2px 6px;cursor:pointer}
+#lb:hover{background:var(--hov)}
+#lb.authin{border-color:#3a8a3a;color:#3a8a3a}
+#login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
+       border-top:1px solid rgba(128,128,128,.3)}
+#login input{font:inherit;color:var(--fg);background:var(--bg);
+       border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
+#login input:focus{outline:none;border-color:var(--fg)}
+#login .row{display:flex;gap:4px}
+#login button{font:inherit;color:var(--fg);background:var(--bg);
+       border:1px solid var(--sb);border-radius:3px;padding:2px 8px;cursor:pointer}
+#login button:hover{background:var(--hov)}
+#ls{font-size:8pt;min-height:1.2em;white-space:normal;word-break:break-all}
+#ls.success{color:#3a3}#ls.failure{color:#d44}
+#w{flex:1;min-height:0;overflow-y:auto}
+#tabs{display:flex;flex:0 0 auto;border-bottom:1px solid rgba(128,128,128,.3)}
+#tabs button{flex:1;font:inherit;color:var(--fg);background:transparent;border:none;
+   padding:3px 0;cursor:pointer;opacity:.6;border-bottom:2px solid transparent}
+#tabs button.on{opacity:1;border-bottom-color:var(--fg);font-weight:bold}
+#tabs button:hover{background:var(--hov)}
+#log{flex:1;min-height:0;overflow-y:auto;font-size:9pt;padding:1px 0}
+#log::-webkit-scrollbar{width:8px}
+#log::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
+.le{display:flex;gap:5px;padding:1px 5px;white-space:nowrap}
+.le:hover{background:var(--hov)}
+.le .lt{flex:0 0 auto;opacity:.55;font-size:8pt;font-variant-numeric:tabular-nums}
+.le .lm{flex:0 0 auto;font-size:8pt;font-family:monospace;opacity:.85}
+.le .lm.rf{color:#c33}.le .lm.nc{color:#36c}
+.le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
+.le.past{opacity:.65;font-style:italic}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
+th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
+   border-bottom:1px solid rgba(128,128,128,.3);cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden}
+th:hover{background:var(--hov)}
+td{padding:1px 4px;white-space:nowrap;overflow:hidden}
+tr:hover td{background:var(--hov)}
+tr.sel td{background:var(--sel)}
+.pe{color:#9acd32}
+#w::-webkit-scrollbar{width:8px}
+#w::-webkit-scrollbar-track{background:transparent}
+#w::-webkit-scrollbar-thumb{background:var(--sb);border-radius:4px}
+#w::-webkit-scrollbar-thumb:hover{background:var(--fg);opacity:.6}
+</style></head><body>
+<div id="tabs"><button id="tabF" class="on">勢い</button><button id="tabL">ログ</button></div>
+<div id="w"><table>
+<colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
+<thead><tr>
+<th onclick="srt(0)">実況番号<span id="a0"></span></th>
+<th onclick="srt(1)">局名<span id="a1"></span></th>
+<th onclick="srt(2)">勢い<span id="a2">▼</span></th>
+<th onclick="srt(3)">番組<span id="a3"></span></th>
+</tr></thead>
+<tbody id="tb"></tbody>
+</table></div>
+<div id="log" hidden></div>
+<div id="login" hidden>
+<input id="lm" type="text" placeholder="メールアドレス" autocomplete="off">
+<input id="lp" type="password" placeholder="パスワード" autocomplete="off">
+<div class="row" id="otprow" hidden>
+  <input id="lo" type="text" inputmode="numeric" placeholder="2段階認証コード" style="flex:1">
+  <button id="losend">送信</button>
+</div>
+<div class="row">
+  <button id="ldo">ログイン</button>
+  <button id="lcancel">中止</button>
+  <button id="lclear" style="margin-left:auto">情報削除</button>
+</div>
+<div id="ls"></div>
+</div>
+<div id="cmdpop" hidden>
+<div class="po">
+<div class="pg"><span class="pl">色</span><div class="cg"><div class="cc c0 on" data-c="" title="白"></div><div class="cc c1" data-c="red" title="赤"></div><div class="cc c2" data-c="pink" title="ピンク"></div><div class="cc c3" data-c="orange" title="橙"></div><div class="cc c4" data-c="yellow" title="黄"></div><div class="cc c5" data-c="green" title="緑"></div><div class="cc c6" data-c="cyan" title="水色"></div><div class="cc c7" data-c="blue" title="青"></div><div class="cc c8" data-c="purple" title="紫"></div><div class="cc c9" data-c="black" title="黒"></div></div></div>
+<div class="pg"><span class="pl">位置</span><button class="tb on" data-p="">流れる</button><button class="tb" data-p="ue">上</button><button class="tb" data-p="shita">下</button></div>
+<div class="pg"><span class="pl">サイズ</span><button class="tb" data-s="big">大</button><button class="tb on" data-s="">普通</button><button class="tb" data-s="small">小</button></div>
+<div class="pg"><span class="pl"></span><button id="anon" class="tb" title="184(匿名)で投稿">匿名(184)</button><button id="db" class="db" title="白・流れる・普通に戻す">リセット</button></div>
+</div>
+<div id="pv"><div id="pt" class="naka">コメント</div></div>
+</div>
+<div id="post"><button id="cb" title="コマンド選択">▷</button><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
+<script>
+let ch=[],sc=2,sa=false,sid=null;
+function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
+function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();window.chrome.webview.postMessage({cmd:'sortChanged',col:sc,asc:sa});}
+function render(){
+  const s=[...ch].sort((a,b)=>{
+    const d=sc===0?a.id-b.id:sc===2?a.force-b.force:sc===1?(a.name||'').localeCompare(b.name||''):(a.programTitle||'').localeCompare(b.programTitle||'');
+    return sa?d:-d;
+  });
+  for(let i=0;i<4;i++)document.getElementById('a'+i).textContent=i===sc?(sa?'▲':'▼'):'';
+  const tb=document.getElementById('tb');
+  tb.innerHTML='';
+  s.forEach(c=>{
+    const col=fc(c.force),tr=document.createElement('tr');
+    if(c.id===sid)tr.className='sel';
+    tr.innerHTML='<td style="color:'+col+'">'+( c.video||'')+'</td><td>'+(c.name||'')+'</td>'
+      +'<td style="color:'+col+'">'+(c.force>=0?c.force:'???')+'</td><td class="pe">'+(c.programTitle||'')+'</td>';
+    tr.addEventListener('click',()=>{sid=c.id;render();window.chrome.webview.postMessage({cmd:'select',id:c.id});});
+    tb.appendChild(tr);
+  });
+}
+let prTimer=null;
+function showResult(status,msg){
+  const pr=document.getElementById('pr');
+  pr.textContent=msg;pr.className=status;
+  clearTimeout(prTimer);
+  prTimer=setTimeout(()=>{pr.textContent='';pr.className='';},4000);
+}
+const pi=document.getElementById('pi');
+let mcol='',mpos='',msz='',manon=false;
+pi.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.isComposing){
+    const t=pi.value;
+    if(t.trim()!==''){
+      const mail=[manon?'184':'',mcol,mpos,msz].filter(Boolean).join(' ');
+      window.chrome.webview.postMessage({cmd:'post',text:t,mail});
+      pi.value='';
+    }
+    e.preventDefault();
+  }
+});
+const $=id=>document.getElementById(id);
+// コマンド選択(色/位置/サイズ) ボタン
+(function(){
+  let open=false;
+  const TR={'':{'':'▷','big':'▶','small':'▹'},'ue':{'':'△','big':'▲','small':'▵'},'shita':{'':'▽','big':'▼','small':'▿'}};
+  const CL={'':'','red':'#d00','pink':'#e88','orange':'#e70','yellow':'#b90','green':'#090','cyan':'#088','blue':'#00b','purple':'#707','black':'#555'};
+  const pop=$('cmdpop'),cb=$('cb');
+  function upd(){
+    cb.textContent=TR[mpos][msz];const col=CL[mcol];
+    cb.style.color=col||'';cb.style.borderColor=col?col+'99':'';
+    const pt=$('pt');pt.style.color=col||'var(--fg)';pt.className=(mpos||'naka')+(msz?' '+msz:'');
+  }
+  function close(){if(open){open=false;cb.classList.remove('open');pop.hidden=true;}}
+  cb.addEventListener('mousedown',e=>e.preventDefault());
+  cb.addEventListener('click',()=>{open=!open;cb.classList.toggle('open',open);pop.hidden=!open;});
+  pop.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();});
+  pi.addEventListener('focus',close);
+  $('w').addEventListener('mousedown',close);
+  const cc=[...pop.querySelectorAll('[data-c]')];
+  cc.forEach(b=>b.addEventListener('click',()=>{mcol=b.dataset.c;cc.forEach(x=>x.classList.toggle('on',x.dataset.c===mcol));upd();}));
+  const pb=[...pop.querySelectorAll('[data-p]')];
+  pb.forEach(b=>b.addEventListener('click',()=>{mpos=b.dataset.p;pb.forEach(x=>x.classList.toggle('on',x.dataset.p===mpos));upd();}));
+  const sb=[...pop.querySelectorAll('[data-s]')];
+  sb.forEach(b=>b.addEventListener('click',()=>{msz=b.dataset.s;sb.forEach(x=>x.classList.toggle('on',x.dataset.s===msz));upd();}));
+  const an=$('anon');
+  an.addEventListener('click',()=>{manon=!manon;an.classList.toggle('on',manon);});
+  $('db').addEventListener('click',()=>{mcol='';mpos='';msz='';manon=false;an.classList.remove('on');cc.forEach(x=>x.classList.toggle('on',x.dataset.c===''));pb.forEach(x=>x.classList.toggle('on',x.dataset.p===''));sb.forEach(x=>x.classList.toggle('on',x.dataset.s===''));upd();});
+  upd();
+})();
+let authKnown=false;
+function pickFg(hex){
+  let h=(hex||'').replace('#','');
+  if(h.length===3)h=h.split('').map(c=>c+c).join('');
+  const r=parseInt(h.substr(0,2),16)||0,g=parseInt(h.substr(2,2),16)||0,b=parseInt(h.substr(4,2),16)||0;
+  return (r*299+g*587+b*114)/1000>=160?'#000':'#fff';
+}
+function setAuth(loggedIn,connected,mail,boxColor){
+  authKnown=true;
+  // NicoJK流: 未接続なら投稿欄を隠す
+  pi.style.display=connected?'':'none';
+  if(connected){
+    pi.disabled=!loggedIn;
+    if(loggedIn&&boxColor){
+      pi.style.background=boxColor;pi.style.color=pickFg(boxColor);pi.style.borderColor=boxColor;
+    }else{
+      pi.style.background='';pi.style.color='';pi.style.borderColor='';
+    }
+    pi.placeholder=loggedIn?'コメントを投稿 (Enterで送信)':'ログインが必要です';
+  }
+  const lb=$('lb');
+  lb.classList.toggle('authin',loggedIn);
+  lb.title=loggedIn?('ログイン中'+(mail?': '+mail:'')):'ニコニコログイン';
+}
+// 状態が分かるまで投稿欄は隠す
+pi.style.display='none';
+function setLogin(s,msg){
+  const ls=$('ls');ls.textContent=msg||'';
+  ls.className=(s==='success'||s==='failure')?s:'';
+  $('otprow').hidden=(s!=='need2fa');
+  if(s==='need2fa')$('lo').focus();
+  if(s==='success'||s==='failure')$('lo').value='';
+  // 成功したらフォームを自動的に畳む(メッセージを少し見せてから)
+  if(s==='success')setTimeout(()=>{$('login').hidden=true;},2000);
+}
+$('lb').addEventListener('click',()=>{$('login').hidden=!$('login').hidden;});
+$('ldo').addEventListener('click',()=>{
+  const mail=$('lm').value.trim(),password=$('lp').value;
+  if(mail===''||password===''){setLogin('failure','メールとパスワードを入力してください。');return;}
+  setLogin('progress','');window.chrome.webview.postMessage({cmd:'login',mail,password});
+});
+$('losend').addEventListener('click',()=>{
+  const otp=$('lo').value.trim();
+  if(otp!=='')window.chrome.webview.postMessage({cmd:'loginOtp',otp});
+});
+$('lo').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){$('losend').click();e.preventDefault();}});
+$('lclear').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginClear'});});
+$('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
+// コメントログ一覧 / タブ切替
+const logEl=$('log');
+let atBottom=true;
+logEl.addEventListener('scroll',()=>{atBottom=logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-8;});
+function showTab(f){
+  $('tabF').classList.toggle('on',f);$('tabL').classList.toggle('on',!f);
+  $('w').hidden=!f;logEl.hidden=f;
+  if(!f&&atBottom)logEl.scrollTop=logEl.scrollHeight;
+}
+$('tabF').addEventListener('click',()=>showTab(true));
+$('tabL').addEventListener('click',()=>showTab(false));
+let ngUsers=new Set();
+function applyNg(e){
+  const u=e.dataset.u;
+  const ng=e.dataset.nb==='1'||(u&&ngUsers.has(u));
+  e.classList.toggle('ng',ng);
+}
+function logAdd(items){
+  const frag=document.createDocumentFragment();
+  (items||[]).forEach(d=>{
+    const e=document.createElement('div');e.className='le'+(d.past?' past':'');
+    if(d.userId)e.dataset.u=d.userId;
+    e.dataset.nb=d.nb?'1':'0';applyNg(e);
+    const tm=new Date((d.date||0)*1000);
+    const lt=document.createElement('span');lt.className='lt';
+    lt.textContent=('0'+tm.getHours()).slice(-2)+':'+('0'+tm.getMinutes()).slice(-2)+':'+('0'+tm.getSeconds()).slice(-2);
+    const lm=document.createElement('span');lm.className='lm '+(d.refuge?'rf':'nc');
+    lm.textContent=(d.userId||'').substring(0,3);
+    if(d.userId)lm.title=d.userId;
+    const lx=document.createElement('span');lx.className='lx';
+    if(d.color)lx.style.color=d.color;lx.textContent=d.text;
+    e.append(lt,lm,lx);frag.appendChild(e);
+  });
+  logEl.appendChild(frag);
+  while(logEl.childElementCount>500)logEl.removeChild(logEl.firstChild);
+  if(!logEl.hidden&&atBottom)logEl.scrollTop=logEl.scrollHeight;
+}
+function setNgUsers(list){
+  ngUsers=new Set(list||[]);
+  [...logEl.children].forEach(applyNg);
+}
+logEl.addEventListener('contextmenu',e=>{
+  e.preventDefault();const it=e.target.closest('.le');if(!it||!it.dataset.u)return;
+  const u=it.dataset.u;
+  if(ngUsers.has(u)){
+    if(confirm('このユーザのNGを解除しますか?'))window.chrome.webview.postMessage({cmd:'unNgUser',userId:u});
+  }else{
+    if(confirm('このユーザをNGに追加しますか?'))window.chrome.webview.postMessage({cmd:'ngUser',userId:u});
+  }
+});
+function _update(m){
+  if(m.type==='channelsUpdate'){ch=m.channels;render();}
+  else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
+  else if(m.type==='commentLog'){logAdd(m.items);}
+  else if(m.type==='ngUsers'){setNgUsers(m.users);}
+  else if(m.type==='postResult'){showResult(m.status,m.message);}
+  else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
+  else if(m.type==='thm'){
+    const s=document.documentElement.style;
+    s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
+    if(m.sb)s.setProperty('--sb',m.sb);
+    document.body.style.background=m.bg;
+  }
+}
+</script></body></html>)HTML";
+
+static std::string colorToHex(COLORREF c)
+{
+    char buf[8];
+    sprintf_s(buf, "#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+    return buf;
+}
+
+/*static*/ INT_PTR CALLBACK CDataBroadcastingWV2::PanelMomentumDlgProc(
+    HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData)
+{
+    auto pThis = static_cast<CDataBroadcastingWV2*>(pClientData);
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        pThis->panelBackColor = pThis->m_pApp->GetColor(L"PanelBack");
+        pThis->panelTextColor = pThis->m_pApp->GetColor(L"PanelText");
+        pThis->InitMomentumWebView(hDlg);
+        return TRUE;
+    case WM_SIZE:
+        if (pThis->momentumWebViewController)
+        {
+            RECT rc;
+            GetClientRect(hDlg, &rc);
+            pThis->momentumWebViewController->put_Bounds(rc);
+        }
+        return TRUE;
+    case WM_DESTROY:
+        pThis->momentumWebViewReady = false;
+        pThis->momentumWebView = nullptr;
+        if (pThis->momentumWebViewController)
+        {
+            pThis->momentumWebViewController->Close();
+            pThis->momentumWebViewController = nullptr;
+        }
+        pThis->hMomentumPanel = nullptr;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+void CDataBroadcastingWV2::InitMomentumWebView(HWND hwnd)
+{
+    if (this->webViewEnv)
+        this->CreateMomentumWebViewController(hwnd);
+    else
+        this->momentumWebViewPending = true; // データ放送 WebView2 の環境作成後に起動
+}
+
+void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
+{
+    this->webViewEnv->CreateCoreWebView2Controller(hwnd,
+        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+            [this, hwnd](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
+                if (FAILED(hr) || !IsWindow(hwnd)) return S_OK;
+
+                this->momentumWebViewController = ctrl;
+                ctrl->get_CoreWebView2(this->momentumWebView.put());
+
+                wil::com_ptr<ICoreWebView2Settings> settings;
+                this->momentumWebView->get_Settings(settings.put());
+                settings->put_IsScriptEnabled(TRUE);
+                settings->put_AreDefaultContextMenusEnabled(TRUE);
+                settings->put_IsStatusBarEnabled(FALSE);
+                settings->put_AreDevToolsEnabled(TRUE);
+
+                RECT rc; GetClientRect(hwnd, &rc);
+                ctrl->put_Bounds(rc);
+                ctrl->put_IsVisible(TRUE);
+
+                EventRegistrationToken token;
+                this->momentumWebView->add_WebMessageReceived(
+                    Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                        [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                            wil::unique_cotaskmem_string msg;
+                            args->get_WebMessageAsJson(msg.put());
+                            try {
+                                // Proper wide->UTF-8 (naive truncation would corrupt
+                                // Japanese in posted comments / credentials).
+                                auto j = nlohmann::json::parse(wstrToUTF8String(msg.get()));
+                                auto cmd = j["cmd"].get<std::string>();
+                                if (cmd == "select")
+                                    this->SwitchToMomentumChannelById(j["id"].get<int>());
+                                else if (cmd == "post")
+                                {
+                                    std::string text = j["text"].get<std::string>();
+                                    std::string mail = j.value("mail", "");
+                                    // Reuse PostComment's "[mail]text" parsing.
+                                    std::string input = mail.empty() ? text : ("[" + mail + "]" + text);
+                                    this->PostComment(utf8StrToWString(input.c_str()));
+                                }
+                                else if (cmd == "login")
+                                    this->m_jkcnslLogin.Login(this->GetJkcnslPath(),
+                                        j["mail"].get<std::string>(), j["password"].get<std::string>());
+                                else if (cmd == "loginOtp")
+                                    this->m_jkcnslLogin.SubmitOtp(j["otp"].get<std::string>());
+                                else if (cmd == "loginClear")
+                                    this->m_jkcnslLogin.ClearLogin(this->GetJkcnslPath());
+                                else if (cmd == "loginCancel")
+                                    this->m_jkcnslLogin.Cancel();
+                                else if (cmd == "sortChanged")
+                                {
+                                    this->SetIniItem(L"MomentumSortColumn", std::to_wstring(j["col"].get<int>()).c_str());
+                                    this->SetIniItem(L"MomentumSortAscending", j["asc"].get<bool>() ? L"1" : L"0");
+                                }
+                                else if (cmd == "ngUser")
+                                {
+                                    auto& v = j["userId"];
+                                    if (v.is_string() && this->m_commentNg.AddUser(v.get<std::string>()))
+                                        this->PushNgUsers();
+                                }
+                                else if (cmd == "unNgUser")
+                                {
+                                    auto& v = j["userId"];
+                                    if (v.is_string() && this->m_commentNg.RemoveUser(v.get<std::string>()))
+                                        this->PushNgUsers();
+                                }
+                            } catch (...) {}
+                            return S_OK;
+                        }
+                    ).Get(), &token);
+
+                this->momentumWebView->add_NavigationCompleted(
+                    Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                        [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                            this->momentumWebViewReady = true;
+                            this->SendMomentumTheme();
+                            // Restore the saved sort order before sending channels.
+                            {
+                                int col = this->GetIniItem(L"MomentumSortColumn", 2);
+                                bool asc = this->GetIniItem(L"MomentumSortAscending", 0) != 0;
+                                nlohmann::json sj{ { "type", "sortConfig" }, { "col", col }, { "asc", asc } };
+                                std::string script = "_update(" + sj.dump() + ")";
+                                this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+                            }
+                            this->SendMomentumChannels();
+                            this->PushAuthState();
+                            this->PushNgUsers();
+                            return S_OK;
+                        }
+                    ).Get(), &token);
+
+                this->momentumWebView->NavigateToString(kMomentumHtml);
+                return S_OK;
+            }
+        ).Get());
+}
+
+void CDataBroadcastingWV2::SendMomentumTheme()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    COLORREF bg = this->panelBackColor, fg = this->panelTextColor;
+    COLORREF sb = RGB((GetRValue(bg)+GetRValue(fg))/2, (GetGValue(bg)+GetGValue(fg))/2, (GetBValue(bg)+GetBValue(fg))/2);
+    nlohmann::json msg{{"type","thm"},{"bg",colorToHex(bg)},{"fg",colorToHex(fg)},{"sb",colorToHex(sb)}};
+    std::string script = "_update(" + msg.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::SendMomentumChannels()
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json channels = nlohmann::json::array();
+    for (const auto& ch : this->momentumChannels)
+    {
+        channels.push_back({
+            {"id", ch.id}, {"name", ch.name}, {"video", ch.video}, {"force", ch.force},
+            {"programTitle", ch.programTitle.empty() ? nlohmann::json(nullptr) : nlohmann::json(ch.programTitle)},
+        });
+    }
+    nlohmann::json msg{{"type","channelsUpdate"},{"channels",channels}};
+    std::string script = "_update(" + msg.dump() + ")";
+    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::SwitchToMomentumChannelById(int id)
+{
+    for (int i = 0; i < (int)this->momentumChannels.size(); i++)
+    {
+        if (this->momentumChannels[i].id == id)
+        {
+            this->SwitchToMomentumChannel(i);
+            return;
+        }
+    }
+}
+
+void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
+{
+    if (index < 0 || index >= (int)this->momentumChannels.size()) return;
+    const auto& target = this->momentumChannels[index];
+    const std::string& targetJk = target.video;
+    if (targetJk.empty()) return;
+
+    // Step 1: 全チューニングスペースを走査（NicoJKと同方式）
+    int spaceNum = 0;
+    this->m_pApp->GetTuningSpace(&spaceNum);
+
+    for (int space = 0; space < spaceNum; space++)
+    {
+        for (int channel = 0; ; channel++)
+        {
+            TVTest::ChannelInfo info = {};
+            info.Size = sizeof(info);
+            if (!this->m_pApp->GetChannelInfo(space, channel, &info)) break;
+
+            if (this->DetectJkChannelFor(info.NetworkID, info.ServiceID) == targetJk)
+            {
+                TVTest::ChannelSelectInfo sel = {};
+                sel.Size      = sizeof(sel);
+                sel.Flags     = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE;
+                sel.Channel   = -1;
+                // 地上波はSpaceで指定、BS/CSはNetworkIDで指定（NicoJKと同方式）
+                if (0x7880 <= info.NetworkID && info.NetworkID <= 0x7FEF) {
+                    sel.Space = space;
+                } else {
+                    sel.Space     = -1;
+                    sel.NetworkID = info.NetworkID;
+                }
+                sel.ServiceID = info.ServiceID;
+                this->m_pApp->SelectChannel(&sel);
+                return;
+            }
+        }
+    }
+
+    // Step 2: 同一BonDriverに見つからない場合のフォールバック
+    // テーブルのNetworkID+ServiceIDでTVTestのチャンネルDBを検索（BS↔地上波跨ぎ）
+    if (targetJk.size() > 2 && targetJk[0] == 'j' && targetJk[1] == 'k')
+    {
+        int jkNum = std::stoi(targetJk.substr(2));
+        for (int j = 0; j < (int)std::size(DEFAULT_NTSID_TABLE); j++)
+        {
+            if ((DEFAULT_NTSID_TABLE[j].jkID & ~0x40000000) != jkNum) continue;
+
+            WORD netCat   = DEFAULT_NTSID_TABLE[j].ntsID & 0xFFFF;
+            WORD serviceId = (WORD)(DEFAULT_NTSID_TABLE[j].ntsID >> 16);
+            WORD networkId = (netCat == 0x0004) ? 4 : 0;
+
+            TVTest::ChannelSelectInfo sel = {};
+            sel.Size      = sizeof(sel);
+            sel.Flags     = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE;
+            sel.NetworkID = networkId;
+            sel.ServiceID = serviceId;
+            sel.Space     = -1;
+            sel.Channel   = -1;
+            if (this->m_pApp->SelectChannel(&sel)) return;
+        }
+    }
 }
 
 bool CDataBroadcastingWV2::OnVolumeChange(int Volume, bool fMute)
@@ -2835,6 +3981,7 @@ void CDataBroadcastingWV2::OnDarkModeChanged(bool fDarkMode)
     {
         this->m_pApp->SetWindowDarkMode(this->hOneSegWnd, this->m_pApp->GetDarkModeStatus() & TVTest::DARK_MODE_STATUS_DIALOG_DARK);
     }
+    this->OnColorChange();
 }
 
 void CDataBroadcastingWV2::UpdateDigitButton()

@@ -249,7 +249,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CommentFetcher.h" />
+    <ClInclude Include="CommentNG.h" />
     <ClInclude Include="JkcnslReader.h" />
+    <ClInclude Include="JkcnslLogin.h" />
+    <ClInclude Include="JkcnslSettings.h" />
+    <ClInclude Include="JikkyoStreamTable.h" />
+    <ClInclude Include="CommentLogWriter.h" />
+    <ClInclude Include="CommentLogReader.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
     <ClInclude Include="OneSeg.h" />
@@ -259,7 +265,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />
+    <ClCompile Include="CommentNG.cpp" />
     <ClCompile Include="JkcnslReader.cpp" />
+    <ClCompile Include="JkcnslLogin.cpp" />
+    <ClCompile Include="JkcnslSettings.cpp" />
+    <ClCompile Include="JikkyoStreamTable.cpp" />
+    <ClCompile Include="CommentLogWriter.cpp" />
+    <ClCompile Include="CommentLogReader.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
     <ClCompile Include="OneSeg.cpp" />

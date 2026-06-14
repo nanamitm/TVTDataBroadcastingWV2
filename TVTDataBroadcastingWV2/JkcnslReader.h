@@ -47,6 +47,7 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_connected{ false };
+    bool m_inPastChat = false; // inside an x_past_chat range (worker thread only)
     std::string m_channel;
 
     void ReadLoop();

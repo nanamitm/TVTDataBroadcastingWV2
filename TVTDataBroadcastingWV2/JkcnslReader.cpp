@@ -67,8 +67,12 @@ void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineB
                 if (c0 == '*' || c0 == '-')              SetConnected(true);
                 else if (c0 == '.' || c0 == '!' || c0 == '?') SetConnected(false);
             }
+            // Past comments are backfilled inside <x_past_chat_begin>..<end>.
+            if (lineBuf.find("x_past_chat_begin") != std::string::npos)      m_inPastChat = true;
+            else if (lineBuf.find("x_past_chat_end") != std::string::npos)   m_inPastChat = false;
             Comment c;
             if (ParseChatLine(lineBuf, c) && m_callback) {
+                c.past = m_inPastChat;
                 std::vector<Comment> batch;
                 batch.push_back(std::move(c));
                 m_callback(std::move(batch));
@@ -227,6 +231,7 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& stre
     CloseHandle(pi.hThread);
     m_hProcess = pi.hProcess;
     m_channel  = streamCommand;
+    m_inPastChat = false;
     m_running  = true;
 
     m_thread = std::thread([this] { ReadLoop(); });

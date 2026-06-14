@@ -2031,7 +2031,8 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     for (auto& c : comments)
     {
         this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
-        if (!this->m_commentNg.IsNG(c))
+        // Past (backfilled) comments go to the log only, never flow on the canvas.
+        if (!c.past && !this->m_commentNg.IsNG(c))
         {
             arr.push_back({
                 { "text",     c.text     },
@@ -2048,6 +2049,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
             { "userId", c.userId },
             { "date",   c.date   },
             { "refuge", c.refuge },
+            { "past",   c.past   },
             { "nb",     this->m_commentNg.IsNGExceptUser(c) },
         });
     }
@@ -3178,6 +3180,7 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 .le .lm.rf{color:#c33}.le .lm.nc{color:#36c}
 .le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
+.le.past{opacity:.65;font-style:italic}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -3365,7 +3368,7 @@ function applyNg(e){
 function logAdd(items){
   const frag=document.createDocumentFragment();
   (items||[]).forEach(d=>{
-    const e=document.createElement('div');e.className='le';
+    const e=document.createElement('div');e.className='le'+(d.past?' past':'');
     if(d.userId)e.dataset.u=d.userId;
     e.dataset.nb=d.nb?'1':'0';applyNg(e);
     const tm=new Date((d.date||0)*1000);

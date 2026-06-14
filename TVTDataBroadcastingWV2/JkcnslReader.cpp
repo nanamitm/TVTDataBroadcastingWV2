@@ -12,10 +12,17 @@ static void JkDbg(const char* msg)
 // Valid jikkyo channels for jkcnsl L command: jk1-jk9, jk101, jk211
 static bool IsValidJkChannel(const std::string& ch)
 {
-    if (ch.size() < 3 || ch[0] != 'j' || ch[1] != 'k') return false;
-    int n = 0;
-    try { n = std::stoi(ch.substr(2)); } catch (...) { return false; }
-    return (n >= 1 && n <= 9) || n == 101 || n == 211;
+    // Cache-server source keys: "jk{n}" / "co{n}" with an optional trailing 'r'
+    // (e.g. jk141, jk141r, co141). The cache server resolves these.
+    if (ch.size() < 3) return false;
+    bool jk = ch[0] == 'j' && ch[1] == 'k';
+    bool co = ch[0] == 'c' && ch[1] == 'o';
+    if (!jk && !co) return false;
+    size_t i = 2, digits = 0;
+    while (i < ch.size() && ch[i] >= '0' && ch[i] <= '9') { ++i; ++digits; }
+    if (digits == 0) return false;
+    if (i == ch.size()) return true;
+    return (ch[i] == 'r' && i + 1 == ch.size());
 }
 
 /*static*/ std::string JkcnslReader::GetXmlAttr(const std::string& xml, const std::string& attr)

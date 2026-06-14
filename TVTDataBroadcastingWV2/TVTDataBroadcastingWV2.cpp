@@ -318,12 +318,19 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     UINT panelInitialDpi;
     std::vector<std::pair<HWND, RECT>> panelItems;
     // 勢いパネル
+    struct ChannelSource {
+        std::string key;
+        std::string sourceType; // official / unofficial / refuge / local / unknown
+        bool        configured = false;
+        bool        running = false;
+    };
     struct MomentumChannel {
         int id;
         std::string name;
         std::string video;
         int force;
         std::string programTitle;
+        std::vector<ChannelSource> sources;
     };
     std::vector<MomentumChannel> momentumChannels;
     HWND hMomentumPanel = nullptr;
@@ -403,6 +410,12 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendComments(std::vector<Comment> comments);
     void PostComment(const std::wstring& input);
     void UpdateCommentChannel();
+    // Resolve the connection source key for a jikkyo channel (e.g. "jk141")
+    // using the global preference (INI CommentSourcePreference) and the source
+    // list from the channels snapshot. refuge=true if the chosen source is a
+    // refuge/local source.
+    struct ChosenSource { std::string key; bool refuge = false; };
+    ChosenSource ChooseSource(const std::string& video) const;
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
@@ -970,7 +983,8 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
         pThis->m_loggedIn = info->loggedIn;
         pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
-        pThis->m_postTargetRefuge = !info->cacheServerUrl.empty();
+        // m_postTargetRefuge is driven by the chosen per-channel source
+        // (UpdateCommentChannel), not the global cache_server_url.
         pThis->PushAuthState();
         break;
     }
@@ -1519,9 +1533,24 @@ void CDataBroadcastingWV2::InitWebView2()
                             mc.force = ch["force"].get<int>();
                             auto& pt = ch["programTitle"];
                             mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
+                            if (ch.contains("sources") && ch["sources"].is_array())
+                            {
+                                for (auto& s : ch["sources"])
+                                {
+                                    ChannelSource cs;
+                                    cs.key        = s.value("key", "");
+                                    cs.sourceType = s.value("sourceType", "");
+                                    cs.configured = s.value("configured", false);
+                                    cs.running    = s.value("running", false);
+                                    if (!cs.key.empty()) mc.sources.push_back(std::move(cs));
+                                }
+                            }
                             this->momentumChannels.push_back(std::move(mc));
                         }
                         this->SendMomentumChannels();
+                        // Apply the source preference now that source lists are known
+                        // (reconnects only if the chosen key changed).
+                        this->UpdateCommentChannel();
                     }
                     else if (type == "addNgUser")
                     {
@@ -2149,21 +2178,57 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         this->currentService.ServiceID);
 }
 
+CDataBroadcastingWV2::ChosenSource CDataBroadcastingWV2::ChooseSource(const std::string& video) const
+{
+    // Default: connect by the detected jk key; the cache server auto-falls back.
+    ChosenSource fallback{ video, false };
+
+    // Find the channel's source list from the latest snapshot.
+    const MomentumChannel* mc = nullptr;
+    for (const auto& c : this->momentumChannels) {
+        if (c.video == video) { mc = &c; break; }
+    }
+    if (!mc || mc->sources.empty()) return fallback;
+
+    std::wstring prefW = const_cast<CDataBroadcastingWV2*>(this)->GetIniItem(L"CommentSourcePreference", L"official");
+    bool preferRefuge = (prefW == L"refuge");
+
+    auto pick = [&](std::initializer_list<const char*> types) -> const ChannelSource* {
+        for (const char* t : types)
+            for (const auto& s : mc->sources)
+                if (s.configured && s.sourceType == t) return &s;
+        return nullptr;
+    };
+
+    const ChannelSource* s = preferRefuge ? pick({ "refuge", "local" }) : pick({ "official", "unofficial" });
+    if (!s) s = preferRefuge ? pick({ "official", "unofficial" }) : pick({ "refuge", "local" });
+    if (!s) return fallback;
+
+    bool refuge = (s->sourceType == "refuge" || s->sourceType == "local");
+    return ChosenSource{ s->key, refuge };
+}
+
 void CDataBroadcastingWV2::UpdateCommentChannel()
 {
     // Determine jikkyo channel: [Channels] in our INI or NicoJK.ini, then built-in BS map
-    std::string ch = this->DetectJkChannel();
+    std::string video = this->DetectJkChannel();
+    if (video.empty()) return;
+
+    ChosenSource src = this->ChooseSource(video);
 
     {
-        char logbuf[128];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel ch=%s", ch.c_str());
+        char logbuf[160];
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel video=%s key=%s", video.c_str(), src.key.c_str());
         OutputDebugStringA(logbuf);
         OutputDebugStringA("\n");
     }
 
-    if (ch.empty()) return;
+    // No change: already streaming the chosen source key.
+    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() == src.key) {
+        return;
+    }
 
-    // Clear on-screen comments when channel changes
+    // Clear on-screen comments when the source/channel changes.
     if (this->webView)
     {
         nlohmann::json msg{ { "type", "clearComments" } };
@@ -2173,15 +2238,12 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
         this->webView->PostWebMessageAsJson(wjson.c_str());
     }
 
-    auto jkcnslPath = this->GetJkcnslPath();
-
-    // Restart if not running or channel changed
-    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() != ch) {
+    this->m_postTargetRefuge = src.refuge;
+    if (this->m_jkcnslReader.IsRunning()) {
         this->m_jkcnslReader.Stop();
     }
-    if (!this->m_jkcnslReader.IsRunning()) {
-        this->m_jkcnslReader.Start(jkcnslPath, ch);
-    }
+    this->m_jkcnslReader.Start(this->GetJkcnslPath(), src.key);
+    this->PushAuthState(); // reflect the new post target colour
 }
 
 // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory).

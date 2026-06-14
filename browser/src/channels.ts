@@ -1,3 +1,12 @@
+export interface SourceInfo {
+    key: string;
+    sourceType: string;   // official / unofficial / refuge / local / unknown
+    configured: boolean;
+    running: boolean;
+    commentable: boolean;
+    requiresAuth: boolean;
+}
+
 export interface ChannelInfo {
     id: number;
     name: string;
@@ -7,6 +16,7 @@ export interface ChannelInfo {
     viewers: number;
     comments: number;
     programTitle: string | null;
+    sources: SourceInfo[];
 }
 
 export class ChannelsClient {
@@ -46,6 +56,14 @@ export class ChannelsClient {
                     viewers: ch.viewers ?? 0,
                     comments: ch.comments ?? 0,
                     programTitle: ch.program?.title ?? null,
+                    sources: (ch.sources ?? []).map((s: any) => ({
+                        key: s.key ?? "",
+                        sourceType: s.sourceType ?? "unknown",
+                        configured: s.configured ?? false,
+                        running: s.running ?? false,
+                        commentable: s.commentable ?? false,
+                        requiresAuth: s.requiresAuth ?? false,
+                    })),
                 });
             }
         } else if (msg.type === "stats") {

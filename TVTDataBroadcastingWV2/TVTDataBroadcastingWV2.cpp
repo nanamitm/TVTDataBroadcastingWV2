@@ -3138,7 +3138,7 @@ tr.sel td{background:var(--sel)}
 </div>
 <div id="ls"></div>
 </div>
-<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">ﾛｸﾞｲﾝ</button></div>
+<div id="post"><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
 <script>
 let ch=[],sc=2,sa=false,sid=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}

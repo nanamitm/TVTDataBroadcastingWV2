@@ -10,20 +10,6 @@ static void JkDbg(const char* msg)
 }
 
 // Valid jikkyo channels for jkcnsl L command: jk1-jk9, jk101, jk211
-static bool IsValidJkChannel(const std::string& ch)
-{
-    // Cache-server source keys: "jk{n}" / "co{n}" with an optional trailing 'r'
-    // (e.g. jk141, jk141r, co141). The cache server resolves these.
-    if (ch.size() < 3) return false;
-    bool jk = ch[0] == 'j' && ch[1] == 'k';
-    bool co = ch[0] == 'c' && ch[1] == 'o';
-    if (!jk && !co) return false;
-    size_t i = 2, digits = 0;
-    while (i < ch.size() && ch[i] >= '0' && ch[i] <= '9') { ++i; ++digits; }
-    if (digits == 0) return false;
-    if (i == ch.size()) return true;
-    return (ch[i] == 'r' && i + 1 == ch.size());
-}
 
 /*static*/ std::string JkcnslReader::GetXmlAttr(const std::string& xml, const std::string& attr)
 {
@@ -162,17 +148,11 @@ void JkcnslReader::ReadLoop()
     m_running = false;
 }
 
-bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkChannel)
+bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& streamCommand)
 {
     if (m_running) return true;
-    if (jkChannel.empty()) return false;
-
-    if (!IsValidJkChannel(jkChannel)) {
-        char buf[64];
-        sprintf_s(buf, "channel '%s' not supported by L command, skipping", jkChannel.c_str());
-        JkDbg(buf);
-        return false;
-    }
+    if (streamCommand.empty()) return false;
+    if (streamCommand.find_first_of("\r\n") != std::string::npos) return false;
 
     if (GetFileAttributesW(jkcnslPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         JkDbg("jkcnsl.exe not found");
@@ -244,13 +224,13 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& jkCh
 
     CloseHandle(pi.hThread);
     m_hProcess = pi.hProcess;
-    m_channel  = jkChannel;
+    m_channel  = streamCommand;
     m_running  = true;
 
     m_thread = std::thread([this] { ReadLoop(); });
 
-    // Send stream command
-    std::string cmd = "L" + jkChannel + "\r\n";
+    // Send the full stream command (e.g. "Lch2646436" or "R1 wss://.../watch/jk141").
+    std::string cmd = streamCommand + "\r\n";
     JkDbg(("Sending: " + cmd).c_str());
     DWORD written = 0;
     WriteFile(m_hStdinWrite, cmd.c_str(), static_cast<DWORD>(cmd.size()), &written, nullptr);

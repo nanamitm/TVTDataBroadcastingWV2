@@ -17,6 +17,7 @@
 #include "JkcnslReader.h"
 #include "JkcnslLogin.h"
 #include "JkcnslSettings.h"
+#include "JikkyoStreamTable.h"
 #include <shellapi.h>
 
 using namespace Microsoft::WRL;
@@ -318,19 +319,12 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     UINT panelInitialDpi;
     std::vector<std::pair<HWND, RECT>> panelItems;
     // 勢いパネル
-    struct ChannelSource {
-        std::string key;
-        std::string sourceType; // official / unofficial / refuge / local / unknown
-        bool        configured = false;
-        bool        running = false;
-    };
     struct MomentumChannel {
         int id;
         std::string name;
         std::string video;
         int force;
         std::string programTitle;
-        std::vector<ChannelSource> sources;
     };
     std::vector<MomentumChannel> momentumChannels;
     HWND hMomentumPanel = nullptr;
@@ -393,6 +387,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     JkcnslReader   m_jkcnslReader;
     JkcnslLogin    m_jkcnslLogin;
     CommentNG      m_commentNg;
+    JikkyoStreamTable m_chTable;
+    bool           m_mixing = false; // RefugeMixing active for the current stream
     DWORD          m_lastPostTick = 0;
     std::wstring   m_lastPostComm;
     std::wstring GetJkcnslPath() const;
@@ -410,12 +406,6 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendComments(std::vector<Comment> comments);
     void PostComment(const std::wstring& input);
     void UpdateCommentChannel();
-    // Resolve the connection source key for a jikkyo channel (e.g. "jk141")
-    // using the global preference (INI CommentSourcePreference) and the source
-    // list from the channels snapshot. refuge=true if the chosen source is a
-    // refuge/local source.
-    struct ChosenSource { std::string key; bool refuge = false; };
-    ChosenSource ChooseSource(const std::string& video) const;
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
@@ -1533,24 +1523,9 @@ void CDataBroadcastingWV2::InitWebView2()
                             mc.force = ch["force"].get<int>();
                             auto& pt = ch["programTitle"];
                             mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
-                            if (ch.contains("sources") && ch["sources"].is_array())
-                            {
-                                for (auto& s : ch["sources"])
-                                {
-                                    ChannelSource cs;
-                                    cs.key        = s.value("key", "");
-                                    cs.sourceType = s.value("sourceType", "");
-                                    cs.configured = s.value("configured", false);
-                                    cs.running    = s.value("running", false);
-                                    if (!cs.key.empty()) mc.sources.push_back(std::move(cs));
-                                }
-                            }
                             this->momentumChannels.push_back(std::move(mc));
                         }
                         this->SendMomentumChannels();
-                        // Apply the source preference now that source lists are known
-                        // (reconnects only if the chosen key changed).
-                        this->UpdateCommentChannel();
                     }
                     else if (type == "addNgUser")
                     {
@@ -1922,19 +1897,12 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                     PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
                         new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
                 });
-                // Configure the comment source (jkcnsl cache_server_url) before
-                // connecting. "(keep)" leaves jkcnsl's own setting untouched;
-                // "nico"/"none" clears it (direct nicovideo path).
-                {
-                    auto cacheUrlW = this->GetIniItem(L"CommentCacheServerUrl", L"(keep)");
-                    if (cacheUrlW != L"(keep)")
-                    {
-                        std::string url;
-                        if (cacheUrlW != L"nico" && cacheUrlW != L"none")
-                            url = wstrToUTF8String(cacheUrlW.c_str());
-                        JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), url);
-                    }
-                }
+                // NicoJK-style connection model: refuge via the R command +
+                // RefugeUri, nicovideo via the L command + chatStreamID. This
+                // does NOT use jkcnsl's cache_server_url, so clear it (otherwise
+                // L{chatStreamID} would be routed through the cache).
+                this->m_chTable.Load(this->iniFile);
+                JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), "");
                 this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
@@ -2109,8 +2077,10 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", L"コメントが長すぎます"); return; }
     if (comm == this->m_lastPostComm)                                { sendResult("error", L"前回と同じコメントです"); return; }
 
-    // Build "[mail]comment"; convert tab/newline to the record separator and drop CR.
-    std::wstring body = L"[" + mail + L"]" + comm;
+    // Build "[mail]comment"; in mixing mode append the post target (nico/refuge)
+    // to the mail field so jkcnsl routes the post to the right upstream.
+    std::wstring targetTok = this->m_mixing ? (this->m_postTargetRefuge ? L" refuge" : L" nico") : L"";
+    std::wstring body = L"[" + mail + targetTok + L"]" + comm;
     std::wstring cleaned;
     cleaned.reserve(body.size());
     for (wchar_t ch : body)
@@ -2178,71 +2148,80 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         this->currentService.ServiceID);
 }
 
-CDataBroadcastingWV2::ChosenSource CDataBroadcastingWV2::ChooseSource(const std::string& video) const
-{
-    // Default: connect by the detected jk key; the cache server auto-falls back.
-    ChosenSource fallback{ video, false };
-
-    // Find the channel's source list from the latest snapshot.
-    const MomentumChannel* mc = nullptr;
-    for (const auto& c : this->momentumChannels) {
-        if (c.video == video) { mc = &c; break; }
-    }
-    if (!mc || mc->sources.empty()) return fallback;
-
-    std::wstring prefW = const_cast<CDataBroadcastingWV2*>(this)->GetIniItem(L"CommentSourcePreference", L"official");
-    bool preferRefuge = (prefW == L"refuge");
-
-    auto pick = [&](std::initializer_list<const char*> types) -> const ChannelSource* {
-        for (const char* t : types)
-            for (const auto& s : mc->sources)
-                if (s.configured && s.sourceType == t) return &s;
-        return nullptr;
-    };
-
-    const ChannelSource* s = preferRefuge ? pick({ "refuge", "local" }) : pick({ "official", "unofficial" });
-    if (!s) s = preferRefuge ? pick({ "official", "unofficial" }) : pick({ "refuge", "local" });
-    if (!s) return fallback;
-
-    bool refuge = (s->sourceType == "refuge" || s->sourceType == "local");
-    return ChosenSource{ s->key, refuge };
-}
-
 void CDataBroadcastingWV2::UpdateCommentChannel()
 {
-    // Determine jikkyo channel: [Channels] in our INI or NicoJK.ini, then built-in BS map
+    // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
     std::string video = this->DetectJkChannel();
     if (video.empty()) return;
+    int jkID = 0;
+    for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
+    if (jkID <= 0) return;
 
-    ChosenSource src = this->ChooseSource(video);
+    JikkyoStream st;
+    bool have = this->m_chTable.Resolve(jkID, st);
 
+    std::string refugeUri = wstrToUTF8String(this->GetIniItem(L"RefugeUri", L"").c_str());
+    bool mixing  = this->GetIniItem(L"RefugeMixing", 0) != 0;
+    bool dropFwd = this->GetIniItem(L"DropForwardedComment", 0) != 0;
+    bool postToRefuge = this->GetIniItem(L"PostToRefuge", 0) != 0;
+    const std::string cookie; // empty: jkcnsl uses its stored login session
+
+    // NicoJK connection decision (NicoJK.cpp ~4305):
+    //   refuge available + RefugeUri set  -> R command (optionally mixed with nico)
+    //   else nico chatStreamID + (no RefugeUri or mixing) -> L command
+    std::string cmd;
+    bool isMix = false, targetRefuge = false;
+    if (have && !st.refugeChatStreamID.empty() && !refugeUri.empty())
     {
-        char logbuf[160];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel video=%s key=%s", video.c_str(), src.key.c_str());
-        OutputDebugStringA(logbuf);
-        OutputDebugStringA("\n");
-    }
+        std::string uri = refugeUri;
+        std::string jkStr = "jk" + std::to_string(jkID);
+        for (size_t i; (i = uri.find("{jkID}")) != std::string::npos;)
+            uri.replace(i, 6, jkStr);
+        for (size_t i; (i = uri.find("{chatStreamID}")) != std::string::npos;)
+            uri.replace(i, 14, st.refugeChatStreamID);
 
-    // No change: already streaming the chosen source key.
-    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() == src.key) {
+        isMix = mixing && !st.chatStreamID.empty();
+        int type = (dropFwd || isMix) ? 2 : 1;
+        cmd = "R" + std::to_string(type) + " " + uri;
+        if (isMix) cmd += " " + st.chatStreamID + " " + cookie; // R2 {uri} {nicoId} {cookie}
+        targetRefuge = isMix ? postToRefuge : true;
+    }
+    else if (have && !st.chatStreamID.empty() && (refugeUri.empty() || mixing))
+    {
+        cmd = "L" + st.chatStreamID + (cookie.empty() ? "" : (" " + cookie));
+        targetRefuge = false;
+    }
+    else
+    {
+        // Channel not supported (no stream id) -> disconnect, like NicoJK.
+        char logbuf[128];
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
+        OutputDebugStringA(logbuf); OutputDebugStringA("\n");
+        if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
         return;
     }
 
-    // Clear on-screen comments when the source/channel changes.
+    {
+        char logbuf[256];
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d cmd=%s", jkID, cmd.c_str());
+        OutputDebugStringA(logbuf); OutputDebugStringA("\n");
+    }
+
+    // No change: already streaming this exact command.
+    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() == cmd) return;
+
+    // Clear on-screen comments when the stream changes.
     if (this->webView)
     {
         nlohmann::json msg{ { "type", "clearComments" } };
-        std::stringstream ss;
-        ss << msg;
-        auto wjson = utf8StrToWString(ss.str().c_str());
-        this->webView->PostWebMessageAsJson(wjson.c_str());
+        std::stringstream ss; ss << msg;
+        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
     }
 
-    this->m_postTargetRefuge = src.refuge;
-    if (this->m_jkcnslReader.IsRunning()) {
-        this->m_jkcnslReader.Stop();
-    }
-    this->m_jkcnslReader.Start(this->GetJkcnslPath(), src.key);
+    this->m_mixing = isMix;
+    this->m_postTargetRefuge = targetRefuge;
+    if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
+    this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd);
     this->PushAuthState(); // reflect the new post target colour
 }
 

@@ -43,16 +43,26 @@ public:
 
     bool HasUser(const std::string& userId) const;
 
+    // Apply [CustomReplace] sed-style substitutions to the comment text in place.
+    void ApplyReplace(std::string& text) const;
+
 private:
     struct RegexRule {
         std::string pattern; // original UTF-8 pattern (as stored in INI)
         std::regex  re;
     };
+    struct ReplaceRule {
+        std::regex  re;
+        std::string fmt; // std::regex_replace format ($1 etc.)
+    };
 
-    std::wstring             m_iniPath;
-    std::vector<RegexRule>   m_regexes;
-    std::vector<std::string> m_users;    // exact user_id match
-    std::vector<std::string> m_commands; // exact mail token match
+    std::wstring              m_iniPath;
+    std::vector<RegexRule>    m_regexes;
+    std::vector<std::string>  m_users;    // exact user_id match
+    std::vector<std::string>  m_commands; // exact mail token match
+    std::vector<ReplaceRule>  m_replaces; // [CustomReplace] text substitutions
+
+    void LoadReplaces(const std::wstring& iniPath);
 
     // Find the smallest free numeric index for keyPrefix (e.g. "User") in [NG].
     int NextFreeIndex(const wchar_t* keyPrefix) const;

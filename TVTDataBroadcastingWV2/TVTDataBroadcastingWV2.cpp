@@ -2030,6 +2030,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     nlohmann::json logArr = nlohmann::json::array();
     for (auto& c : comments)
     {
+        this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
         if (!this->m_commentNg.IsNG(c))
         {
             arr.push_back({

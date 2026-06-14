@@ -47,6 +47,7 @@ void CommentNG::Load(const std::wstring& iniPath)
     m_regexes.clear();
     m_users.clear();
     m_commands.clear();
+    LoadReplaces(iniPath);
 
     // Read the whole [NG] section: returns "Key=Value\0Key=Value\0\0".
     std::vector<wchar_t> buf(4096);
@@ -85,6 +86,50 @@ void CommentNG::Load(const std::wstring& iniPath)
             m_users.push_back(valU8);
         } else if (startsWith(L"Command")) {
             m_commands.push_back(valU8);
+        }
+    }
+}
+
+void CommentNG::LoadReplaces(const std::wstring& iniPath)
+{
+    m_replaces.clear();
+
+    std::vector<wchar_t> buf(4096);
+    for (;;) {
+        DWORD n = GetPrivateProfileSectionW(L"CustomReplace", buf.data(),
+                                            static_cast<DWORD>(buf.size()), iniPath.c_str());
+        if (n < buf.size() - 2) break;
+        buf.resize(buf.size() * 2);
+    }
+
+    // Each entry: "Replace{n} = s{delim}regex{delim}replacement{delim}". The
+    // delimiter is the first char after 's' (NicoJK-style sed substitution).
+    static const std::regex reSed(R"(^[Ss](.)([\s\S]+?)\1([\s\S]*?)\1g?$)");
+    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) {
+        std::wstring entry(p);
+        auto eq = entry.find(L'=');
+        if (eq == std::wstring::npos) continue;
+        std::string val = WideToUtf8(entry.substr(eq + 1));
+        std::smatch m;
+        if (!std::regex_match(val, m, reSed)) continue;
+        try {
+            ReplaceRule r;
+            r.re.assign(m[2].str());
+            r.fmt = m[3].str();
+            m_replaces.push_back(std::move(r));
+        } catch (const std::regex_error&) {
+            // skip invalid pattern
+        }
+    }
+}
+
+void CommentNG::ApplyReplace(std::string& text) const
+{
+    for (const auto& r : m_replaces) {
+        try {
+            text = std::regex_replace(text, r.re, r.fmt);
+        } catch (const std::regex_error&) {
+            // ignore
         }
     }
 }

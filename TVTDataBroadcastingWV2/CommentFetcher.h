@@ -11,6 +11,7 @@ struct Comment {
     std::string size;     // "small" / "medium" / "big"
     std::string userId;   // chat user_id (for user NG)
     std::string mail;     // raw mail field (for command NG, e.g. "184")
+    bool refuge = false;  // from a refuge source (x_refuge / nx_jikkyo)
     time_t date = 0;      // Unix timestamp
 };
 

@@ -2046,6 +2046,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
             { "color",  c.color  },
             { "userId", c.userId },
             { "date",   c.date   },
+            { "refuge", c.refuge },
             { "nb",     this->m_commentNg.IsNGExceptUser(c) },
         });
     }
@@ -3172,6 +3173,8 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 .le{display:flex;gap:5px;padding:1px 5px;white-space:nowrap}
 .le:hover{background:var(--hov)}
 .le .lt{flex:0 0 auto;opacity:.55;font-size:8pt;font-variant-numeric:tabular-nums}
+.le .lm{flex:0 0 auto;font-size:8pt;font-family:monospace;opacity:.85}
+.le .lm.rf{color:#c33}.le .lm.nc{color:#36c}
 .le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
@@ -3365,9 +3368,12 @@ function logAdd(items){
     const tm=new Date((d.date||0)*1000);
     const lt=document.createElement('span');lt.className='lt';
     lt.textContent=('0'+tm.getHours()).slice(-2)+':'+('0'+tm.getMinutes()).slice(-2)+':'+('0'+tm.getSeconds()).slice(-2);
+    const lm=document.createElement('span');lm.className='lm '+(d.refuge?'rf':'nc');
+    lm.textContent=(d.userId||'').substring(0,3);
+    if(d.userId)lm.title=d.userId;
     const lx=document.createElement('span');lx.className='lx';
     if(d.color)lx.style.color=d.color;lx.textContent=d.text;
-    e.append(lt,lx);frag.appendChild(e);
+    e.append(lt,lm,lx);frag.appendChild(e);
   });
   logEl.appendChild(frag);
   while(logEl.childElementCount>500)logEl.removeChild(logEl.firstChild);

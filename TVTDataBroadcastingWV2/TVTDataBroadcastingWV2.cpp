@@ -82,6 +82,10 @@ private:
     int pcrPID = -1;
     DWORD pcr = 0;
     DWORD lastBlockPCR = 0;
+    // Broadcast wall-clock from TDT/TOT (PID 0x0014), with the PCR at that moment
+    // for interpolation. totUnix==0 means unknown.
+    std::atomic<long long> totUnix{ 0 };
+    std::atomic<DWORD>     pcrAtTot{ 0 };
 public:
     static constexpr size_t packetSize = 188;
     static constexpr size_t packetBlockSize = packetSize * 500;
@@ -134,6 +138,41 @@ public:
                     // PCRを取得する。時計演算の便利のため下位1bitは捨てる
                     this->pcrPIDCandidates.clear();
                     this->pcr = (static_cast<DWORD>(packet[6]) << 24) | (packet[7] << 16) | (packet[8] << 8) | packet[9];
+                }
+            }
+        }
+
+        // TDT/TOT (PID 0x0014): broadcast wall-clock time.
+        if (pid == 0x0014 && !transportErrorIndicator && !!(adaptationFieldControl & 1))
+        {
+            bool pusi = !!(packet[1] & 0x40);
+            if (pusi)
+            {
+                int off = 4;
+                if (adaptationFieldControl & 2) off += 1 + packet[4]; // skip adaptation field
+                if (off < static_cast<int>(packetSize))
+                {
+                    off += 1 + packet[off]; // pointer_field
+                    if (off + 8 <= static_cast<int>(packetSize))
+                    {
+                        BYTE tableId = packet[off];
+                        if (tableId == 0x70 || tableId == 0x73) // TDT / TOT
+                        {
+                            const BYTE* t = packet + off + 3; // skip table_id + section_length(2)
+                            int mjd = (t[0] << 8) | t[1];
+                            int hh = (t[2] >> 4) * 10 + (t[2] & 0xf);
+                            int mm = (t[3] >> 4) * 10 + (t[3] & 0xf);
+                            int ss = (t[4] >> 4) * 10 + (t[4] & 0xf);
+                            if (mjd > 40587 && hh < 24 && mm < 60 && ss < 60)
+                            {
+                                // MJD 40587 = 1970-01-01. ARIB time is JST(UTC+9).
+                                long long unixT = static_cast<long long>(mjd - 40587) * 86400
+                                                + hh * 3600 + mm * 60 + ss - 32400;
+                                this->totUnix.store(unixT);
+                                this->pcrAtTot.store(this->pcr);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -213,6 +252,18 @@ public:
     {
         std::lock_guard<std::mutex> lock(this->queueMutex);
         this->pidsToExclude.swap(pids);
+    }
+
+    // Current broadcast Unix time (JST converted to UTC seconds), interpolated
+    // from the last TOT with the PCR delta. Returns 0 if unknown.
+    // Callable from any thread.
+    long long getBroadcastTime() const
+    {
+        long long base = this->totUnix.load();
+        if (base == 0) return 0;
+        // pcr is the upper 32 bits of the 33-bit PCR base (LSB dropped) => 45kHz.
+        DWORD d = this->pcr - this->pcrAtTot.load();
+        return base + static_cast<long long>(static_cast<int32_t>(d)) / 45000;
     }
 };
 
@@ -2034,6 +2085,21 @@ void CDataBroadcastingWV2::UpdateVolume()
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
     if (comments.empty()) return;
+
+    // Phase B verification: broadcast time (TOT) vs real time (diff~0 live, large on playback).
+    {
+        static DWORD lastTotLog = 0;
+        DWORD now = GetTickCount();
+        if (now - lastTotLog > 10000)
+        {
+            lastTotLog = now;
+            long long bt = this->packetQueue.getBroadcastTime();
+            long long rt = static_cast<long long>(time(nullptr));
+            char buf[160];
+            sprintf_s(buf, "[TVTDataBroadcastingWV2] TOT broadcast=%lld real=%lld diff=%lld\n", bt, rt, rt - bt);
+            OutputDebugStringA(buf);
+        }
+    }
 
     // arr  = comments to render on the canvas (NG-filtered)
     // logArr = all comments for the panel log list (NG ones flagged)

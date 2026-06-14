@@ -3142,7 +3142,7 @@ tr.sel td{background:var(--sel)}
 <script>
 let ch=[],sc=2,sa=false,sid=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
-function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();}
+function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();window.chrome.webview.postMessage({cmd:'sortChanged',col:sc,asc:sa});}
 function render(){
   const s=[...ch].sort((a,b)=>{
     const d=sc===0?a.id-b.id:sc===2?a.force-b.force:sc===1?(a.name||'').localeCompare(b.name||''):(a.programTitle||'').localeCompare(b.programTitle||'');
@@ -3226,6 +3226,7 @@ $('lclear').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd
 $('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
+  else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
   else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
@@ -3331,6 +3332,11 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                     this->m_jkcnslLogin.ClearLogin(this->GetJkcnslPath());
                                 else if (cmd == "loginCancel")
                                     this->m_jkcnslLogin.Cancel();
+                                else if (cmd == "sortChanged")
+                                {
+                                    this->SetIniItem(L"MomentumSortColumn", std::to_wstring(j["col"].get<int>()).c_str());
+                                    this->SetIniItem(L"MomentumSortAscending", j["asc"].get<bool>() ? L"1" : L"0");
+                                }
                             } catch (...) {}
                             return S_OK;
                         }
@@ -3341,6 +3347,14 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                         [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
                             this->momentumWebViewReady = true;
                             this->SendMomentumTheme();
+                            // Restore the saved sort order before sending channels.
+                            {
+                                int col = this->GetIniItem(L"MomentumSortColumn", 2);
+                                bool asc = this->GetIniItem(L"MomentumSortAscending", 0) != 0;
+                                nlohmann::json sj{ { "type", "sortConfig" }, { "col", col }, { "asc", asc } };
+                                std::string script = "_update(" + sj.dump() + ")";
+                                this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+                            }
                             this->SendMomentumChannels();
                             this->PushAuthState();
                             return S_OK;

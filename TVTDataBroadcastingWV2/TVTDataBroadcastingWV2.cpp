@@ -463,7 +463,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
     std::wstring m_loginMail;
     std::string DetectJkChannel() const;
-    std::string DetectJkChannelFor(WORD networkId, WORD serviceId) const;
+    std::string DetectJkChannelFor(WORD networkId, WORD serviceId, bool* prior = nullptr) const;
     void SwitchToMomentumChannel(int index);
     void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
@@ -2290,12 +2290,20 @@ void CDataBroadcastingWV2::PlaybackTick()
     if (!cs.empty()) this->SendComments(std::move(cs));
 }
 
-std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId) const
+std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD serviceId, bool* prior) const
 {
-    // Key format used in NicoJK.ini [Channels]: 0x{NetCat}{ServiceID_hex}
-    // NetCat = 0x4 for BS (NetworkID==4), 0xF for terrestrial
-    WORD  netCat = (networkId == 4) ? 4 : 0xF;
-    DWORD key    = ((DWORD)netCat << 16) | serviceId;
+    if (prior) *prior = false;
+
+    // NicoJK.ini [Channels] のキー形式: 0x{NetCat}{ServiceID_hex}
+    // NetCat は NicoJK の正規ルールに合わせる:
+    //   地上波(0x7880..0x7FEF) / 未スキャン(0) -> 0xF、ServiceID は ~0x0187 でマスク
+    //   それ以外 -> 実 NetworkID (BS=4, スカパー=6/7, スカパープレミアム等は実値)
+    // これにより 0x7014d(=スカパー) と 0xa829b(=スカパープレミアム) のような
+    // NetCat が 4/F 以外のエントリも一致する。
+    bool terrestrial = (networkId == 0) || (0x7880 <= networkId && networkId <= 0x7FEF);
+    DWORD netCat = terrestrial ? 0x000F : (DWORD)networkId;
+    DWORD svc    = terrestrial ? (DWORD)(serviceId & ~0x0187) : (DWORD)serviceId;
+    DWORD key    = (netCat << 16) | svc;
 
     wchar_t keyStr[16];
     swprintf_s(keyStr, L"0x%X", key);
@@ -2311,7 +2319,10 @@ std::string CDataBroadcastingWV2::DetectJkChannelFor(WORD networkId, WORD servic
         if (len == 0) continue;
 
         const wchar_t* val = valStr;
-        if (*val == L'+') val++; // strip preferred marker
+        if (*val == L'+') { // 優先指定マーカー: 逆方向(jk->選局)でこのチャンネルを優先
+            if (prior) *prior = true;
+            val++;
+        }
         int jkNum = _wtoi(val);
         if (jkNum <= 0) return ""; // 0 or -1 = explicitly unmapped
         char buf[16];
@@ -3771,19 +3782,27 @@ void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
     if (targetJk.empty()) return;
 
     // Step 1: 全チューニングスペースを走査（NicoJKと同方式）
+    // 2段階探索: stage 0 では [Channels] の優先指定(+)エントリのみ、stage 1 では任意に一致。
+    // これにより同一 jk に複数チャンネルが対応する場合(例: jk333 に
+    // スカパー 0x7014d と スカパープレミアム 0xa829b=+333)、+ を付けた方を優先選局する。
     int spaceNum = 0;
     this->m_pApp->GetTuningSpace(&spaceNum);
 
-    for (int space = 0; space < spaceNum; space++)
+    for (int stage = 0; stage < 2; stage++)
     {
-        for (int channel = 0; ; channel++)
+        for (int space = 0; space < spaceNum; space++)
         {
-            TVTest::ChannelInfo info = {};
-            info.Size = sizeof(info);
-            if (!this->m_pApp->GetChannelInfo(space, channel, &info)) break;
-
-            if (this->DetectJkChannelFor(info.NetworkID, info.ServiceID) == targetJk)
+            for (int channel = 0; ; channel++)
             {
+                TVTest::ChannelInfo info = {};
+                info.Size = sizeof(info);
+                if (!this->m_pApp->GetChannelInfo(space, channel, &info)) break;
+
+                bool prior = false;
+                if (this->DetectJkChannelFor(info.NetworkID, info.ServiceID, &prior) != targetJk)
+                    continue;
+                if (stage == 0 && !prior) continue; // stage 0 は優先指定のみ
+
                 TVTest::ChannelSelectInfo sel = {};
                 sel.Size      = sizeof(sel);
                 sel.Flags     = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE;

@@ -18,7 +18,8 @@ env:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-latest が VS18 系に更新され v143 ツールセットが消えたため固定 (MSB8020 回避)
+    runs-on: windows-2022
 
     strategy:
       matrix:

@@ -3324,7 +3324,8 @@ body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overfl
 #pr.ok{color:#3a3}#pr.error{color:#d44}
 #lb{flex:0 0 auto;font:inherit;color:var(--fg);background:var(--bg);
     border:1px solid var(--sb);border-radius:3px;padding:2px 6px;cursor:pointer}
-#lb:hover{background:var(--hov)}
+)HTML"
+LR"HTML(#lb:hover{background:var(--hov)}
 #lb.authin{border-color:#3a8a3a;color:#3a8a3a}
 #login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
        border-top:1px solid rgba(128,128,128,.3)}
@@ -3372,7 +3373,8 @@ tr.sel td{background:var(--sel)}
 <div id="w"><table>
 <colgroup><col class="c0"><col class="c1"><col class="c2"><col class="c3"></colgroup>
 <thead><tr>
-<th onclick="srt(0)">実況番号<span id="a0"></span></th>
+)HTML"
+LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
 <th onclick="srt(1)">局名<span id="a1"></span></th>
 <th onclick="srt(2)">勢い<span id="a2">▼</span></th>
 <th onclick="srt(3)">番組<span id="a3"></span></th>
@@ -3404,7 +3406,8 @@ tr.sel td{background:var(--sel)}
 <div id="pv"><div id="pt" class="naka">コメント</div></div>
 </div>
 <div id="post"><button id="cb" title="コマンド選択">▷</button><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
-<script>
+)HTML"
+LR"HTML(<script>
 let ch=[],sc=2,sa=false,sid=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
 function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();window.chrome.webview.postMessage({cmd:'sortChanged',col:sc,asc:sa});}
@@ -3483,7 +3486,8 @@ function pickFg(hex){
 }
 function setAuth(loggedIn,connected,mail,boxColor){
   authKnown=true;
-  // NicoJK流: 未接続なら投稿欄を隠す
+)HTML"
+LR"HTML(  // NicoJK流: 未接続なら投稿欄を隠す
   pi.style.display=connected?'':'none';
   if(connected){
     pi.disabled=!loggedIn;

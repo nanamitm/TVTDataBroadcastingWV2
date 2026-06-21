@@ -44,7 +44,7 @@ jobs:
         Write-Output "VERSION=$v" >> $env:GITHUB_OUTPUT
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
+      uses: microsoft/setup-msbuild@v3
 
     - name: Restore NuGet packages
       run: nuget restore
@@ -55,7 +55,7 @@ jobs:
         VERSION: ${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
       run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: '22'
         cache-dependency-path: ./browser/package-lock.json
@@ -91,7 +91,7 @@ jobs:
         copy browser/TVTDataBroadcastingWV2.html "$name/TVTDataBroadcastingWV2/resources/"
         Compress-Archive -Path $name -DestinationPath "$name.zip"
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
         path: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}.zip
@@ -101,12 +101,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         path: artifacts/
         merge-multiple: true
 
-    - uses: softprops/action-gh-release@v2
+    - uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ needs.build.outputs.version }}
         name: ${{ needs.build.outputs.version }}

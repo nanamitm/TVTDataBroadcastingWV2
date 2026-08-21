@@ -2382,10 +2382,21 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
 {
     // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
     std::string video = this->DetectJkChannel();
-    if (video.empty()) return;
     int jkID = 0;
     for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
-    if (jkID <= 0) return;
+    if (jkID <= 0)
+    {
+        // 実況の一覧にないチャンネル -> 切断する。つないだままだと選局後も
+        // 前のチャンネルのコメントが流れ続けてしまう。
+        this->m_currentJkID = -1;
+        if (this->m_jkcnslReader.IsRunning())
+        {
+            OutputDebugStringA("[TVTDataBroadcastingWV2] UpdateCommentChannel: no jikkyo channel, disconnect\n");
+            this->m_jkcnslReader.Stop();
+            this->ClearOnScreenComments();
+        }
+        return;
+    }
     this->m_currentJkID = jkID;
     // During playback the live stream stays off; PlaybackTick drives the log.
     if (this->m_playbackActive) return;
@@ -2434,6 +2445,7 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
             sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
             OutputDebugStringA(logbuf); OutputDebugStringA("\n");
             this->m_jkcnslReader.Stop();
+            this->ClearOnScreenComments();
         }
         return;
     }

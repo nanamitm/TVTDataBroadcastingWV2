@@ -26,6 +26,12 @@ public:
     // or the write fails.
     bool Post(const std::string& payload);
     bool IsConnected() const { return m_connected; }
+
+    // True from a successful Start() until jkcnsl closes the stream ('.'/'!'/'?'),
+    // the pipe dies, or Stop() is called. Unlike IsConnected() this stays true
+    // while the stream is still being established, so a watchdog can use it to
+    // retry only genuinely dead streams (mirrors NicoJK's CJKStream::bOpened_).
+    bool IsStreamOpen() const { return m_streamOpen; }
     const std::string& GetChannel() const { return m_channel; }
     void SetCallback(Callback cb) { m_callback = std::move(cb); }
 
@@ -47,6 +53,7 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_connected{ false };
+    std::atomic<bool> m_streamOpen{ false };
     bool m_inPastChat = false; // inside an x_past_chat range (worker thread only)
     std::string m_channel;
 

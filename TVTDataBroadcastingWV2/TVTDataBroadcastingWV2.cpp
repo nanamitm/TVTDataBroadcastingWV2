@@ -55,6 +55,11 @@ struct DeferralResponse
 #define IDT_SHOW_EVR_WINDOW 1
 #define IDT_RESIZE 2
 #define IDT_PLAYBACK 3
+#define IDT_JK_WATCHDOG 4
+
+// コメントサーバ切断をチェックして再接続する間隔(あんまり短くしちゃダメ!)
+// NicoJK の JK_WATCHDOG_INTERVAL 相当。
+#define JK_WATCHDOG_INTERVAL 20000
 
 struct UsedKey
 {
@@ -468,7 +473,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
     void PostComment(const std::wstring& input);
-    void UpdateCommentChannel();
+    // fromWatchdog: 定期的な切断チェックからの呼び出し。同一チャンネルのまま
+    // ストリームだけが死んでいる場合に、画面のコメントを消さずに張り直す。
+    void UpdateCommentChannel(bool fromWatchdog = false);
     void UpdateCaptionState(bool showIndicator);
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
@@ -807,6 +814,13 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
         case IDT_PLAYBACK:
         {
             pThis->PlaybackTick();
+            break;
+        }
+        case IDT_JK_WATCHDOG:
+        {
+            // 切断されていたら張り直す。接続中なら UpdateCommentChannel が
+            // 何もせずに返るので、無条件に叩いてよい (NicoJK と同じ方式)。
+            pThis->UpdateCommentChannel(true);
             break;
         }
         case IDT_RESIZE:
@@ -1982,6 +1996,8 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 // playback. Needs a log folder.
                 if (!this->m_logFolder.empty())
                     SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
+                // コメントサーバ切断の定期チェック。
+                SetTimer(this->hMessageWnd, IDT_JK_WATCHDOG, JK_WATCHDOG_INTERVAL, nullptr);
                 this->RefreshAuthState();
                 this->UpdateCommentChannel();
             }
@@ -1992,6 +2008,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         this->m_jkcnslReader.Stop();
         this->m_logWriter.Close();
         KillTimer(this->hMessageWnd, IDT_PLAYBACK);
+        KillTimer(this->hMessageWnd, IDT_JK_WATCHDOG);
         this->m_playbackActive = false;
         this->m_playbackLastT = 0;
         this->EnablePanelButtons(false);
@@ -2190,7 +2207,9 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
         this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
     };
 
-    if (!this->m_jkcnslReader.IsRunning()) { sendResult("error", L"コメントサーバに接続していません"); return; }
+    // IsRunning() は jkcnsl プロセスの生死でしかないので、実際に投稿できるか
+    // (ストリームが張れているか) は IsConnected() で判定する。
+    if (!this->m_jkcnslReader.IsConnected()) { sendResult("error", L"コメントサーバに接続していません"); return; }
 
     // Split optional [mail] prefix from the comment body.
     std::wstring mail, comm;
@@ -2347,7 +2366,7 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         this->currentService.ServiceID);
 }
 
-void CDataBroadcastingWV2::UpdateCommentChannel()
+void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
 {
     // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
     std::string video = this->DetectJkChannel();
@@ -2396,35 +2415,50 @@ void CDataBroadcastingWV2::UpdateCommentChannel()
     else
     {
         // Channel not supported (no stream id) -> disconnect, like NicoJK.
-        char logbuf[128];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
-        OutputDebugStringA(logbuf); OutputDebugStringA("\n");
-        if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
+        // ウォッチドッグから毎回ログを吐かないよう、実際に切るときだけ出力する。
+        if (this->m_jkcnslReader.IsRunning())
+        {
+            char logbuf[128];
+            sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
+            OutputDebugStringA(logbuf); OutputDebugStringA("\n");
+            this->m_jkcnslReader.Stop();
+        }
         return;
     }
 
+    // 接続先が同じかどうかで「チャンネル変更」と「切断からの再接続」を区別する。
+    // GetChannel() は Stop() でクリアされるので、生きている接続の有無ではなく
+    // 「同じ接続先を張っていたか」だけを見る (jkcnsl が落ちた場合も再接続扱い)。
+    const bool sameStream = this->m_jkcnslReader.GetChannel() == cmd;
+
+    // 接続先が同じでストリームも生きていれば何もしない。IsRunning() は jkcnsl の
+    // プロセスが生きているかどうかでしかなく接続判定には使えない (ストリームが
+    // 閉じても jkcnsl は次のコマンドを待って常駐し続ける)ので IsStreamOpen() を見る。
+    if (sameStream && this->m_jkcnslReader.IsStreamOpen()) return;
+
     {
         char logbuf[256];
-        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d cmd=%s", jkID, cmd.c_str());
+        sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d cmd=%s%s",
+                  jkID, cmd.c_str(), sameStream ? " (reconnect)" : "");
         OutputDebugStringA(logbuf); OutputDebugStringA("\n");
     }
 
-    // No change: already streaming this exact command.
-    if (this->m_jkcnslReader.IsRunning() && this->m_jkcnslReader.GetChannel() == cmd) return;
-
-    // Clear on-screen comments when the stream changes.
-    if (this->webView)
-    {
-        nlohmann::json msg{ { "type", "clearComments" } };
-        std::stringstream ss; ss << msg;
-        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
-    }
+    // 画面のコメントを消すのは接続先が変わったときだけ。再接続のたびに消すと
+    // 表示中のコメントが飛んでしまう。
+    if (!sameStream) this->ClearOnScreenComments();
 
     this->m_mixing = isMix;
     this->m_postTargetRefuge = targetRefuge;
-    if (this->m_jkcnslReader.IsRunning()) this->m_jkcnslReader.Stop();
+    // jkcnsl が落ちて ReadLoop だけ抜けている場合 IsRunning() は false だが、
+    // ハンドルとスレッドは残ったままなので Stop() は無条件に呼ぶ。飛ばすと
+    // Start() がハンドルを上書きし、join 前のスレッドに代入して terminate する。
+    this->m_jkcnslReader.Stop();
     this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd);
     this->PushAuthState(); // reflect the new post target colour
+
+    // 再接続を試みた直後は、次の判定までウォッチドッグの間隔をあけ直す。
+    if (fromWatchdog)
+        SetTimer(this->hMessageWnd, IDT_JK_WATCHDOG, JK_WATCHDOG_INTERVAL, nullptr);
 }
 
 // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory).

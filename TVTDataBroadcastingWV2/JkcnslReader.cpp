@@ -66,7 +66,12 @@ void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineB
             if (!lineBuf.empty()) {
                 char c0 = lineBuf[0];
                 if (c0 == '*' || c0 == '-')              SetConnected(true);
-                else if (c0 == '.' || c0 == '!' || c0 == '?') SetConnected(false);
+                else if (c0 == '.' || c0 == '!' || c0 == '?') {
+                    // jkcnsl closed the stream; the process stays alive waiting
+                    // for a new command, so mark the stream dead for the watchdog.
+                    m_streamOpen = false;
+                    SetConnected(false);
+                }
             }
             // Past comments are backfilled inside <x_past_chat_begin>..<end>.
             if (lineBuf.find("x_past_chat_begin") != std::string::npos)      m_inPastChat = true;
@@ -151,6 +156,7 @@ void JkcnslReader::ReadLoop()
 
     CloseHandle(ioEvent);
     JkDbg("ReadLoop ended");
+    m_streamOpen = false;
     SetConnected(false);
     m_running = false;
 }
@@ -234,6 +240,7 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& stre
     m_channel  = streamCommand;
     m_inPastChat = false;
     m_running  = true;
+    m_streamOpen = true;
 
     m_thread = std::thread([this] { ReadLoop(); });
 
@@ -248,7 +255,8 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& stre
 
 bool JkcnslReader::Post(const std::string& payload)
 {
-    if (!m_running) return false;
+    // The stream must actually be up, not just the jkcnsl process alive.
+    if (!m_running || !m_connected) return false;
     // jkcnsl uses a line protocol; embedded CR/LF would corrupt the stream.
     if (payload.find('\n') != std::string::npos || payload.find('\r') != std::string::npos) {
         return false;
@@ -305,6 +313,7 @@ void JkcnslReader::Stop()
     if (m_hStopEvent)  { CloseHandle(m_hStopEvent);  m_hStopEvent  = nullptr; }
 
     m_running = false;
+    m_streamOpen = false;
     m_channel.clear();
     JkDbg("Stopped");
 }

@@ -30,8 +30,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
-      with:
-        submodules: 'recursive'
 
     - name: Get version
       id: version
@@ -57,16 +55,12 @@ jobs:
 
     - uses: actions/setup-node@v5
       with:
-        node-version: '22'
+        node-version: '24'
         cache-dependency-path: ./browser/package-lock.json
 
     - name: Install npm packages
       working-directory: ./browser/
       run: npm ci
-
-    - name: Build depends
-      working-directory: ./browser/
-      run: npm -w @chinachu/aribts run build
 
     - name: Build web-bml
       working-directory: ./browser/
@@ -85,8 +79,8 @@ jobs:
         copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp $name/ || copy "$env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp" $name/
         mkdir "$name/TVTDataBroadcastingWV2/resources/dist"
         copy browser/dist/TVTDataBroadcastingWV2.js "$name/TVTDataBroadcastingWV2/resources/dist/"
-        copy browser/web-bml/fonts/*.woff2 "$name/TVTDataBroadcastingWV2/resources/dist/"
-        copy browser/web-bml/fonts/LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/fonts-LICENSE.txt"
+        copy browser/node_modules/web-bml-fonts/*.woff2 "$name/TVTDataBroadcastingWV2/resources/dist/"
+        copy browser/node_modules/web-bml-fonts/LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/fonts-LICENSE.txt"
         copy browser/dist/TVTDataBroadcastingWV2.js.LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/"
         copy browser/TVTDataBroadcastingWV2.html "$name/TVTDataBroadcastingWV2/resources/"
         Compress-Archive -Path $name -DestinationPath "$name.zip"

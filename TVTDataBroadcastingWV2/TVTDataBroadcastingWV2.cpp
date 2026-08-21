@@ -2526,6 +2526,9 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
         if      (message == "cancel")     text = L"ログインを中止しました。";
         else if (message == "disconnect") text = L"jkcnslとの通信が切断されました。";
         else if (message == "logout")     text = L"ログアウトに失敗しました。";
+        else if (message == "start")
+            text = L"jkcnslを起動できませんでした。jkcnsl.exeがTVTest本体と"
+                   L"同じフォルダーにあるか確認してください。";
         else if (message == "helper-missing")
             text = L"ログイン用ブラウザーが見つかりません。jkcnsl.exeと同じ場所に"
                    L"jkcnsl_loginフォルダーを配置してください。";
@@ -3753,9 +3756,17 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                     this->PostComment(utf8StrToWString(input.c_str()));
                                 }
                                 else if (cmd == "login")
-                                    this->m_jkcnslLogin.Login(this->GetJkcnslPath());
+                                {
+                                    // 起動に失敗するとコールバックが一度も呼ばれず、
+                                    // パネルが処理中表示のまま操作不能になるため通知する。
+                                    if (!this->m_jkcnslLogin.Login(this->GetJkcnslPath()))
+                                        this->OnLoginEvent(JkcnslLogin::Event::Failure, "start");
+                                }
                                 else if (cmd == "logout")
-                                    this->m_jkcnslLogin.Logout(this->GetJkcnslPath());
+                                {
+                                    if (!this->m_jkcnslLogin.Logout(this->GetJkcnslPath()))
+                                        this->OnLoginEvent(JkcnslLogin::Event::Failure, "start");
+                                }
                                 else if (cmd == "loginCancel")
                                     this->m_jkcnslLogin.Cancel();
                                 else if (cmd == "sortChanged")

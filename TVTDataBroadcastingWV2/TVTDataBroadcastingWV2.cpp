@@ -57,6 +57,9 @@ struct DeferralResponse
 #define IDT_PLAYBACK 3
 #define IDT_JK_WATCHDOG 4
 
+// RegisterPanelItemで登録するパネル項目のID ("データ放送" / "実況勢い")
+static const int kPanelItemIDs[] = { 1, 2 };
+
 // コメントサーバ切断をチェックして再接続する間隔(あんまり短くしちゃダメ!)
 // NicoJK の JK_WATCHDOG_INTERVAL 相当。
 #define JK_WATCHDOG_INTERVAL 20000
@@ -482,6 +485,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool SetIniItem(const wchar_t* key, const wchar_t* data);
     void Disable(bool finalize);
     void EnablePanelButtons(bool enable);
+    // パネルのタブ自体("データ放送"/"実況勢い")の表示を切り替える。
+    void EnablePanelItems(bool enable);
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl);
     void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
@@ -746,7 +751,7 @@ bool CDataBroadcastingWV2::Initialize()
     panel.Style = TVTest::PANEL_ITEM_STYLE_NEEDFOCUS;
     panel.pszIDText = L"TVTDataBroadcastingWV2Panel";
     panel.pszTitle = L"データ放送";
-    panel.ID = 1;
+    panel.ID = kPanelItemIDs[0];
     panel.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     m_pApp->RegisterPanelItem(&panel);
     TVTest::PanelItemInfo panel2 = {};
@@ -754,9 +759,16 @@ bool CDataBroadcastingWV2::Initialize()
     panel2.Style = TVTest::PANEL_ITEM_STYLE_NEEDFOCUS;
     panel2.pszIDText = L"TVTDataBroadcastingWV2MomentumPanel";
     panel2.pszTitle = L"実況勢い";
-    panel2.ID = 2;
+    panel2.ID = kPanelItemIDs[1];
     panel2.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     m_pApp->RegisterPanelItem(&panel2);
+    // 登録直後は有効状態なので、無効のまま読み込まれた場合はここで隠しておく
+    // (OnPluginEnableは状態が変化したときしか呼ばれない)。有効な場合は
+    // OnPluginEnable(true)が表示するため、ここでは何もしない。
+    if (!m_pApp->IsPluginEnabled())
+    {
+        this->EnablePanelItems(false);
+    }
     TVTest::StatusItemInfo statusItemInfo = {};
     statusItemInfo.Size = sizeof(statusItemInfo);
     statusItemInfo.ID = 1;
@@ -1952,6 +1964,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         }
         InitWebView2();
         SetTimer(this->hMessageWnd, IDT_RESIZE, 1000, nullptr);
+        this->EnablePanelItems(true);
         this->EnablePanelButtons(true);
         if (this->GetIniItem(L"EnableNetwork", 0))
         {
@@ -2010,6 +2023,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         this->m_playbackActive = false;
         this->m_playbackLastT = 0;
         this->EnablePanelButtons(false);
+        this->EnablePanelItems(false);
         this->Disable(false);
     }
     return true;
@@ -2894,6 +2908,22 @@ INT_PTR CALLBACK CDataBroadcastingWV2::RemoteControlDlgProc(HWND hDlg, UINT uMsg
     }
     }
     return 0;
+}
+
+// パネル項目を登録したままにするとプラグインを無効にしてもタブが残るため、
+// 有効/無効に合わせてタブの表示状態を切り替える。
+void CDataBroadcastingWV2::EnablePanelItems(bool enable)
+{
+    for (size_t i = 0; i < _countof(kPanelItemIDs); i++)
+    {
+        TVTest::PanelItemSetInfo info = {};
+        info.Size      = sizeof(info);
+        info.Mask      = TVTest::PANEL_ITEM_SET_INFO_MASK_STATE;
+        info.ID        = kPanelItemIDs[i];
+        info.StateMask = TVTest::PANEL_ITEM_STATE_ENABLED;
+        info.State     = enable ? TVTest::PANEL_ITEM_STATE_ENABLED : 0;
+        m_pApp->SetPanelItem(&info);
+    }
 }
 
 void CDataBroadcastingWV2::EnablePanelButtons(bool enable)

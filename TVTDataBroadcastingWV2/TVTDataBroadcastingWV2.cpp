@@ -466,7 +466,6 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool m_loggedIn = false;
     bool m_streamConnected = false;
     bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
-    std::wstring m_loginMail;
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId, bool* prior = nullptr) const;
     void SwitchToMomentumChannel(int index);
@@ -1054,7 +1053,6 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     {
         auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
         pThis->m_loggedIn = info->loggedIn;
-        pThis->m_loginMail = utf8StrToWString(info->mail.c_str());
         // m_postTargetRefuge is driven by the chosen per-channel source
         // (UpdateCommentChannel), not the global cache_server_url.
         pThis->PushAuthState();
@@ -2482,24 +2480,29 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
     {
     case JkcnslLogin::Event::Progress:
         state = L"progress";
-        if      (message == "start-login") text = L"ログインを開始しています…";
-        else if (message == "start-clear") text = L"ログイン情報を削除しています…";
-        else if (!message.empty())         text = utf8StrToWString(message.c_str()); // jkcnsl line (UTF-8)
-        break;
-    case JkcnslLogin::Event::Need2FA:
-        state = L"need2fa";
-        text  = L"2段階認証コードを入力して送信してください。";
+        if      (message == "start-login")  text = L"ログインを開始しています…";
+        else if (message == "start-logout") text = L"ログアウトしています…";
+        else if (message == "browser-open")
+            text = L"ブラウザーのウィンドウが開きます。そちらでニコニコにログインし、"
+                   L"ウィンドウ内のボタンで完了してください。"
+                   L"(ウィンドウが見当たらない場合はタスクバーを確認してください)";
+        else if (message == "helper-missing")
+            text = L"ログイン用ブラウザーが見つかりません。";
+        else if (!message.empty())          text = utf8StrToWString(message.c_str()); // jkcnsl line (UTF-8)
         break;
     case JkcnslLogin::Event::Success:
         state = L"success";
-        text  = (message == "clear") ? L"ログイン情報を削除しました。"
-                                     : L"ニコニコログインに成功しました。チャンネル切替または再接続後に反映されます。";
+        text  = (message == "logout") ? L"ログアウトしました。"
+                                      : L"ニコニコログインに成功しました。チャンネル切替または再接続後に反映されます。";
         break;
     case JkcnslLogin::Event::Failure:
         state = L"failure";
         if      (message == "cancel")     text = L"ログインを中止しました。";
         else if (message == "disconnect") text = L"jkcnslとの通信が切断されました。";
-        else if (message == "clear")      text = L"ログイン情報の削除に失敗しました。";
+        else if (message == "logout")     text = L"ログアウトに失敗しました。";
+        else if (message == "helper-missing")
+            text = L"ログイン用ブラウザーが見つかりません。jkcnsl.exeと同じ場所に"
+                   L"jkcnsl_loginフォルダーを配置してください。";
         else                              text = L"ログインに失敗しました。";
         break;
     }
@@ -2539,8 +2542,7 @@ void CDataBroadcastingWV2::PushAuthState()
                       { "loggedIn", this->m_loggedIn },
                       { "connected", this->m_streamConnected },
                       { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
-                      { "boxColor", wstrToUTF8String(boxColW.c_str()) },
-                      { "mail", wstrToUTF8String(this->m_loginMail.c_str()) } };
+                      { "boxColor", wstrToUTF8String(boxColW.c_str()) } };
     std::string script = "_update(" + j.dump() + ")";
     this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
 }
@@ -3363,10 +3365,9 @@ LR"HTML(#lb:hover{background:var(--hov)}
 #lb.authin{border-color:#3a8a3a;color:#3a8a3a}
 #login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
        border-top:1px solid rgba(128,128,128,.3)}
-#login input{font:inherit;color:var(--fg);background:var(--bg);
-       border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
-#login input:focus{outline:none;border-color:var(--fg)}
+#lh{font-size:8pt;opacity:.75;line-height:1.4}
 #login .row{display:flex;gap:4px}
+#login button:disabled{opacity:.45;cursor:default}
 #login button{font:inherit;color:var(--fg);background:var(--bg);
        border:1px solid var(--sb);border-radius:3px;padding:2px 8px;cursor:pointer}
 #login button:hover{background:var(--hov)}
@@ -3417,16 +3418,11 @@ LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
 </table></div>
 <div id="log" hidden></div>
 <div id="login" hidden>
-<input id="lm" type="text" placeholder="メールアドレス" autocomplete="off">
-<input id="lp" type="password" placeholder="パスワード" autocomplete="off">
-<div class="row" id="otprow" hidden>
-  <input id="lo" type="text" inputmode="numeric" placeholder="2段階認証コード" style="flex:1">
-  <button id="losend">送信</button>
-</div>
+<div id="lh">ニコニコへのログインはブラウザーのウィンドウで行います。</div>
 <div class="row">
   <button id="ldo">ログイン</button>
   <button id="lcancel">中止</button>
-  <button id="lclear" style="margin-left:auto">情報削除</button>
+  <button id="lout" style="margin-left:auto">ログアウト</button>
 </div>
 <div id="ls"></div>
 </div>
@@ -3518,7 +3514,7 @@ function pickFg(hex){
   const r=parseInt(h.substr(0,2),16)||0,g=parseInt(h.substr(2,2),16)||0,b=parseInt(h.substr(4,2),16)||0;
   return (r*299+g*587+b*114)/1000>=160?'#000':'#fff';
 }
-function setAuth(loggedIn,connected,mail,boxColor){
+function setAuth(loggedIn,connected,boxColor){
   authKnown=true;
 )HTML"
 LR"HTML(  // NicoJK流: 未接続なら投稿欄を隠す
@@ -3534,31 +3530,28 @@ LR"HTML(  // NicoJK流: 未接続なら投稿欄を隠す
   }
   const lb=$('lb');
   lb.classList.toggle('authin',loggedIn);
-  lb.title=loggedIn?('ログイン中'+(mail?': '+mail:'')):'ニコニコログイン';
+  // ブラウザーログインではクッキーしか得られないため、アカウント名は出せない
+  lb.title=loggedIn?'ニコニコにログイン中':'ニコニコログイン';
 }
 // 状態が分かるまで投稿欄は隠す
 pi.style.display='none';
 function setLogin(s,msg){
   const ls=$('ls');ls.textContent=msg||'';
   ls.className=(s==='success'||s==='failure')?s:'';
-  $('otprow').hidden=(s!=='need2fa');
-  if(s==='need2fa')$('lo').focus();
-  if(s==='success'||s==='failure')$('lo').value='';
+  // ブラウザー操作の間は二重起動を防ぐ
+  const busy=(s==='progress');
+  $('ldo').disabled=busy;$('lout').disabled=busy;$('lcancel').disabled=!busy;
   // 成功したらフォームを自動的に畳む(メッセージを少し見せてから)
   if(s==='success')setTimeout(()=>{$('login').hidden=true;},2000);
 }
+setLogin('','');
 $('lb').addEventListener('click',()=>{$('login').hidden=!$('login').hidden;});
 $('ldo').addEventListener('click',()=>{
-  const mail=$('lm').value.trim(),password=$('lp').value;
-  if(mail===''||password===''){setLogin('failure','メールとパスワードを入力してください。');return;}
-  setLogin('progress','');window.chrome.webview.postMessage({cmd:'login',mail,password});
+  setLogin('progress','');window.chrome.webview.postMessage({cmd:'login'});
 });
-$('losend').addEventListener('click',()=>{
-  const otp=$('lo').value.trim();
-  if(otp!=='')window.chrome.webview.postMessage({cmd:'loginOtp',otp});
+$('lout').addEventListener('click',()=>{
+  setLogin('progress','');window.chrome.webview.postMessage({cmd:'logout'});
 });
-$('lo').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){$('losend').click();e.preventDefault();}});
-$('lclear').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginClear'});});
 $('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
 // コメントログ一覧 / タブ切替
 const logEl=$('log');
@@ -3617,7 +3610,7 @@ function _update(m){
   else if(m.type==='ngUsers'){setNgUsers(m.users);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
-  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.mail,m.boxColor);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.boxColor);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
@@ -3718,12 +3711,9 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                     this->PostComment(utf8StrToWString(input.c_str()));
                                 }
                                 else if (cmd == "login")
-                                    this->m_jkcnslLogin.Login(this->GetJkcnslPath(),
-                                        j["mail"].get<std::string>(), j["password"].get<std::string>());
-                                else if (cmd == "loginOtp")
-                                    this->m_jkcnslLogin.SubmitOtp(j["otp"].get<std::string>());
-                                else if (cmd == "loginClear")
-                                    this->m_jkcnslLogin.ClearLogin(this->GetJkcnslPath());
+                                    this->m_jkcnslLogin.Login(this->GetJkcnslPath());
+                                else if (cmd == "logout")
+                                    this->m_jkcnslLogin.Logout(this->GetJkcnslPath());
                                 else if (cmd == "loginCancel")
                                     this->m_jkcnslLogin.Cancel();
                                 else if (cmd == "sortChanged")

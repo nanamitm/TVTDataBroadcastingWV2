@@ -6,30 +6,16 @@ JkcnslLogin::~JkcnslLogin()
     Stop();
 }
 
-bool JkcnslLogin::Login(const std::wstring& jkcnslPath, const std::string& mail, const std::string& password)
+bool JkcnslLogin::Login(const std::wstring& jkcnslPath)
 {
     if (m_running) return false;
-    if (mail.empty() || password.empty()) return false;
-    if (mail.find_first_of("\r\n") != std::string::npos ||
-        password.find_first_of("\r\n") != std::string::npos) {
-        return false;
-    }
-    m_mail = mail;
-    m_password = password;
     return StartProcess(jkcnslPath, Mode::Login);
 }
 
-bool JkcnslLogin::ClearLogin(const std::wstring& jkcnslPath)
+bool JkcnslLogin::Logout(const std::wstring& jkcnslPath)
 {
     if (m_running) return false;
-    return StartProcess(jkcnslPath, Mode::Clear);
-}
-
-bool JkcnslLogin::SubmitOtp(const std::string& otp)
-{
-    if (!m_running || m_state != State::Wait2FA) return false;
-    if (otp.empty() || otp.find_first_of("\r\n") != std::string::npos) return false;
-    return WriteLine("+" + otp);
+    return StartProcess(jkcnslPath, Mode::Logout);
 }
 
 void JkcnslLogin::Cancel()
@@ -38,8 +24,8 @@ void JkcnslLogin::Cancel()
     if (!m_finished.exchange(true)) {
         Notify(Event::Failure, "cancel");
     }
-    // 'c' breaks a pending OTP wait; Stop() then sends 'q' and tears down the
-    // process/thread/handles synchronously.
+    // 'c' cancels the command in flight (jkcnsl gives up waiting on the browser
+    // helper); Stop() then sends 'q' and tears down process/thread/handles.
     WriteLine("c");
     Stop();
 }
@@ -55,8 +41,9 @@ bool JkcnslLogin::StartProcess(const std::wstring& jkcnslPath, Mode mode)
     }
 
     m_mode = mode;
-    m_state = (mode == Mode::Login) ? State::SetMail : State::ClearMail;
+    m_state = (mode == Mode::Login) ? State::LoginRun : State::LogoutRun;
     m_finished = false;
+    m_helperMissing = false;
 
     m_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_hStopEvent) return false;
@@ -125,12 +112,8 @@ bool JkcnslLogin::StartProcess(const std::wstring& jkcnslPath, Mode mode)
     // Kick off the first command. Japanese UI text is chosen by the caller from
     // the event type; messages forwarded from here are ASCII keywords or jkcnsl's
     // own UTF-8 output lines (safe to embed in JSON).
-    Notify(Event::Progress, mode == Mode::Login ? "start-login" : "start-clear");
-    if (mode == Mode::Login) {
-        WriteLine("Smail " + m_mail);
-    } else {
-        WriteLine("Smail"); // no argument => clear
-    }
+    Notify(Event::Progress, mode == Mode::Login ? "start-login" : "start-logout");
+    WriteLine(mode == Mode::Login ? "Ai" : "Ao");
     return true;
 }
 
@@ -204,40 +187,45 @@ void JkcnslLogin::HandleLine(const std::string& line)
 
     switch (c) {
     case '-':
-        if ((m_state == State::LoginRun || m_state == State::Wait2FA) &&
-            (rest.find("one-time password") != std::string::npos || rest.find("2FA") != std::string::npos)) {
-            m_state = State::Wait2FA;
-            Notify(Event::Need2FA, rest);
+        // jkcnsl's own lines are English; translate the two that matter into
+        // keywords the UI renders in Japanese, and pass anything else through.
+        if (rest.find("jkcnsl-qt-login") != std::string::npos &&
+            rest.find("not found") != std::string::npos) {
+            m_helperMissing = true;
+            Notify(Event::Progress, "helper-missing");
+        } else if (rest.find("browser window") != std::string::npos) {
+            Notify(Event::Progress, "browser-open");
         } else {
             Notify(Event::Progress, rest);
         }
         break;
     case '.': // current step finished successfully
         switch (m_state) {
-        case State::SetMail:
-            m_state = State::SetPassword;
-            WriteLine("Spassword " + m_password);
-            break;
-        case State::SetPassword:
-            m_state = State::LoginRun;
-            WriteLine("Ai");
-            break;
         case State::LoginRun:
-        case State::Wait2FA:
             Finish(Event::Success, "login");
+            break;
+        // Logout: drop the nicovideo session first, then the stale local
+        // mail/password left over from the old credential-based login.
+        case State::LogoutRun:
+            m_state = State::ClearMail;
+            WriteLine("Smail"); // no argument => clear
             break;
         case State::ClearMail:
             m_state = State::ClearPassword;
             WriteLine("Spassword"); // no argument => clear
             break;
         case State::ClearPassword:
-            Finish(Event::Success, "clear");
+            Finish(Event::Success, "logout");
             break;
         }
         break;
     case '!':
     case '?':
-        Finish(Event::Failure, m_mode == Mode::Login ? "login" : "clear");
+        if (m_mode == Mode::Login) {
+            Finish(Event::Failure, m_helperMissing ? "helper-missing" : "login");
+        } else {
+            Finish(Event::Failure, "logout");
+        }
         break;
     case '*':
     default:

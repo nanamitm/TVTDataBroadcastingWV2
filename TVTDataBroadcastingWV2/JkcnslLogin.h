@@ -6,29 +6,32 @@
 #include <string>
 #include <thread>
 
-// Drives jkcnsl's nicovideo login over a single process, mirroring NicoJK's
-// login state machine. jkcnsl reads one command per stdin line and emits
-// '-' output lines terminated by '.' (ok) / '!' (error) / '?' (unknown).
+// Drives jkcnsl's nicovideo login over a single process. jkcnsl reads one
+// command per stdin line and emits '-' output lines terminated by '.' (ok) /
+// '!' (error) / '?' (unknown).
 //
-// Login sequence (one process handles all steps sequentially):
-//   Smail {mail}      -> .
-//   Spassword {pw}    -> .
-//   Ai                -> -progress... ; if a line mentions "one-time password"
-//                        the caller must SubmitOtp(); then . (success) / ! (fail)
+// jkcnsl authenticates through its bundled browser helper
+// (jkcnsl_login/jkcnsl-qt-login.exe): 'Ai' opens a browser window, the user
+// signs in there, and the helper hands the session cookie back over a named
+// pipe. Mail/password/one-time-password are no longer involved -- two-factor
+// authentication happens inside that browser window. Requires a jkcnsl build
+// with the browser helper; older mail+password builds are not supported.
 //
-// Clear sequence:
+// Login sequence:
+//   Ai   -> -progress...  ; '.' success / '!' failure
+//           If a stored cookie is still valid jkcnsl answers '.' immediately
+//           without opening any window.
+//
+// Logout sequence (server-side logout, then drop the stale local settings):
+//   Ao                -> .
 //   Smail   (no arg)  -> .
 //   Spassword         -> .
-//
-// On success jkcnsl persists the session cookie, so later 'L' streams (opened
-// by JkcnslReader) become authenticated and can post comments.
 class JkcnslLogin
 {
 public:
     enum class Event {
         Progress, // informational line; message holds the text
-        Need2FA,  // waiting for a one-time password; caller should SubmitOtp()
-        Success,  // login (or clear) completed
+        Success,  // login (or logout) completed
         Failure,  // login failed / cancelled
     };
     using Callback = std::function<void(Event, std::string message)>;
@@ -41,18 +44,17 @@ public:
     void SetCallback(Callback cb) { m_callback = std::move(cb); }
     bool IsBusy() const { return m_running; }
 
-    // Start an interactive login. mail/password are UTF-8.
-    bool Login(const std::wstring& jkcnslPath, const std::string& mail, const std::string& password);
-    // Clear the stored mail/password/cookie.
-    bool ClearLogin(const std::wstring& jkcnslPath);
-    // Submit a one-time password while in the Need2FA state.
-    bool SubmitOtp(const std::string& otp);
+    // Start a browser login. Opens jkcnsl's helper window unless the stored
+    // cookie is still valid.
+    bool Login(const std::wstring& jkcnslPath);
+    // Log out on the nicovideo side, then clear the stored cookie/mail/password.
+    bool Logout(const std::wstring& jkcnslPath);
     // Abort an in-progress login.
     void Cancel();
 
 private:
-    enum class Mode { Login, Clear };
-    enum class State { SetMail, SetPassword, LoginRun, Wait2FA, ClearMail, ClearPassword };
+    enum class Mode { Login, Logout };
+    enum class State { LoginRun, LogoutRun, ClearMail, ClearPassword };
 
     bool StartProcess(const std::wstring& jkcnslPath, Mode mode);
     void Stop();
@@ -74,9 +76,10 @@ private:
     std::atomic<bool> m_finished{ false };
 
     Mode  m_mode  = Mode::Login;
-    State m_state = State::SetMail;
-    std::string m_mail;
-    std::string m_password;
+    State m_state = State::LoginRun;
+    // Set when jkcnsl reports the browser helper is missing, so the failure can
+    // name the real cause instead of the generic "login failed".
+    bool  m_helperMissing = false;
 };
 
 // Heap payload marshalled to the UI thread (the callback runs on the worker

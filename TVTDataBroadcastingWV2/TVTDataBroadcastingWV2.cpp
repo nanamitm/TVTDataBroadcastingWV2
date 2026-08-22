@@ -765,10 +765,11 @@ bool CDataBroadcastingWV2::Initialize()
     panel2.ID = kPanelItemIDs[1];
     panel2.hbmIcon = (HBITMAP)LoadImageW(g_hinstDLL, MAKEINTRESOURCEW(IDB_PLUGIN), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
     m_pApp->RegisterPanelItem(&panel2);
-    // 登録直後は有効状態なので、無効のまま読み込まれた場合はここで隠しておく
-    // (OnPluginEnableは状態が変化したときしか呼ばれない)。有効な場合は
-    // OnPluginEnable(true)が表示するため、ここでは何もしない。
-    if (!m_pApp->IsPluginEnabled())
+    // 登録直後は有効状態なので、無効のまま読み込まれた場合はここで隠しておく。
+    // ただし自動有効化時は、TVTestが前回選択したパネル項目を復元するより後に
+    // プラグインが有効になるため、初期状態を隠すと選択対象がなくなってしまう。
+    // 実際の有効化は従来どおり遅延させつつ、タブは表示状態で登録する。
+    if (!m_pApp->IsPluginEnabled() && !this->GetIniItem(L"AutoEnable", 0))
     {
         this->EnablePanelItems(false);
     }

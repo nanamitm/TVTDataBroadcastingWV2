@@ -3497,8 +3497,12 @@ function render(){
   s.forEach(c=>{
     const col=fc(c.force),tr=document.createElement('tr');
     if(c.id===sid)tr.className='sel';
-    tr.innerHTML='<td style="color:'+col+'">'+( c.video||'')+'</td><td>'+(c.name||'')+'</td>'
-      +'<td style="color:'+col+'">'+(c.force>=0?c.force:'???')+'</td><td class="pe">'+(c.programTitle||'')+'</td>';
+    const vals=[c.video||'',c.name||'',c.force>=0?c.force:'???',c.programTitle||''];
+    vals.forEach((v,i)=>{
+      const td=document.createElement('td');td.textContent=String(v);
+      if(i===0||i===2)td.style.color=col;if(i===3)td.className='pe';
+      tr.appendChild(td);
+    });
     tr.addEventListener('click',()=>{sid=c.id;render();window.chrome.webview.postMessage({cmd:'select',id:c.id});});
     tb.appendChild(tr);
   });

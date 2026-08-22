@@ -1662,7 +1662,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 // Send channels WebSocket config
                 {
                     std::wstring channelsWsUriW = this->GetIniItem(L"ChannelsWsUri", L"ws://localhost:5000/api/channels/ws");
-                    std::string channelsWsUri(channelsWsUriW.begin(), channelsWsUriW.end());
+                    std::string channelsWsUri = wstrToUTF8String(channelsWsUriW.c_str());
                     nlohmann::json chMsg{
                         { "type",   "channelsConfig" },
                         { "ws_uri", channelsWsUri     },
@@ -1679,7 +1679,7 @@ void CDataBroadcastingWV2::InitWebView2()
                     int durationMs = this->GetIniItem(L"CommentDuration", 4000);
                     durationMs = std::max(1000, std::min(5000, durationMs));
                     std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"rgba(0,0,0,0.7)");
-                    std::string shadowColor(shadowColorW.begin(), shadowColorW.end());
+                    std::string shadowColor = wstrToUTF8String(shadowColorW.c_str());
                     bool shadowEnabled  = this->GetIniItem(L"CommentShadow",  1) != 0;
                     bool outlineEnabled = this->GetIniItem(L"CommentOutline", 0) != 0;
                     int fontSizeMedium  = this->GetIniItem(L"CommentFontSize", 24);

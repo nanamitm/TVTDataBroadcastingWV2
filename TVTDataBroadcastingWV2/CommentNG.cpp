@@ -209,17 +209,26 @@ bool CommentNG::RemoveUser(const std::string& userId)
 {
     if (userId.empty() || m_iniPath.empty()) return false;
 
+    // Enumerate a snapshot of the complete section. Numeric keys can contain
+    // gaps after an earlier removal, so probing User0, User1, ... cannot stop
+    // at the first missing value.
+    std::vector<wchar_t> buf(4096);
+    for (;;) {
+        DWORD n = GetPrivateProfileSectionW(kSection, buf.data(),
+                                            static_cast<DWORD>(buf.size()), m_iniPath.c_str());
+        if (n < buf.size() - 2) break;
+        buf.resize(buf.size() * 2);
+    }
+
     bool removed = false;
-    // Find and clear every key whose value equals userId, then reload.
-    for (int i = 0; i < 100000; ++i) {
-        wchar_t key[64];
-        swprintf_s(key, L"User%d", i);
-        wchar_t val[512];
-        DWORD r = GetPrivateProfileStringW(kSection, key, L"", val,
-                                           _countof(val), m_iniPath.c_str());
-        if (r == 0) break;
-        if (WideToUtf8(val) == userId) {
-            WritePrivateProfileStringW(kSection, key, nullptr, m_iniPath.c_str());
+    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) {
+        std::wstring entry(p);
+        auto eq = entry.find(L'=');
+        if (eq == std::wstring::npos) continue;
+        std::wstring key = entry.substr(0, eq);
+        if (key.size() < 4 || _wcsnicmp(key.c_str(), L"User", 4) != 0) continue;
+        if (WideToUtf8(entry.substr(eq + 1)) == userId &&
+            WritePrivateProfileStringW(kSection, key.c_str(), nullptr, m_iniPath.c_str())) {
             removed = true;
         }
     }

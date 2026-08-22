@@ -448,6 +448,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
     JkcnslLogin    m_jkcnslLogin;
+    std::thread    m_authThread;
+    std::mutex     m_authMutex;
+    JkcnslSettings::LoginInfo m_authResult;
     CommentNG      m_commentNg;
     JikkyoStreamTable m_chTable;
     CommentLogWriter  m_logWriter;
@@ -1063,8 +1066,12 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     }
     case WM_APP_AUTH:
     {
-        auto info = std::unique_ptr<JkcnslSettings::LoginInfo>(reinterpret_cast<JkcnslSettings::LoginInfo*>(wParam));
-        pThis->m_loggedIn = info->loggedIn;
+        JkcnslSettings::LoginInfo info;
+        {
+            std::lock_guard<std::mutex> lock(pThis->m_authMutex);
+            info = pThis->m_authResult;
+        }
+        pThis->m_loggedIn = info.loggedIn;
         // m_postTargetRefuge is driven by the chosen per-channel source
         // (UpdateCommentChannel), not the global cache_server_url.
         pThis->PushAuthState();
@@ -1868,6 +1875,11 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->m_jkcnslReader.Stop();
+    this->m_jkcnslLogin.Stop();
+    if (this->m_authThread.joinable()) this->m_authThread.join();
+    this->m_logWriter.Close();
+
     this->RestoreMainAudio();
     this->RestoreVideoWindow();
     m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, StreamCallback, this);
@@ -2016,8 +2028,6 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     }
     else
     {
-        this->m_jkcnslReader.Stop();
-        this->m_logWriter.Close();
         KillTimer(this->hMessageWnd, IDT_PLAYBACK);
         KillTimer(this->hMessageWnd, IDT_JK_WATCHDOG);
         this->m_playbackActive = false;
@@ -2552,11 +2562,16 @@ void CDataBroadcastingWV2::RefreshAuthState()
 {
     std::wstring path = this->GetJkcnslPath();
     HWND hwnd = this->hMessageWnd;
-    std::thread([path, hwnd]() {
+    if (this->m_authThread.joinable()) this->m_authThread.join();
+    this->m_authThread = std::thread([this, path, hwnd]() {
         JkcnslSettings::LoginInfo info;
         JkcnslSettings::QueryLogin(path, info);
-        PostMessageW(hwnd, WM_APP_AUTH, reinterpret_cast<WPARAM>(new JkcnslSettings::LoginInfo(info)), 0);
-    }).detach();
+        {
+            std::lock_guard<std::mutex> lock(this->m_authMutex);
+            this->m_authResult = std::move(info);
+        }
+        PostMessageW(hwnd, WM_APP_AUTH, 0, 0);
+    });
 }
 
 void CDataBroadcastingWV2::PushAuthState()

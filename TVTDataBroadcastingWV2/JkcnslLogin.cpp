@@ -121,6 +121,9 @@ void JkcnslLogin::Stop()
 {
     if (!m_hProcess && !m_hStopEvent && !m_thread.joinable()) return;
 
+    // A shutdown is not a login failure. This also prevents WorkerLoop from
+    // invoking the UI callback while its owner is being torn down.
+    m_finished = true;
     if (m_hStopEvent) SetEvent(m_hStopEvent);
 
     {
@@ -141,14 +144,8 @@ void JkcnslLogin::Stop()
         m_hProcess = nullptr;
     }
 
-    if (m_thread.joinable()) {
-        HANDLE hThread = m_thread.native_handle();
-        if (WaitForSingleObject(hThread, 10000) == WAIT_TIMEOUT) {
-            m_thread.detach();
-        } else {
-            m_thread.join();
-        }
-    }
+    if (m_hStdoutRead) CancelIoEx(m_hStdoutRead, nullptr);
+    if (m_thread.joinable()) m_thread.join();
 
     if (m_hStdoutRead) { CloseHandle(m_hStdoutRead); m_hStdoutRead = nullptr; }
     if (m_hStopEvent)  { CloseHandle(m_hStopEvent);  m_hStopEvent  = nullptr; }

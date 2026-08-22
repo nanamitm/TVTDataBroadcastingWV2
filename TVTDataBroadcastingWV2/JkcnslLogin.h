@@ -51,13 +51,15 @@ public:
     bool Logout(const std::wstring& jkcnslPath);
     // Abort an in-progress login.
     void Cancel();
+    // Stop the helper without reporting a user-visible failure. Used during
+    // plug-in shutdown, before the callback target is destroyed.
+    void Stop();
 
 private:
     enum class Mode { Login, Logout };
     enum class State { LoginRun, LogoutRun, ClearMail, ClearPassword };
 
     bool StartProcess(const std::wstring& jkcnslPath, Mode mode);
-    void Stop();
     void WorkerLoop();
     void ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf);
     void HandleLine(const std::string& line);

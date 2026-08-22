@@ -297,15 +297,12 @@ void JkcnslReader::Stop()
         m_hProcess = nullptr;
     }
 
-    // 4. Wait for ReadLoop thread; detach if it hangs
+    // 4. Cancel any outstanding read and wait until ReadLoop no longer uses
+    // this object or its handles.  Detaching here would leave the worker with
+    // dangling access when Stop() releases the handles or the owner is freed.
+    if (m_hStdoutRead) CancelIoEx(m_hStdoutRead, nullptr);
     if (m_thread.joinable()) {
-        HANDLE hThread = m_thread.native_handle();
-        if (WaitForSingleObject(hThread, 10000) == WAIT_TIMEOUT) {
-            JkDbg("ReadLoop thread did not exit in time, detaching");
-            m_thread.detach();
-        } else {
-            m_thread.join();
-        }
+        m_thread.join();
     }
 
     // 5. Release remaining handles

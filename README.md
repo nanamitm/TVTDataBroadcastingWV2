@@ -121,6 +121,12 @@ Visual C++ 2022が必要(2019でもおそらく可能)
 
 NuGetパッケージを復元しTVTDataBroadcastingWV2.slnをビルド
 
+Release x64ビルド後、起動時のパネル復元スモークテストは以下で実行できます。
+
+```powershell
+.\x64\Release\StartupSmokeTests.exe
+```
+
 ### web-bmlのビルド
 
 以下のコマンドでビルド
@@ -153,4 +159,3 @@ copy browser\node_modules\web-bml-fonts\*.woff2 browser\dist\
 [TVTDataBroadcastingWV2]
 ResourceDirectory=x:\xx\browser\
 ```
-

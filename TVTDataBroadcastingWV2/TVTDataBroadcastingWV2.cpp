@@ -3,6 +3,7 @@
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "thirdparty/TVTestPlugin.h"
 #include "resource.h"
+#include "StartupPolicy.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -769,7 +770,8 @@ bool CDataBroadcastingWV2::Initialize()
     // ただし自動有効化時は、TVTestが前回選択したパネル項目を復元するより後に
     // プラグインが有効になるため、初期状態を隠すと選択対象がなくなってしまう。
     // 実際の有効化は従来どおり遅延させつつ、タブは表示状態で登録する。
-    if (!m_pApp->IsPluginEnabled() && !this->GetIniItem(L"AutoEnable", 0))
+    if (StartupPolicy::ShouldHidePanelItemsAfterRegistration(
+            m_pApp->IsPluginEnabled(), this->GetIniItem(L"AutoEnable", 0) != 0))
     {
         this->EnablePanelItems(false);
     }

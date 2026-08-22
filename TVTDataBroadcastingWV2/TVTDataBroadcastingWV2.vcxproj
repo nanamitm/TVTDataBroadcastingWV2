@@ -262,6 +262,7 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="proxy.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="StartupPolicy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />

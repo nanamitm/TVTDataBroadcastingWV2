@@ -53,6 +53,15 @@ jobs:
         VERSION: ${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
       run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
 
+    - name: Run startup smoke tests
+      if: matrix.platform != 'ARM64'
+      env:
+        PLATFORM: ${{ matrix.platform }}
+      run: |
+        $projectPlatform = if ($env:PLATFORM -eq 'x86') { 'Win32' } else { $env:PLATFORM }
+        & ".\$projectPlatform\Release\StartupSmokeTests.exe"
+        if ($LASTEXITCODE -ne 0) { throw "Startup smoke tests failed with exit code $LASTEXITCODE" }
+
     - uses: actions/setup-node@v5
       with:
         node-version: '24'

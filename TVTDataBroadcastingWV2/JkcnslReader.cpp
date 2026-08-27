@@ -14,12 +14,17 @@ static void JkDbg(const char* msg)
 /*static*/ std::string JkcnslReader::GetXmlAttr(const std::string& xml, const std::string& attr)
 {
     std::string key = attr + "=\"";
-    auto pos = xml.find(key);
-    if (pos == std::string::npos) return "";
-    pos += key.size();
-    auto end = xml.find('"', pos);
-    if (end == std::string::npos) return "";
-    return xml.substr(pos, end - pos);
+    // 属性名の途中に一致しないよう、直前が空白であることを確かめる
+    // (例: attr="mail" が x_mail="..." に一致してしまうのを防ぐ)
+    for (auto pos = xml.find(key); pos != std::string::npos; pos = xml.find(key, pos + key.size()))
+    {
+        if (pos != 0 && !isspace(static_cast<unsigned char>(xml[pos - 1]))) continue;
+        auto start = pos + key.size();
+        auto end = xml.find('"', start);
+        if (end == std::string::npos) return "";
+        return xml.substr(start, end - start);
+    }
+    return "";
 }
 
 /*static*/ bool JkcnslReader::ParseChatLine(const std::string& line, Comment& out)
@@ -164,6 +169,9 @@ void JkcnslReader::ReadLoop()
 bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& streamCommand)
 {
     if (m_running) return true;
+    // ReadLoopだけが自然終了している場合、スレッドとハンドルが残っている。
+    // そのままm_threadへ代入するとstd::terminateになるので必ず後始末する。
+    Stop();
     if (streamCommand.empty()) return false;
     if (streamCommand.find_first_of("\r\n") != std::string::npos) return false;
 
@@ -271,7 +279,7 @@ bool JkcnslReader::Post(const std::string& payload)
 
 void JkcnslReader::Stop()
 {
-    if (!m_hProcess && !m_hStopEvent) return;
+    if (!m_hProcess && !m_hStopEvent && !m_thread.joinable()) return;
 
     // 1. Signal ReadLoop to exit
     if (m_hStopEvent) SetEvent(m_hStopEvent);

@@ -2317,8 +2317,14 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     else { comm = input; }
 
     if (comm.empty()) return;
+    // サロゲートペア(絵文字など)を2文字と数えないよう下位サロゲートを除いて数える
+    int commLength = 0;
+    for (wchar_t ch : comm)
+    {
+        if (ch < 0xdc00 || ch > 0xdfff) commLength++;
+    }
     if (GetTickCount() - this->m_lastPostTick < POST_COMMENT_INTERVAL) { sendResult("error", L"投稿間隔が短すぎます"); return; }
-    if (static_cast<int>(comm.size()) >= POST_COMMENT_MAX)            { sendResult("error", L"コメントが長すぎます"); return; }
+    if (commLength >= POST_COMMENT_MAX)                               { sendResult("error", L"コメントが長すぎます"); return; }
     if (comm == this->m_lastPostComm)                                { sendResult("error", L"前回と同じコメントです"); return; }
 
     // Build "[mail]comment"; in mixing mode append the post target (nico/refuge)
@@ -2499,12 +2505,15 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     bool isMix = false, targetRefuge = false;
     if (have && !st.refugeChatStreamID.empty() && !refugeUri.empty())
     {
+        // 置換後の文字列に同じ差し込み文字列が含まれていても止まるよう、
+        // 検索位置を置換した分だけ進める
+        auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+            for (size_t i = s.find(from); i != std::string::npos; i = s.find(from, i + to.size()))
+                s.replace(i, from.size(), to);
+        };
         std::string uri = refugeUri;
-        std::string jkStr = "jk" + std::to_string(jkID);
-        for (size_t i; (i = uri.find("{jkID}")) != std::string::npos;)
-            uri.replace(i, 6, jkStr);
-        for (size_t i; (i = uri.find("{chatStreamID}")) != std::string::npos;)
-            uri.replace(i, 14, st.refugeChatStreamID);
+        replaceAll(uri, "{jkID}", "jk" + std::to_string(jkID));
+        replaceAll(uri, "{chatStreamID}", st.refugeChatStreamID);
 
         isMix = mixing && !st.chatStreamID.empty();
         int type = (dropFwd || isMix) ? 2 : 1;

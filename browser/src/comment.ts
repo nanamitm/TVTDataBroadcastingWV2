@@ -16,11 +16,12 @@ interface ActiveComment {
     createdAt: number;
 }
 
-let DURATION_MS = 4000;
+const DEFAULT_DURATION_MS = 4000;
+const MIN_DURATION_MS = 1000;
+const MAX_DURATION_MS = 5000;
 const DEFAULT_OPACITY = 1.0;
 const DEFAULT_SHADOW_COLOR = "rgba(0,0,0,0.7)";
-let FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
-const MAX_LANES = 20;
+const DEFAULT_FONT_SIZE: Record<string, number> = { small: 18, medium: 24, big: 36 };
 
 // ニコニコ実況の色名 → CSS色
 const COLOR_MAP: Record<string, string> = {
@@ -38,13 +39,15 @@ export class CommentRenderer {
     private comments: ActiveComment[] = [];
     private rafId = 0;
     private opacity = DEFAULT_OPACITY;
+    private durationMs = DEFAULT_DURATION_MS;
+    private fontSize: Record<string, number> = { ...DEFAULT_FONT_SIZE };
     private shadowColor = DEFAULT_SHADOW_COLOR;
     private shadowEnabled = true;
     private outlineEnabled = true;
-    // レーンごとの「次にコメントを追加できる時刻」
-    private nakaLane: number[] = new Array(MAX_LANES).fill(0);
-    private topLane: number[] = new Array(MAX_LANES).fill(0);
-    private botLane: number[] = new Array(MAX_LANES).fill(0);
+    // レーンごとの「次にコメントを追加できる時刻」(画面の高さに応じて伸ばす)
+    private nakaLane: number[] = [];
+    private topLane: number[] = [];
+    private botLane: number[] = [];
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -58,7 +61,7 @@ export class CommentRenderer {
     }
 
     private addOne(data: CommentData) {
-        const fontSize = FONT_SIZE[data.size ?? "medium"] ?? FONT_SIZE.medium;
+        const fontSize = this.fontSize[data.size ?? "medium"] ?? this.fontSize.medium;
         const pos = data.position ?? "naka";
         const color = COLOR_MAP[data.color ?? "white"] ?? data.color ?? "white";
         const now = performance.now();
@@ -72,16 +75,16 @@ export class CommentRenderer {
         if (pos === "naka") {
             const lane = this.freeLane(this.nakaLane, maxLanes, now);
             // 先頭が画面左端に到達するまでの時間だけレーンをブロック
-            const blockMs = (textWidth / (this.canvas.width + textWidth)) * DURATION_MS;
+            const blockMs = (textWidth / (this.canvas.width + textWidth)) * this.durationMs;
             this.nakaLane[lane] = now + blockMs;
             y = laneH * (lane + 1);
         } else if (pos === "ue") {
             const lane = this.freeLane(this.topLane, maxLanes, now);
-            this.topLane[lane] = now + DURATION_MS;
+            this.topLane[lane] = now + this.durationMs;
             y = laneH * (lane + 1);
         } else {
             const lane = this.freeLane(this.botLane, maxLanes, now);
-            this.botLane[lane] = now + DURATION_MS;
+            this.botLane[lane] = now + this.durationMs;
             y = this.canvas.height - laneH * lane - Math.ceil(fontSize * 0.25) - laneH / 2;
         }
 
@@ -98,8 +101,11 @@ export class CommentRenderer {
     }
 
     private freeLane(lanes: number[], max: number, now: number): number {
+        while (lanes.length < max) {
+            lanes.push(0);
+        }
         let best = 0;
-        for (let i = 0; i < max && i < lanes.length; i++) {
+        for (let i = 0; i < max; i++) {
             if (lanes[i] <= now) return i;
             if (lanes[i] < lanes[best]) best = i;
         }
@@ -111,7 +117,7 @@ export class CommentRenderer {
     }
 
     setDuration(ms: number) {
-        DURATION_MS = Math.max(1000, Math.min(5000, ms));
+        this.durationMs = Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, ms));
     }
 
     setShadowColor(color: string) {
@@ -127,7 +133,7 @@ export class CommentRenderer {
     }
 
     setFontSizeMedium(medium: number) {
-        FONT_SIZE = { small: Math.round(medium * 0.75), medium, big: Math.round(medium * 1.5) };
+        this.fontSize = { small: Math.round(medium * 0.75), medium, big: Math.round(medium * 1.5) };
     }
 
     private draw() {
@@ -136,10 +142,10 @@ export class CommentRenderer {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.globalAlpha = this.opacity;
 
-        this.comments = this.comments.filter(c => now - c.createdAt < DURATION_MS);
+        this.comments = this.comments.filter(c => now - c.createdAt < this.durationMs);
 
         for (const c of this.comments) {
-            const progress = (now - c.createdAt) / DURATION_MS;
+            const progress = (now - c.createdAt) / this.durationMs;
             let x: number;
             if (c.position === "naka") {
                 x = c.startX - progress * (canvas.width + c.textWidth);

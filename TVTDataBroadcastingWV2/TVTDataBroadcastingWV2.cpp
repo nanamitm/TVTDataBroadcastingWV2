@@ -2077,10 +2077,6 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         }
         {
             auto enableComment = this->GetIniItem(L"EnableComment", 0);
-            char logbuf[128];
-            sprintf_s(logbuf, "[TVTDataBroadcastingWV2] EnableComment=%d", enableComment);
-            OutputDebugStringA(logbuf);
-            OutputDebugStringA("\n");
             if (enableComment)
             {
                 this->m_commentNg.Load(this->iniFile);
@@ -2240,21 +2236,6 @@ void CDataBroadcastingWV2::UpdateVolume()
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
     if (comments.empty()) return;
-
-    // Phase B verification: broadcast time (TOT) vs real time (diff~0 live, large on playback).
-    {
-        static DWORD lastTotLog = 0;
-        DWORD now = GetTickCount();
-        if (now - lastTotLog > 10000)
-        {
-            lastTotLog = now;
-            long long bt = this->packetQueue.getBroadcastTime();
-            long long rt = static_cast<long long>(time(nullptr));
-            char buf[160];
-            sprintf_s(buf, "[TVTDataBroadcastingWV2] TOT broadcast=%lld real=%lld diff=%lld\n", bt, rt, rt - bt);
-            OutputDebugStringA(buf);
-        }
-    }
 
     // arr  = comments to render on the canvas (NG-filtered)
     // logArr = all comments for the panel log list (NG ones flagged)

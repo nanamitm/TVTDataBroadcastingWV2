@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "pch.h"
 #include <string>
 
@@ -16,14 +16,19 @@ public:
 
     // Query jkcnsl's current login state ("S" with no argument). Returns false
     // if the query itself failed (jkcnsl missing / no response).
-    static bool QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out);
+    // cancelEvent: signalling it aborts the wait (see RunCommand).
+    static bool QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out,
+                           HANDLE cancelEvent = nullptr);
 
     // Run a single jkcnsl command (e.g. "Scache_server_url https://...") then
     // quit. Returns true if jkcnsl acknowledged it with a '.' terminator.
     // Optionally captures jkcnsl's '-' output lines (without the leading '-').
+    // cancelEvent: 呼び出し元が終了したいときに合図するイベント。応答を待たずに
+    // 打ち切るので、プラグイン無効化時にUIスレッドが待たされない。
     static bool RunCommand(const std::wstring& jkcnslPath,
                            const std::string& command,
-                           std::string* output = nullptr);
+                           std::string* output = nullptr,
+                           HANDLE cancelEvent = nullptr);
 
     // Set (non-empty) or clear (empty) jkcnsl's cache_server_url. When set,
     // 'L{jkChannel}' streams route through that cache/refuge server (e.g.

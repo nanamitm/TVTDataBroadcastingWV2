@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "JkcnslReader.h"
 #include "CommentFetcher.h"
 
@@ -287,9 +287,11 @@ void JkcnslReader::Stop()
         }
     }
 
-    // 3. Wait for jkcnsl to exit; forcibly terminate if it takes too long
+    // 3. Wait for jkcnsl to exit; forcibly terminate if it takes too long.
+    // ここはプラグイン無効化やTVTest終了時にUIスレッドから呼ばれるので、
+    // 'q'に応答しないjkcnslを長く待たない。
     if (m_hProcess) {
-        if (WaitForSingleObject(m_hProcess, 10000) == WAIT_TIMEOUT) {
+        if (WaitForSingleObject(m_hProcess, 3000) == WAIT_TIMEOUT) {
             JkDbg("jkcnsl did not exit in time, terminating");
             TerminateProcess(m_hProcess, 1);
         }

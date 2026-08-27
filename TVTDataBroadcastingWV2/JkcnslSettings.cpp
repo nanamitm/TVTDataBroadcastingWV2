@@ -1,14 +1,17 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "JkcnslSettings.h"
 #include <vector>
 
 namespace {
 constexpr DWORD kTimeoutMs = 8000;
+// 'q'を送った後の終了待ち。応答しない場合は強制終了する。
+constexpr DWORD kExitWaitMs = 1000;
 }
 
 /*static*/ bool JkcnslSettings::RunCommand(const std::wstring& jkcnslPath,
                                            const std::string& command,
-                                           std::string* output)
+                                           std::string* output,
+                                           HANDLE cancelEvent)
 {
     if (command.find_first_of("\r\n") != std::string::npos) return false;
     if (GetFileAttributesW(jkcnslPath.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
@@ -77,7 +80,10 @@ constexpr DWORD kTimeoutMs = 8000;
     ULONGLONG deadline = GetTickCount64() + kTimeoutMs;
     char rb[2048];
     bool sawTerminator = false;
+    HANDLE waits[2] = { ioEvent, cancelEvent };
+    DWORD waitCount = cancelEvent ? 2 : 1;
     while (ioEvent && !sawTerminator) {
+        if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) break;
         ULONGLONG now = GetTickCount64();
         if (now >= deadline) break;
         DWORD remain = static_cast<DWORD>(deadline - now);
@@ -88,7 +94,12 @@ constexpr DWORD kTimeoutMs = 8000;
         DWORD rd = 0;
         BOOL r = ReadFile(hStdoutRead, rb, sizeof(rb), nullptr, &ol);
         if (!r && GetLastError() == ERROR_IO_PENDING) {
-            if (WaitForSingleObject(ioEvent, remain) != WAIT_OBJECT_0) { CancelIo(hStdoutRead); break; }
+            // 読み取り完了か中止のどちらか早い方まで待つ
+            if (WaitForMultipleObjects(waitCount, waits, FALSE, remain) != WAIT_OBJECT_0) {
+                CancelIo(hStdoutRead);
+                GetOverlappedResult(hStdoutRead, &ol, &rd, TRUE);
+                break;
+            }
         } else if (!r) {
             break; // pipe closed / error
         }
@@ -113,7 +124,7 @@ constexpr DWORD kTimeoutMs = 8000;
         WriteFile(hStdinWrite, "q\r\n", 3, &written, nullptr);
     }
     CloseHandle(hStdinWrite);
-    if (WaitForSingleObject(pi.hProcess, 3000) == WAIT_TIMEOUT) {
+    if (WaitForSingleObject(pi.hProcess, kExitWaitMs) == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
     }
     CloseHandle(pi.hProcess);
@@ -137,12 +148,13 @@ constexpr DWORD kTimeoutMs = 8000;
     return ok && !err;
 }
 
-/*static*/ bool JkcnslSettings::QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out)
+/*static*/ bool JkcnslSettings::QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out,
+                                          HANDLE cancelEvent)
 {
     out = LoginInfo{};
     std::string output;
     // "S" with no argument dumps all settings as "-key value" lines.
-    if (!RunCommand(jkcnslPath, "S", &output)) return false;
+    if (!RunCommand(jkcnslPath, "S", &output, cancelEvent)) return false;
 
     size_t start = 0;
     while (start <= output.size()) {

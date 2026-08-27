@@ -451,6 +451,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     JkcnslLogin    m_jkcnslLogin;
     std::thread    m_authThread;
     std::mutex     m_authMutex;
+    // 問い合わせ中はtrue。UIスレッドで前のスレッドをjoinして待たないための番兵。
+    std::atomic<bool> m_authBusy{ false };
+    // 無効化時に問い合わせを打ち切るためのイベント (手動リセット)
+    HANDLE         m_authCancelEvent = nullptr;
     JkcnslSettings::LoginInfo m_authResult;
     CommentNG      m_commentNg;
     JikkyoStreamTable m_chTable;
@@ -1937,7 +1941,15 @@ void CDataBroadcastingWV2::Disable(bool finalize)
 {
     this->m_jkcnslReader.Stop();
     this->m_jkcnslLogin.Stop();
+    // jkcnslの応答を待たずに問い合わせを打ち切る (UIスレッドを固まらせない)
+    if (this->m_authCancelEvent) SetEvent(this->m_authCancelEvent);
     if (this->m_authThread.joinable()) this->m_authThread.join();
+    if (this->m_authCancelEvent)
+    {
+        CloseHandle(this->m_authCancelEvent);
+        this->m_authCancelEvent = nullptr;
+    }
+    this->m_authBusy = false;
     this->m_logWriter.Close();
 
     this->RestoreMainAudio();
@@ -2605,21 +2617,34 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
     if (ev == JkcnslLogin::Event::Success) this->RefreshAuthState();
 }
 
-// Queries jkcnsl's login state on a detached worker (the query spawns jkcnsl,
-// which can take a second), then marshals the result back via WM_APP_AUTH.
+// Queries jkcnsl's login state on a worker (the query spawns jkcnsl, which can
+// take a second), then marshals the result back via WM_APP_AUTH.
 void CDataBroadcastingWV2::RefreshAuthState()
 {
+    // 問い合わせ中に呼ばれてもUIスレッドで待たない。結果は後からWM_APP_AUTHで届く。
+    if (this->m_authBusy.exchange(true))
+    {
+        return;
+    }
+    // 直前のスレッドは終了済みなのでjoinは即座に返る
+    if (this->m_authThread.joinable()) this->m_authThread.join();
+    if (!this->m_authCancelEvent)
+    {
+        this->m_authCancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
     std::wstring path = this->GetJkcnslPath();
     HWND hwnd = this->hMessageWnd;
-    if (this->m_authThread.joinable()) this->m_authThread.join();
-    this->m_authThread = std::thread([this, path, hwnd]() {
+    HANDLE cancelEvent = this->m_authCancelEvent;
+    this->m_authThread = std::thread([this, path, hwnd, cancelEvent]() {
         JkcnslSettings::LoginInfo info;
-        JkcnslSettings::QueryLogin(path, info);
+        JkcnslSettings::QueryLogin(path, info, cancelEvent);
         {
             std::lock_guard<std::mutex> lock(this->m_authMutex);
             this->m_authResult = std::move(info);
         }
         PostMessageW(hwnd, WM_APP_AUTH, 0, 0);
+        // joinが待たされないよう、スレッドの最後で解除する
+        this->m_authBusy = false;
     });
 }
 

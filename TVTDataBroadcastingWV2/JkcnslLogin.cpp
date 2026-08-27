@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "JkcnslLogin.h"
 
 JkcnslLogin::~JkcnslLogin()
@@ -137,7 +137,9 @@ void JkcnslLogin::Stop()
     }
 
     if (m_hProcess) {
-        if (WaitForSingleObject(m_hProcess, 10000) == WAIT_TIMEOUT) {
+        // UIスレッドから呼ばれるため長く待たない (ブラウザーが開いたままでも
+        // 'q'/'c'で畳めない場合は強制終了する)
+        if (WaitForSingleObject(m_hProcess, 3000) == WAIT_TIMEOUT) {
             TerminateProcess(m_hProcess, 1);
         }
         CloseHandle(m_hProcess);

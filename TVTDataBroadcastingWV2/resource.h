@@ -1,4 +1,4 @@
-//{{NO_DEPENDENCIES}}
+﻿//{{NO_DEPENDENCIES}}
 #include <Windows.h>
 #define IDD_REMOTE_CONTROL              101
 #define IDD_SETTING                     102

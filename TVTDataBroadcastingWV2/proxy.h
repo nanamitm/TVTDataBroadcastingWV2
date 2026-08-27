@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <winhttp.h>
 
 class ProxySession
@@ -7,7 +7,7 @@ class ProxySession
     bool ignoreCertificateErrors;
 public:
     HINTERNET GetSession();
-    // true‚È‚çƒT[ƒoØ–¾‘‚ÌŒŸØƒGƒ‰[‚ğ–³‹‚·‚é (INI‚ÌIgnoreCertificateErrors)
+    // trueãªã‚‰ã‚µãƒ¼ãƒè¨¼æ˜æ›¸ã®æ¤œè¨¼ã‚¨ãƒ©ãƒ¼ã‚’ç„¡è¦–ã™ã‚‹ (INIã®IgnoreCertificateErrors)
     bool IgnoreCertificateErrors() const;
     explicit ProxySession(bool ignoreCertificateErrors = false);
     ~ProxySession();
@@ -19,7 +19,7 @@ class ProxyRequest
 {
     HINTERNET connect = nullptr;
     HINTERNET request = nullptr;
-    // ƒXƒgƒŠ[ƒ~ƒ“ƒO‚³‚¹‚é‚Ì‚Í–Ê“|‚©‚Â•K—v‚ª‚È‚¢‚Ì‚Åˆê’U‘S‚Ä“Ç‚İ‚ñ‚Å‚©‚ç•Ô‚·
+    // ã‚¹ãƒˆãƒªãƒ¼ãƒŸãƒ³ã‚°ã•ã›ã‚‹ã®ã¯é¢å€’ã‹ã¤å¿…è¦ãŒãªã„ã®ã§ä¸€æ—¦å…¨ã¦èª­ã¿è¾¼ã‚“ã§ã‹ã‚‰è¿”ã™
     std::vector<BYTE> data;
     std::function<void()> errorCallback;
     std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback;
@@ -37,8 +37,8 @@ class ProxyRequest
     void AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength);
     void Close();
 public:
-    // ”ñ“¯ŠúHTTPƒŠƒNƒGƒXƒg‚ğs‚¤
-    // Š®—¹‚·‚é‚Æ•ÊƒXƒŒƒbƒh‚Åcallback‚ªŒÄ‚Î‚ê‚é
+    // éåŒæœŸHTTPãƒªã‚¯ã‚¨ã‚¹ãƒˆã‚’è¡Œã†
+    // å®Œäº†ã™ã‚‹ã¨åˆ¥ã‚¹ãƒ¬ãƒƒãƒ‰ã§callbackãŒå‘¼ã°ã‚Œã‚‹
     static bool RequestAsync
     (
         ProxySession& session,

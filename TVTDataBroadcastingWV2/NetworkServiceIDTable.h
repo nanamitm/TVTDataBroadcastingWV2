@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // (serviceId << 16) | networkCategory でソート済み
 // BS: networkCategory=0x0004, 地上波: networkCategory=0x000F

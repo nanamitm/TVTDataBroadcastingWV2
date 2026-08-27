@@ -2313,8 +2313,7 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
     constexpr int   POST_COMMENT_MAX      = 76;   // jkcnsl/nicovideo limit
     constexpr DWORD POST_COMMENT_INTERVAL = 2000; // anti-spam guard (ms)
 
-    // Japanese must be authored as wide literals: the project compiles without
-    // /utf-8, so narrow Japanese literals would be CP932 and break json.dump().
+    // 日本語はwide文字列で書く。UIへ渡す直前にUTF-8へ変換する。
     auto sendResult = [this](const char* status, const wchar_t* message) {
         if (!this->momentumWebView || !this->momentumWebViewReady) return;
         nlohmann::json j{ { "type", "postResult" }, { "status", status },

@@ -57,8 +57,9 @@ bool CommentLogWriter::Open(int jkID, time_t date)
 
     wchar_t fname[64];
     swprintf_s(fname, L"\\jk%d\\%010llu.txt", jkID, static_cast<unsigned long long>(date));
+    // CREATE_ALWAYSだと同じ名前(同じ開始秒)の既存ログを切り詰めてしまうので追記で開く
     m_hFile = CreateFileW((m_folder + fname).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
-                          nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                          nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (m_hFile == INVALID_HANDLE_VALUE) {
         CloseHandle(m_hLock);
         m_hLock = INVALID_HANDLE_VALUE;
@@ -66,15 +67,18 @@ bool CommentLogWriter::Open(int jkID, time_t date)
         return false;
     }
 
-    // Header (optional, NicoJK-compatible comment).
-    time_t t = date;
-    tm lt{};
-    localtime_s(&lt, &t);
-    char header[128];
-    int len = sprintf_s(header, "<!-- NicoJK logfile from %04d-%02d-%02dT%02d:%02d:%02d -->\r\n",
-                        lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
-    DWORD written;
-    WriteFile(m_hFile, header, len, &written, nullptr);
+    // Header (optional, NicoJK-compatible comment). 新規作成したときだけ書く。
+    LARGE_INTEGER fileSize{};
+    if (GetFileSizeEx(m_hFile, &fileSize) && fileSize.QuadPart == 0) {
+        time_t t = date;
+        tm lt{};
+        localtime_s(&lt, &t);
+        char header[128];
+        int len = sprintf_s(header, "<!-- NicoJK logfile from %04d-%02d-%02dT%02d:%02d:%02d -->\r\n",
+                            lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
+        DWORD written;
+        WriteFile(m_hFile, header, len, &written, nullptr);
+    }
 
     m_curJk = jkID;
     return true;

@@ -51,6 +51,9 @@ void CommentLogReader::LoadFile(int idx, bool append)
 {
     if (idx < 0 || idx >= static_cast<int>(m_files.size())) return;
     if (!append) { m_buf.clear(); m_pos = 0; }
+    // 追記の前に消費済みのコメントを捨てる。長時間の再生で読み込んだファイルの
+    // 中身がm_bufに際限なく積み上がるのを防ぐ。
+    else if (m_pos > 0) { m_buf.erase(m_buf.begin(), m_buf.begin() + m_pos); m_pos = 0; }
 
     HANDLE h = CreateFileW(m_files[idx].second.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,

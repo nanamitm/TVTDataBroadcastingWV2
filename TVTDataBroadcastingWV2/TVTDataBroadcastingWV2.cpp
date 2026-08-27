@@ -91,7 +91,8 @@ private:
     std::unordered_set<WORD> pidsToExclude;
     std::unordered_map<WORD, int> pcrPIDCandidates;
     int pcrPID = -1;
-    DWORD pcr = 0;
+    // TSスレッドが書き、getBroadcastTime()が別スレッドから読むためatomicにする
+    std::atomic<DWORD> pcr{ 0 };
     DWORD lastBlockPCR = 0;
     // Broadcast wall-clock from TDT/TOT (PID 0x0014), with the PCR at that moment
     // for interpolation. totUnix==0 means unknown.
@@ -1683,7 +1684,7 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
             auto&& maxLengthValue = a["maxLength"];
             int maxLength = maxLengthValue.is_number_integer() ? maxLengthValue.get<int>() : 0;
             maxLength = std::max(0, std::min(MAX_INPUT_LENGTH, maxLength));
-            auto inputDialog = new InputDialog(
+            auto inputDialog = std::make_unique<InputDialog>(
                 utf8StrToWString(a["characterType"].get<std::string>().c_str()),
                 allowedCharacters.is_string() ? std::optional(utf8StrToWString(allowedCharacters.get<std::string>().c_str())) : std::nullopt,
                 maxLength,
@@ -1691,7 +1692,10 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
                 std::move(cb),
                 utf8StrToWString(a["inputMode"].get<std::string>().c_str())
             );
-            PostMessageW(this->hMessageWnd, WM_APP_INPUT, 0, (LPARAM)inputDialog);
+            if (PostMessageW(this->hMessageWnd, WM_APP_INPUT, 0, (LPARAM)inputDialog.get()))
+            {
+                inputDialog.release();
+            }
         }
     }
     else if (type == "cancelInput")
@@ -1884,7 +1888,7 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     {
         if (this->hMessageWnd)
         {
-            auto response = new DeferralResponse
+            auto response = std::make_unique<DeferralResponse>(DeferralResponse
             {
                 deferral,
                 args,
@@ -1892,8 +1896,15 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 std::wstring(statusCodeText),
                 std::wstring(headers),
                 std::vector<BYTE>(content, content + contentLength),
-            };
-            PostMessageW(this->hMessageWnd, WM_APP_RESPONSE, 0, (LPARAM)response);
+            });
+            if (PostMessageW(this->hMessageWnd, WM_APP_RESPONSE, 0, (LPARAM)response.get()))
+            {
+                response.release();
+            }
+            else
+            {
+                deferral->Complete();
+            }
         }
         else
         {
@@ -2074,15 +2085,24 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             {
                 this->m_commentNg.Load(this->iniFile);
                 this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
-                    PostMessageW(this->hMessageWnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(
-                        new std::vector<Comment>(std::move(comments))), 0);
+                    // 無効化直後などPostMessageに失敗した場合はここで解放する
+                    auto payload = std::make_unique<std::vector<Comment>>(std::move(comments));
+                    if (PostMessageW(this->hMessageWnd, WM_APP_COMMENTS,
+                                     reinterpret_cast<WPARAM>(payload.get()), 0))
+                    {
+                        payload.release();
+                    }
                 });
                 this->m_jkcnslReader.SetConnectionCallback([this](bool connected) {
                     PostMessageW(this->hMessageWnd, WM_APP_CONN, connected ? 1 : 0, 0);
                 });
                 this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
-                    PostMessageW(this->hMessageWnd, WM_APP_LOGIN, reinterpret_cast<WPARAM>(
-                        new JkcnslLoginEvent{ ev, std::move(msg) }), 0);
+                    auto payload = std::make_unique<JkcnslLoginEvent>(JkcnslLoginEvent{ ev, std::move(msg) });
+                    if (PostMessageW(this->hMessageWnd, WM_APP_LOGIN,
+                                     reinterpret_cast<WPARAM>(payload.get()), 0))
+                    {
+                        payload.release();
+                    }
                 });
                 // NicoJK-style connection model: refuge via the R command +
                 // RefugeUri, nicovideo via the L command + chatStreamID. This

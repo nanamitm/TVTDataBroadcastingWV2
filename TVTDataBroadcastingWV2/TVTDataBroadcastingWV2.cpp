@@ -1016,17 +1016,25 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         wil::com_ptr<ICoreWebView2WebResourceResponse> webResponse;
         wil::com_ptr<IStream> stm;
-        auto  hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_NODISCARD, response->content.size());
+        // 0バイトだとGlobalLockがnullptrを返すので最低1バイト確保する
+        auto  hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_NODISCARD, std::max<size_t>(response->content.size(), 1));
         if (!hGlobal)
         {
             response->deferral->Complete();
             break;
         }
         auto mem = GlobalLock(hGlobal);
+        if (!mem)
+        {
+            GlobalFree(hGlobal);
+            response->deferral->Complete();
+            break;
+        }
         memcpy(mem, response->content.data(), response->content.size());
         GlobalUnlock(hGlobal);
         if (FAILED(CreateStreamOnHGlobal(hGlobal, TRUE, stm.put())))
         {
+            GlobalFree(hGlobal);
             response->deferral->Complete();
             break;
         }
@@ -1858,11 +1866,12 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 headersPtr.push_back({ name.get(), value.get() });
                 headersCo.push_back({ std::move(name), std::move(value) });
             }
-            BOOL hasNext;
-            if (FAILED(iterator->MoveNext(&hasNext)))
-            {
-                break;
-            }
+        }
+        // 取得に失敗しても必ず次に進める (進めないと無限ループになる)
+        BOOL hasNext;
+        if (FAILED(iterator->MoveNext(&hasNext)))
+        {
+            break;
         }
     }
     wil::com_ptr<ICoreWebView2Deferral> deferral;
@@ -2052,7 +2061,8 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         this->EnablePanelButtons(true);
         if (this->GetIniItem(L"EnableNetwork", 0))
         {
-            this->proxySession = std::unique_ptr<ProxySession>(new ProxySession());
+            this->proxySession = std::unique_ptr<ProxySession>(
+                new ProxySession(this->GetIniItem(L"IgnoreCertificateErrors", 0) != 0));
         }
         {
             auto enableComment = this->GetIniItem(L"EnableComment", 0);

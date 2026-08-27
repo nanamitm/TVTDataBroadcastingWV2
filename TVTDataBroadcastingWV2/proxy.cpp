@@ -86,7 +86,8 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
                     return;
                 }
             }
-            callback(statusCode, statusText.get(), headers.get(), data.size(), data.data());
+            // ステータス行やヘッダが取得できないことがある (HTTP/2など)
+            callback(statusCode, statusText ? statusText.get() : L"", headers ? headers.get() : L"", data.size(), data.data());
             Close();
             break;
         }
@@ -154,8 +155,13 @@ bool ProxyRequest::RequestAsync
         WinHttpCloseHandle(connect);
         return false;
     }
-    DWORD securityFlags = SECURITY_FLAG_IGNORE_ALL_CERT_ERRORS;
-    WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
+    if (session.IgnoreCertificateErrors())
+    {
+        // 証明書の検証を無効にすると通信内容を第三者に読み書きされうるので、
+        // 既定では有効のままにしてINIで明示的に指定された場合だけ無視する
+        DWORD securityFlags = SECURITY_FLAG_IGNORE_ALL_CERT_ERRORS;
+        WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
+    }
     std::unique_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload)));
     if (WinHttpSetStatusCallback(request, StaticAsyncCallback, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
     {
@@ -201,9 +207,14 @@ ProxyRequest::~ProxyRequest()
     WinHttpCloseHandle(connect);
 }
 
-ProxySession::ProxySession()
+ProxySession::ProxySession(bool ignoreCertificateErrors) : ignoreCertificateErrors(ignoreCertificateErrors)
 {
     this->session = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+}
+
+bool ProxySession::IgnoreCertificateErrors() const
+{
+    return this->ignoreCertificateErrors;
 }
 
 ProxySession::~ProxySession()

@@ -4,9 +4,12 @@
 class ProxySession
 {
     HINTERNET session;
+    bool ignoreCertificateErrors;
 public:
     HINTERNET GetSession();
-    ProxySession();
+    // trueならサーバ証明書の検証エラーを無視する (INIのIgnoreCertificateErrors)
+    bool IgnoreCertificateErrors() const;
+    explicit ProxySession(bool ignoreCertificateErrors = false);
     ~ProxySession();
     ProxySession(const ProxySession&) = delete;
     ProxySession& operator=(const ProxySession&) = delete;

@@ -454,6 +454,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::mutex     m_authMutex;
     // 問い合わせ中はtrue。UIスレッドで前のスレッドをjoinして待たないための番兵。
     std::atomic<bool> m_authBusy{ false };
+    // 問い合わせ中に来た更新要求 (UIスレッドからのみ触る)
+    bool           m_authRefreshPending = false;
     // 無効化時に問い合わせを打ち切るためのイベント (手動リセット)
     HANDLE         m_authCancelEvent = nullptr;
     JkcnslSettings::LoginInfo m_authResult;
@@ -1135,6 +1137,11 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         // m_postTargetRefuge is driven by the chosen per-channel source
         // (UpdateCommentChannel), not the global cache_server_url.
         pThis->PushAuthState();
+        // 問い合わせ中に来た更新要求を処理する
+        if (pThis->m_authRefreshPending)
+        {
+            pThis->RefreshAuthState();
+        }
         break;
     }
     case WM_APP_CONN:
@@ -1970,6 +1977,7 @@ void CDataBroadcastingWV2::Disable(bool finalize)
         this->m_authCancelEvent = nullptr;
     }
     this->m_authBusy = false;
+    this->m_authRefreshPending = false;
     this->m_logWriter.Close();
 
     this->RestoreMainAudio();
@@ -2640,11 +2648,14 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
 // take a second), then marshals the result back via WM_APP_AUTH.
 void CDataBroadcastingWV2::RefreshAuthState()
 {
-    // 問い合わせ中に呼ばれてもUIスレッドで待たない。結果は後からWM_APP_AUTHで届く。
+    // 問い合わせ中に呼ばれてもUIスレッドで待たない。取りこぼさないよう
+    // 予約だけしておき、結果を受け取った後(WM_APP_AUTH)で問い合わせ直す。
     if (this->m_authBusy.exchange(true))
     {
+        this->m_authRefreshPending = true;
         return;
     }
+    this->m_authRefreshPending = false;
     // 直前のスレッドは終了済みなのでjoinは即座に返る
     if (this->m_authThread.joinable()) this->m_authThread.join();
     if (!this->m_authCancelEvent)
@@ -2661,9 +2672,10 @@ void CDataBroadcastingWV2::RefreshAuthState()
             std::lock_guard<std::mutex> lock(this->m_authMutex);
             this->m_authResult = std::move(info);
         }
-        PostMessageW(hwnd, WM_APP_AUTH, 0, 0);
-        // joinが待たされないよう、スレッドの最後で解除する
+        // 次のRefreshAuthState()がすぐ動けるよう、通知の前に解除する
+        // (PostMessageは待たされないのでjoinもすぐ返る)
         this->m_authBusy = false;
+        PostMessageW(hwnd, WM_APP_AUTH, 0, 0);
     });
 }
 

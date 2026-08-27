@@ -177,7 +177,7 @@ bool ProxyRequest::RequestAsync
         {
             continue;
         }
-        if (!WinHttpAddRequestHeaders(request, headers.data(), headers.size(), WINHTTP_ADDREQ_FLAG_ADD))
+        if (!WinHttpAddRequestHeaders(request, headers.data(), static_cast<DWORD>(headers.size()), WINHTTP_ADDREQ_FLAG_ADD))
         {
             return false;
         }
@@ -192,7 +192,7 @@ bool ProxyRequest::RequestAsync
     {
         swprintf_s(additionalHeader, L"Content-Length: %zu", payloadSize);
     }
-    if (!WinHttpSendRequest(request, payloadSize == 0 ? WINHTTP_NO_ADDITIONAL_HEADERS : additionalHeader, -1, preq->payload.data(), payloadSize, WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, (DWORD_PTR)preq.get()))
+    if (!WinHttpSendRequest(request, payloadSize == 0 ? WINHTTP_NO_ADDITIONAL_HEADERS : additionalHeader, -1, preq->payload.data(), static_cast<DWORD>(payloadSize), WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, (DWORD_PTR)preq.get()))
     {
         return false;
     }

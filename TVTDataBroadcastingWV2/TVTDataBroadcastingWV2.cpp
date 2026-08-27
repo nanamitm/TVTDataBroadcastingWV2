@@ -3188,7 +3188,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::PanelRemoteControlDlgProc(HWND hDlg, UINT
             }
             UINT dpi = GetDpi(hDlg);
             double scaleY = (double)clientRect.bottom / MulDiv(unionRect.bottom - unionRect.top, dpi, pThis->panelInitialDpi);
-            HDWP hDwp = BeginDeferWindowPos(pThis->panelItems.size());
+            HDWP hDwp = BeginDeferWindowPos(static_cast<int>(pThis->panelItems.size()));
             scaleY = scaleY < 0.6 ? 0.6 : scaleY < 1 ? scaleY : 1;
             for (const auto& item : pThis->panelItems)
             {

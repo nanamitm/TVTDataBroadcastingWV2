@@ -521,6 +521,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
     static LRESULT CALLBACK MessageWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     static BOOL CALLBACK WindowMessageCallback(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, void* pUserData);
 
 public:
@@ -545,6 +546,25 @@ std::wstring utf8StrToWString(const char* s)
     MultiByteToWideChar(CP_UTF8, 0, s, -1, &result[0], size);
     result.resize(size - 1);
     return result;
+}
+
+// nlohmann::jsonの既定のシリアライザは不正なUTF-8を検出すると例外を投げる。
+// コメント本文はjkcnslの出力や録画ログのバイト列がそのまま入るため、
+// ウィンドウプロシージャから例外が抜けないよう不正な並びは置換して出力する。
+static std::string jsonToUTF8String(const nlohmann::json& json)
+{
+    return json.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+static std::wstring jsonToWString(const nlohmann::json& json)
+{
+    return utf8StrToWString(jsonToUTF8String(json).c_str());
+}
+
+// 勢いパネルのHTMLが公開している_update()呼び出しを組み立てる
+static std::wstring jsonToUpdateScript(const nlohmann::json& json)
+{
+    return utf8StrToWString(("_update(" + jsonToUTF8String(json) + ")").c_str());
 }
 
 bool CDataBroadcastingWV2::GetPluginInfo(TVTest::PluginInfo* pInfo)
@@ -816,6 +836,28 @@ LRESULT CALLBACK CDataBroadcastingWV2::MessageWndProc(HWND hWnd, UINT uMsg, WPAR
     {
         return DefWindowProcW(hWnd, uMsg, wParam, lParam);
     }
+    // JSON化やメモリ確保で例外が飛びうる。ウィンドウプロシージャから例外を
+    // 抜けさせるとTVTestごと落ちてしまうためここで捕捉する。
+    try
+    {
+        return pThis->HandleMessage(hWnd, uMsg, wParam, lParam);
+    }
+    catch (const std::exception& e)
+    {
+        OutputDebugStringA("[TVTDataBroadcastingWV2] MessageWndProc: ");
+        OutputDebugStringA(e.what());
+        OutputDebugStringA("\n");
+    }
+    catch (...)
+    {
+        OutputDebugStringA("[TVTDataBroadcastingWV2] MessageWndProc: unknown exception\n");
+    }
+    return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
+
+LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    auto pThis = this;
     switch (uMsg)
     {
     case WM_TIMER:
@@ -1515,18 +1557,12 @@ void CDataBroadcastingWV2::InitWebView2()
                                 if (value)
                                 {
                                     nlohmann::json msg{ { "type", "changeInput" }, { "value", wstrToUTF8String(value.get()) } };
-                                    std::stringstream ss;
-                                    ss << msg;
-                                    auto wjson = utf8StrToWString(ss.str().c_str());
-                                    this->webView->PostWebMessageAsJson(wjson.c_str());
+                                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
                                 }
                                 else
                                 {
                                     nlohmann::json msg{ { "type", "cancelInput" } };
-                                    std::stringstream ss;
-                                    ss << msg;
-                                    auto wjson = utf8StrToWString(ss.str().c_str());
-                                    this->webView->PostWebMessageAsJson(wjson.c_str());
+                                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
                                 }
                             };
                             auto inputDialog = new InputDialog(
@@ -1670,10 +1706,7 @@ void CDataBroadcastingWV2::InitWebView2()
                         { "type",   "channelsConfig" },
                         { "ws_uri", channelsWsUri     },
                     };
-                    std::stringstream chSs;
-                    chSs << chMsg;
-                    auto chJson = utf8StrToWString(chSs.str().c_str());
-                    this->webView->PostWebMessageAsJson(chJson.c_str());
+                    this->webView->PostWebMessageAsJson(jsonToWString(chMsg).c_str());
                 }
                 // Send comment config (opacity + duration + shadow)
                 {
@@ -1696,10 +1729,7 @@ void CDataBroadcastingWV2::InitWebView2()
                         { "outline_enabled",   outlineEnabled     },
                         { "font_size_medium",  fontSizeMedium     },
                     };
-                    std::stringstream cfgSs;
-                    cfgSs << cfgMsg;
-                    auto cfgJson = utf8StrToWString(cfgSs.str().c_str());
-                    this->webView->PostWebMessageAsJson(cfgJson.c_str());
+                    this->webView->PostWebMessageAsJson(jsonToWString(cfgMsg).c_str());
                 }
                 if (this->proxySession)
                 {
@@ -2125,10 +2155,7 @@ void CDataBroadcastingWV2::UpdateCaptionState(bool showIndicator)
         return;
     }
     nlohmann::json msg{ { "type", "caption" }, { "enable", this->caption }, { "showIndicator", showIndicator } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 void CDataBroadcastingWV2::UpdateVolume()
@@ -2138,10 +2165,7 @@ void CDataBroadcastingWV2::UpdateVolume()
         return;
     }
     nlohmann::json msg{ { "type", "volume" }, { "value", this->useTVTestVolume ? this->currentVolume / (double)MAX_VOLUME : 1.0 } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
@@ -2201,16 +2225,14 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     if (this->webView && this->webViewLoaded && !arr.empty())
     {
         nlohmann::json msg{ { "type", "comments" }, { "comments", arr } };
-        std::stringstream ss; ss << msg;
-        this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+        this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
     }
 
     // Comment log list -> momentum panel WebView.
     if (this->momentumWebView && this->momentumWebViewReady)
     {
         nlohmann::json m{ { "type", "commentLog" }, { "items", logArr } };
-        std::string script = "_update(" + m.dump() + ")";
-        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+        this->momentumWebView->ExecuteScript(jsonToUpdateScript(m).c_str(), nullptr);
     }
 }
 
@@ -2228,8 +2250,7 @@ void CDataBroadcastingWV2::PostComment(const std::wstring& input)
         if (!this->momentumWebView || !this->momentumWebViewReady) return;
         nlohmann::json j{ { "type", "postResult" }, { "status", status },
                           { "message", wstrToUTF8String(message) } };
-        std::string script = "_update(" + j.dump() + ")";
-        this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+        this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
     };
 
     // IsRunning() は jkcnsl プロセスの生死でしかないので、実際に投稿できるか
@@ -2280,8 +2301,7 @@ void CDataBroadcastingWV2::ClearOnScreenComments()
 {
     if (!this->webView) return;
     nlohmann::json msg{ { "type", "clearComments" } };
-    std::stringstream ss; ss << msg;
-    this->webView->PostWebMessageAsJson(utf8StrToWString(ss.str().c_str()).c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 // Polls the broadcast clock (TOT). When it is well behind real time we are
@@ -2552,8 +2572,7 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
     nlohmann::json j{ { "type", "loginStatus" },
                       { "state", wstrToUTF8String(state) },
                       { "message", wstrToUTF8String(text.c_str()) } };
-    std::string script = "_update(" + j.dump() + ")";
-    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
 
     // A completed login/clear changes the authenticated state.
     if (ev == JkcnslLogin::Event::Success) this->RefreshAuthState();
@@ -2590,8 +2609,7 @@ void CDataBroadcastingWV2::PushAuthState()
                       { "connected", this->m_streamConnected },
                       { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
                       { "boxColor", wstrToUTF8String(boxColW.c_str()) } };
-    std::string script = "_update(" + j.dump() + ")";
-    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::PushNgUsers()
@@ -2600,8 +2618,7 @@ void CDataBroadcastingWV2::PushNgUsers()
     nlohmann::json users = nlohmann::json::array();
     for (const auto& u : this->m_commentNg.GetUsers()) users.push_back(u);
     nlohmann::json j{ { "type", "ngUsers" }, { "users", users } };
-    std::string script = "_update(" + j.dump() + ")";
-    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::SetCaptionState(bool enable)
@@ -2649,10 +2666,7 @@ void CDataBroadcastingWV2::UpdateNetworkState()
         return;
     }
     nlohmann::json msg{ { "type", "enableNetwork" }, { "enable", this->enableNetwork } };
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 enum class UsedKeyType
@@ -2853,10 +2867,7 @@ bool CDataBroadcastingWV2::OnCommand(int ID)
             if (post)
             {
                 nlohmann::json msg{ { "type", "key" }, { "keyCode", command->second.keyCode } };
-                std::stringstream ss;
-                ss << msg;
-                auto wjson = utf8StrToWString(ss.str().c_str());
-                this->webView->PostWebMessageAsJson(wjson.c_str());
+                this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
             }
             else if (command->second.commandName)
             {
@@ -3220,10 +3231,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                             { "opacity",     opacity / 100.0    },
                             { "duration_ms", duration           },
                         };
-                        std::stringstream cfgSs;
-                        cfgSs << cfgMsg;
-                        auto cfgJson = utf8StrToWString(cfgSs.str().c_str());
-                        pThis->webView->PostWebMessageAsJson(cfgJson.c_str());
+                        pThis->webView->PostWebMessageAsJson(jsonToWString(cfgMsg).c_str());
                     }
                 }
                 pThis->EnablePanelButtons(pThis->m_pApp->IsPluginEnabled());
@@ -3377,9 +3385,7 @@ void CDataBroadcastingWV2::UpdateCommentToggle()
     bool enabled = this->GetIniItem(L"CommentEnabled", 1) != 0;
     double opacity = enabled ? this->GetIniItem(L"CommentOpacity", 100) / 100.0 : 0.0;
     nlohmann::json msg{{"type", "commentConfig"}, {"opacity", opacity}};
-    std::stringstream ss; ss << msg;
-    auto wstr = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wstr.c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -3823,8 +3829,7 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 int col = this->GetIniItem(L"MomentumSortColumn", 2);
                                 bool asc = this->GetIniItem(L"MomentumSortAscending", 0) != 0;
                                 nlohmann::json sj{ { "type", "sortConfig" }, { "col", col }, { "asc", asc } };
-                                std::string script = "_update(" + sj.dump() + ")";
-                                this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+                                this->momentumWebView->ExecuteScript(jsonToUpdateScript(sj).c_str(), nullptr);
                             }
                             this->SendMomentumChannels();
                             this->PushAuthState();
@@ -3845,8 +3850,7 @@ void CDataBroadcastingWV2::SendMomentumTheme()
     COLORREF bg = this->panelBackColor, fg = this->panelTextColor;
     COLORREF sb = RGB((GetRValue(bg)+GetRValue(fg))/2, (GetGValue(bg)+GetGValue(fg))/2, (GetBValue(bg)+GetBValue(fg))/2);
     nlohmann::json msg{{"type","thm"},{"bg",colorToHex(bg)},{"fg",colorToHex(fg)},{"sb",colorToHex(sb)}};
-    std::string script = "_update(" + msg.dump() + ")";
-    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::SendMomentumChannels()
@@ -3861,8 +3865,7 @@ void CDataBroadcastingWV2::SendMomentumChannels()
         });
     }
     nlohmann::json msg{{"type","channelsUpdate"},{"channels",channels}};
-    std::string script = "_update(" + msg.dump() + ")";
-    this->momentumWebView->ExecuteScript(utf8StrToWString(script.c_str()).c_str(), nullptr);
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
 }
 
 void CDataBroadcastingWV2::SwitchToMomentumChannelById(int id)
@@ -3988,10 +3991,7 @@ void CDataBroadcastingWV2::UpdateAudioStream()
     {
         msg["channelId"] = this->mainAudio.getChannelId().value();
     }
-    std::stringstream ss;
-    ss << msg;
-    auto wjson = utf8StrToWString(ss.str().c_str());
-    this->webView->PostWebMessageAsJson(wjson.c_str());
+    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
 // Index=1からサービスを変更したとしてもOnAudioStreamChangeは呼ばれない

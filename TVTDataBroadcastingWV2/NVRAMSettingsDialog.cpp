@@ -79,8 +79,16 @@ HRESULT NVRAMSettingsDialog::ReadNVRAM(std::function<HRESULT(HRESULT, nlohmann::
         [callback](HRESULT result, LPCWSTR resultObjectAsJson) -> HRESULT {
         if (SUCCEEDED(result))
         {
-            auto json = nlohmann::json::parse(wstrToUTF8String(resultObjectAsJson));
-            return callback(result, json);
+            // スクリプトの実行結果は信用できないのでパース失敗で例外を漏らさない
+            try
+            {
+                auto json = nlohmann::json::parse(wstrToUTF8String(resultObjectAsJson));
+                return callback(result, json);
+            }
+            catch (const nlohmann::json::exception&)
+            {
+                return S_OK;
+            }
         }
         return S_OK;
     }).Get());

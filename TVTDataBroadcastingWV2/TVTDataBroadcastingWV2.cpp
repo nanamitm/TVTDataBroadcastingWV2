@@ -487,6 +487,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
     INT GetIniItem(const wchar_t* key, INT def);
     bool SetIniItem(const wchar_t* key, const wchar_t* data);
+    // データ放送のWebViewから届いたメッセージを処理する
+    void OnWebMessage(nlohmann::json& a);
     void Disable(bool finalize);
     void EnablePanelButtons(bool enable);
     // パネルのタブ自体("データ放送"/"実況勢い")の表示を切り替える。
@@ -1440,249 +1442,23 @@ void CDataBroadcastingWV2::InitWebView2()
             }).Get(), &token);
 
             this->webView->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-                [this, hWebViewWnd](ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                [this](ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
                 wil::unique_cotaskmem_string message;
                 if (SUCCEEDED(args->get_WebMessageAsJson(message.put())))
                 {
-                    auto messageUTF8 = wstrToUTF8String(message.get());
-
-                    auto a = nlohmann::json::parse(messageUTF8);
-                    auto type = a["type"].get<std::string>();
-                    if (type == "videoChanged")
+                    // データ放送のコンテンツから来るメッセージは信用できない。
+                    // パース失敗や型違いの例外がCOMのコールバックから抜けると
+                    // TVTestごと落ちるためここで捕捉する。
+                    try
                     {
-                        auto left = a["left"].get<double>();
-                        auto right = a["right"].get<double>();
-                        auto top = a["top"].get<double>();
-                        auto bottom = a["bottom"].get<double>();
-                        auto invisible = a["invisible"].get<bool>();
-                        RECT r;
-                        r.left = (int)std::floor(left);
-                        r.right = (int)std::ceil(right);
-                        r.top = (int)std::floor(top);
-                        r.bottom = (int)std::ceil(bottom);
-
-                        this->invisible = invisible;
-                        this->videoRect = r;
-                        this->ResizeVideoWindow();
+                        auto a = nlohmann::json::parse(wstrToUTF8String(message.get()));
+                        this->OnWebMessage(a);
                     }
-                    else if (type == "invisible")
+                    catch (const nlohmann::json::exception& e)
                     {
-                        auto invisible = a["invisible"].get<bool>();
-                        this->invisible = invisible;
-                        this->ResizeVideoWindow();
-                    }
-                    else if (type == "status")
-                    {
-                        auto url = utf8StrToWString(a["url"].get<std::string>().c_str());
-                        auto receiving = a["receiving"].get<bool>();
-                        auto loading = a["loading"].get<bool>();
-                        this->status.url = url;
-                        this->status.receiving = receiving;
-                        this->status.loading = loading;
-                        this->m_pApp->StatusItemNotify(1, TVTest::STATUS_ITEM_NOTIFY_REDRAW);
-                    }
-                    else if (type == "tune")
-                    {
-                        auto originalNetworkId = a["originalNetworkId"].get<int>();
-                        auto transportStreamId = a["transportStreamId"].get<int>();
-                        auto serviceId = a["serviceId"].get<int>();
-                        TVTest::ChannelSelectInfo info = {};
-                        info.Size = sizeof(info);
-                        info.Flags = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE | TVTest::CHANNEL_SELECT_FLAG_ALLOWDISABLED;
-                        // FIXME: original_network_idでない
-                        info.NetworkID = originalNetworkId;
-                        info.TransportStreamID = transportStreamId;
-                        info.ServiceID = serviceId;
-                        info.Channel = -1;
-                        info.Space = -1;
-                        if (!this->m_pApp->SelectChannel(&info))
-                        {
-                            int numSpace = 0;
-                            this->m_pApp->GetTuningSpace(&numSpace);
-                            bool success = false;
-                            for (int space = 0; space < numSpace && !success; space++)
-                            {
-                                for (int channel = 0; ; channel++)
-                                {
-                                    TVTest::ChannelInfo channelInfo = {};
-                                    if (!this->m_pApp->GetChannelInfo(space, channel, &channelInfo))
-                                    {
-                                        break;
-                                    }
-                                    // FIXME: original_network_idでない
-                                    if (channelInfo.NetworkID == originalNetworkId && channelInfo.TransportStreamID == transportStreamId)
-                                    {
-                                        success = this->m_pApp->SetChannel(space, channel, serviceId);
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!success)
-                            {
-                                auto msg = (L"データ放送からの選局に失敗しました。映像/音声のないサービスまたはチャンネルスキャンされていない可能性があります。(original_network_id=" + std::to_wstring(originalNetworkId) + L",transport_stream_id=" + std::to_wstring(transportStreamId) + L",service_id=" + std::to_wstring(serviceId) + L")");
-                                MessageBoxW(this->m_pApp->GetFullscreen() ? this->GetFullscreenWindow() : this->m_pApp->GetAppWindow(), msg.c_str(), nullptr, MB_ICONERROR | MB_OK);
-                                this->m_pApp->AddLog(msg.c_str(), TVTest::LOG_TYPE_ERROR);
-                                if (this->webView)
-                                {
-                                    this->webView->Reload();
-                                }
-                            }
-                        }
-                    }
-                    else if (type == "usedKeyList")
-                    {
-                        auto&& usedKeyList = a["usedKeyList"];
-                        if (usedKeyList.is_object())
-                        {
-                            UsedKey usedKey{};
-                            usedKey.basic = usedKeyList["basic"].is_boolean();
-                            usedKey.dataButton = usedKeyList["data-button"].is_boolean();
-                            usedKey.numericTuning = usedKeyList["numeric-tuning"].is_boolean();
-                            usedKey.special1 = usedKeyList["special-1"].is_boolean();
-                            usedKey.special2 = usedKeyList["special-2"].is_boolean();
-                            this->usedKey = usedKey;
-                        }
-                    }
-                    else if (type == "input")
-                    {
-                        if (this->hMessageWnd)
-                        {
-                            auto&& allowedCharacters = a["allowedCharacters"];
-                            auto cb = [this](std::unique_ptr<WCHAR[]> value)
-                            {
-                                if (!this->webView)
-                                {
-                                    return;
-                                }
-                                if (value)
-                                {
-                                    nlohmann::json msg{ { "type", "changeInput" }, { "value", wstrToUTF8String(value.get()) } };
-                                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
-                                }
-                                else
-                                {
-                                    nlohmann::json msg{ { "type", "cancelInput" } };
-                                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
-                                }
-                            };
-                            auto inputDialog = new InputDialog(
-                                utf8StrToWString(a["characterType"].get<std::string>().c_str()),
-                                allowedCharacters.is_string() ? std::optional(utf8StrToWString(allowedCharacters.get<std::string>().c_str())) : std::nullopt,
-                                a["maxLength"].get<int>(),
-                                utf8StrToWString(a["value"].get<std::string>().c_str()),
-                                std::move(cb),
-                                utf8StrToWString(a["inputMode"].get<std::string>().c_str())
-                            );
-                            PostMessageW(this->hMessageWnd, WM_APP_INPUT, 0, (LPARAM)inputDialog);
-                        }
-                    }
-                    else if (type == "cancelInput")
-                    {
-                        this->inputDialog = nullptr;
-                    }
-                    else if (type == "changeAudioStream")
-                    {
-                        auto componentId = a["componentId"].get<int>();
-                        auto index = a["index"].get<int>();
-                        auto&& channelId = a["channelId"];
-                        if (componentId == -1)
-                        {
-                            this->RestoreMainAudio();
-                        }
-                        else
-                        {
-                            Audio audio;
-                            audio.componentId = (BYTE)componentId;
-                            audio.index = index;
-                            this->isPlayingMainAudio = false;
-                            if (channelId.is_number_integer())
-                            {
-                                audio.setChannelId(channelId.get<int>());
-                            }
-                            this->SelectAudio(audio);
-                        }
-                    }
-                    else if (type == "changeMainAudioStream")
-                    {
-                        auto componentId = a["componentId"].get<int>();
-                        auto index = a["index"].get<int>();
-                        auto&& channelId = a["channelId"];
-                        Audio audio;
-                        audio.componentId = (BYTE)componentId;
-                        audio.index = index;
-                        if (channelId.is_number_integer())
-                        {
-                            audio.setChannelId(channelId.get<int>());
-                        }
-                        if (this->isPlayingMainAudio)
-                        {
-                            this->SelectAudio(audio);
-                        }
-                    }
-                    else if (type == "serviceInfo")
-                    {
-                        auto cProfile = a["cProfile"].get<bool>();
-                        auto serviceId = a["serviceId"].get<int>();
-                        auto networkId = a["networkId"].get<int>();
-                        if (this->currentService.ServiceID == serviceId && this->currentChannel.NetworkID == networkId)
-                        {
-                            this->currentServiceIsOneSeg = cProfile;
-                            if (!cProfile)
-                            {
-                                this->DestroyOneSegWindow();
-                            }
-                        }
-                    }
-                    else if (type == "startBrowser")
-                    {
-                        auto uri = a["uri"].get<std::string>();
-                        auto fullscreen = a["fullscreen"].get<bool>();
-                        if (uri.starts_with("http://") || uri.starts_with("https://"))
-                        {
-#if 0
-                            if (fullscreen)
-                            {
-                                this->DestroyOneSegWindow();
-                            }
-#endif
-                            auto wuri = utf8StrToWString(uri.c_str());
-                            ShellExecuteW(nullptr, L"open", wuri.c_str(), nullptr, nullptr, SW_SHOW);
-                        }
-                    }
-                    else if (type == "channelsUpdate")
-                    {
-                        this->momentumChannels.clear();
-                        for (auto& ch : a["channels"])
-                        {
-                            MomentumChannel mc;
-                            mc.id    = ch["id"].get<int>();
-                            mc.name  = ch["name"].get<std::string>();
-                            mc.video = ch["video"].get<std::string>();
-                            mc.force = ch["force"].get<int>();
-                            auto& pt = ch["programTitle"];
-                            mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
-                            this->momentumChannels.push_back(std::move(mc));
-                        }
-                        this->SendMomentumChannels();
-                    }
-                    else if (type == "addNgUser")
-                    {
-                        auto& v = a["userId"];
-                        if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
-                    }
-                    else if (type == "removeNgUser")
-                    {
-                        auto& v = a["userId"];
-                        if (v.is_string()) this->m_commentNg.RemoveUser(v.get<std::string>());
-                    }
-                    else if (type == "addNgRegex")
-                    {
-                        auto& v = a["pattern"];
-                        if (v.is_string()) this->m_commentNg.AddRegex(v.get<std::string>());
-                    }
-                    else if (type == "reloadNg")
-                    {
-                        this->m_commentNg.Load(this->iniFile);
+                        OutputDebugStringA("[TVTDataBroadcastingWV2] WebMessageReceived: ");
+                        OutputDebugStringA(e.what());
+                        OutputDebugStringA("\n");
                     }
                 }
                 return S_OK;
@@ -1762,6 +1538,257 @@ void CDataBroadcastingWV2::InitWebView2()
             MessageBoxW(this->m_pApp->GetAppWindow(), (std::wstring(L"WebView2を初期化できませんでした。(CreateCoreWebView2EnvironmentWithOptions)\nHRESULT = 0x") + buf).c_str(), L"TVTDataBroadcastingWV2", MB_ICONERROR | MB_OK);
         }
         this->m_pApp->EnablePlugin(false);
+    }
+}
+
+void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
+{
+    auto&& typeValue = a["type"];
+    if (!typeValue.is_string())
+    {
+        return;
+    }
+    auto type = typeValue.get<std::string>();
+    if (type == "videoChanged")
+    {
+        auto left = a["left"].get<double>();
+        auto right = a["right"].get<double>();
+        auto top = a["top"].get<double>();
+        auto bottom = a["bottom"].get<double>();
+        auto invisible = a["invisible"].get<bool>();
+        RECT r;
+        r.left = (int)std::floor(left);
+        r.right = (int)std::ceil(right);
+        r.top = (int)std::floor(top);
+        r.bottom = (int)std::ceil(bottom);
+
+        this->invisible = invisible;
+        this->videoRect = r;
+        this->ResizeVideoWindow();
+    }
+    else if (type == "invisible")
+    {
+        auto invisible = a["invisible"].get<bool>();
+        this->invisible = invisible;
+        this->ResizeVideoWindow();
+    }
+    else if (type == "status")
+    {
+        auto url = utf8StrToWString(a["url"].get<std::string>().c_str());
+        auto receiving = a["receiving"].get<bool>();
+        auto loading = a["loading"].get<bool>();
+        this->status.url = url;
+        this->status.receiving = receiving;
+        this->status.loading = loading;
+        this->m_pApp->StatusItemNotify(1, TVTest::STATUS_ITEM_NOTIFY_REDRAW);
+    }
+    else if (type == "tune")
+    {
+        auto originalNetworkId = a["originalNetworkId"].get<int>();
+        auto transportStreamId = a["transportStreamId"].get<int>();
+        auto serviceId = a["serviceId"].get<int>();
+        TVTest::ChannelSelectInfo info = {};
+        info.Size = sizeof(info);
+        info.Flags = TVTest::CHANNEL_SELECT_FLAG_STRICTSERVICE | TVTest::CHANNEL_SELECT_FLAG_ALLOWDISABLED;
+        // FIXME: original_network_idでない
+        info.NetworkID = originalNetworkId;
+        info.TransportStreamID = transportStreamId;
+        info.ServiceID = serviceId;
+        info.Channel = -1;
+        info.Space = -1;
+        if (!this->m_pApp->SelectChannel(&info))
+        {
+            int numSpace = 0;
+            this->m_pApp->GetTuningSpace(&numSpace);
+            bool success = false;
+            for (int space = 0; space < numSpace && !success; space++)
+            {
+                for (int channel = 0; ; channel++)
+                {
+                    TVTest::ChannelInfo channelInfo = {};
+                    if (!this->m_pApp->GetChannelInfo(space, channel, &channelInfo))
+                    {
+                        break;
+                    }
+                    // FIXME: original_network_idでない
+                    if (channelInfo.NetworkID == originalNetworkId && channelInfo.TransportStreamID == transportStreamId)
+                    {
+                        success = this->m_pApp->SetChannel(space, channel, serviceId);
+                        break;
+                    }
+                }
+            }
+            if (!success)
+            {
+                auto msg = (L"データ放送からの選局に失敗しました。映像/音声のないサービスまたはチャンネルスキャンされていない可能性があります。(original_network_id=" + std::to_wstring(originalNetworkId) + L",transport_stream_id=" + std::to_wstring(transportStreamId) + L",service_id=" + std::to_wstring(serviceId) + L")");
+                MessageBoxW(this->m_pApp->GetFullscreen() ? this->GetFullscreenWindow() : this->m_pApp->GetAppWindow(), msg.c_str(), nullptr, MB_ICONERROR | MB_OK);
+                this->m_pApp->AddLog(msg.c_str(), TVTest::LOG_TYPE_ERROR);
+                if (this->webView)
+                {
+                    this->webView->Reload();
+                }
+            }
+        }
+    }
+    else if (type == "usedKeyList")
+    {
+        auto&& usedKeyList = a["usedKeyList"];
+        if (usedKeyList.is_object())
+        {
+            UsedKey usedKey{};
+            usedKey.basic = usedKeyList["basic"].is_boolean();
+            usedKey.dataButton = usedKeyList["data-button"].is_boolean();
+            usedKey.numericTuning = usedKeyList["numeric-tuning"].is_boolean();
+            usedKey.special1 = usedKeyList["special-1"].is_boolean();
+            usedKey.special2 = usedKeyList["special-2"].is_boolean();
+            this->usedKey = usedKey;
+        }
+    }
+    else if (type == "input")
+    {
+        if (this->hMessageWnd)
+        {
+            auto&& allowedCharacters = a["allowedCharacters"];
+            auto cb = [this](std::unique_ptr<WCHAR[]> value)
+            {
+                if (!this->webView)
+                {
+                    return;
+                }
+                if (value)
+                {
+                    nlohmann::json msg{ { "type", "changeInput" }, { "value", wstrToUTF8String(value.get()) } };
+                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
+                }
+                else
+                {
+                    nlohmann::json msg{ { "type", "cancelInput" } };
+                    this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
+                }
+            };
+            // maxLengthはコンテンツ側の値なので、そのまま確保長に使わない
+            constexpr int MAX_INPUT_LENGTH = 4096;
+            auto&& maxLengthValue = a["maxLength"];
+            int maxLength = maxLengthValue.is_number_integer() ? maxLengthValue.get<int>() : 0;
+            maxLength = std::max(0, std::min(MAX_INPUT_LENGTH, maxLength));
+            auto inputDialog = new InputDialog(
+                utf8StrToWString(a["characterType"].get<std::string>().c_str()),
+                allowedCharacters.is_string() ? std::optional(utf8StrToWString(allowedCharacters.get<std::string>().c_str())) : std::nullopt,
+                maxLength,
+                utf8StrToWString(a["value"].get<std::string>().c_str()),
+                std::move(cb),
+                utf8StrToWString(a["inputMode"].get<std::string>().c_str())
+            );
+            PostMessageW(this->hMessageWnd, WM_APP_INPUT, 0, (LPARAM)inputDialog);
+        }
+    }
+    else if (type == "cancelInput")
+    {
+        this->inputDialog = nullptr;
+    }
+    else if (type == "changeAudioStream")
+    {
+        auto componentId = a["componentId"].get<int>();
+        auto index = a["index"].get<int>();
+        auto&& channelId = a["channelId"];
+        if (componentId == -1)
+        {
+            this->RestoreMainAudio();
+        }
+        else
+        {
+            Audio audio;
+            audio.componentId = (BYTE)componentId;
+            audio.index = index;
+            this->isPlayingMainAudio = false;
+            if (channelId.is_number_integer())
+            {
+                audio.setChannelId(channelId.get<int>());
+            }
+            this->SelectAudio(audio);
+        }
+    }
+    else if (type == "changeMainAudioStream")
+    {
+        auto componentId = a["componentId"].get<int>();
+        auto index = a["index"].get<int>();
+        auto&& channelId = a["channelId"];
+        Audio audio;
+        audio.componentId = (BYTE)componentId;
+        audio.index = index;
+        if (channelId.is_number_integer())
+        {
+            audio.setChannelId(channelId.get<int>());
+        }
+        if (this->isPlayingMainAudio)
+        {
+            this->SelectAudio(audio);
+        }
+    }
+    else if (type == "serviceInfo")
+    {
+        auto cProfile = a["cProfile"].get<bool>();
+        auto serviceId = a["serviceId"].get<int>();
+        auto networkId = a["networkId"].get<int>();
+        if (this->currentService.ServiceID == serviceId && this->currentChannel.NetworkID == networkId)
+        {
+            this->currentServiceIsOneSeg = cProfile;
+            if (!cProfile)
+            {
+                this->DestroyOneSegWindow();
+            }
+        }
+    }
+    else if (type == "startBrowser")
+    {
+        auto uri = a["uri"].get<std::string>();
+        auto fullscreen = a["fullscreen"].get<bool>();
+        if (uri.starts_with("http://") || uri.starts_with("https://"))
+        {
+#if 0
+            if (fullscreen)
+            {
+                this->DestroyOneSegWindow();
+            }
+#endif
+            auto wuri = utf8StrToWString(uri.c_str());
+            ShellExecuteW(nullptr, L"open", wuri.c_str(), nullptr, nullptr, SW_SHOW);
+        }
+    }
+    else if (type == "channelsUpdate")
+    {
+        this->momentumChannels.clear();
+        for (auto& ch : a["channels"])
+        {
+            MomentumChannel mc;
+            mc.id    = ch["id"].get<int>();
+            mc.name  = ch["name"].get<std::string>();
+            mc.video = ch["video"].get<std::string>();
+            mc.force = ch["force"].get<int>();
+            auto& pt = ch["programTitle"];
+            mc.programTitle = pt.is_null() ? "" : pt.get<std::string>();
+            this->momentumChannels.push_back(std::move(mc));
+        }
+        this->SendMomentumChannels();
+    }
+    else if (type == "addNgUser")
+    {
+        auto& v = a["userId"];
+        if (v.is_string()) this->m_commentNg.AddUser(v.get<std::string>());
+    }
+    else if (type == "removeNgUser")
+    {
+        auto& v = a["userId"];
+        if (v.is_string()) this->m_commentNg.RemoveUser(v.get<std::string>());
+    }
+    else if (type == "addNgRegex")
+    {
+        auto& v = a["pattern"];
+        if (v.is_string()) this->m_commentNg.AddRegex(v.get<std::string>());
+    }
+    else if (type == "reloadNg")
+    {
+        this->m_commentNg.Load(this->iniFile);
     }
 }
 

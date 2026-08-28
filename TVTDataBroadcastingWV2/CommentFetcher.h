@@ -13,6 +13,11 @@ struct Comment {
     std::string mail;     // raw mail field (for command NG, e.g. "184")
     std::string raw;      // raw <chat ...>...</chat> line (for logfile recording)
     bool refuge = false;  // from a refuge source (x_refuge / nx_jikkyo)
+    // NicoJKのローカル拡張属性。[CustomReplace]で付与されることを想定している
+    bool abone = false;       // abone="1"  流れるコメントとして表示しない
+    bool yourpost = false;    // yourpost="1"  背景付きで強調表示する
+    bool insertLast = false;  // insert_at="last"  直前のコメントの隣に積む(ue/shitaのみ)
+    std::string align;        // align="left"/"right"  空なら中央(ue/shitaのみ)
     bool past = false;     // backfilled past comment (x_past_chat range)
     time_t date = 0;      // Unix timestamp
 };

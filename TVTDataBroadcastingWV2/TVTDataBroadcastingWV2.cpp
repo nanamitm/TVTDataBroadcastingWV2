@@ -485,6 +485,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SwitchToMomentumChannel(int index);
     void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
+    void ReportReplaceErrors();
     void PostComment(const std::wstring& input);
     // fromWatchdog: 定期的な切断チェックからの呼び出し。同一チャンネルのまま
     // ストリームだけが死んでいる場合に、画面のコメントを消さずに張り直す。
@@ -1812,6 +1813,7 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     else if (type == "reloadNg")
     {
         this->m_commentNg.Load(this->iniFile);
+        this->ReportReplaceErrors();
     }
 }
 
@@ -2088,6 +2090,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             if (enableComment)
             {
                 this->m_commentNg.Load(this->iniFile);
+                this->ReportReplaceErrors();
                 this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
                     // 無効化直後などPostMessageに失敗した場合はここで解放する
                     auto payload = std::make_unique<std::vector<Comment>>(std::move(comments));
@@ -2241,6 +2244,15 @@ void CDataBroadcastingWV2::UpdateVolume()
     this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
 
+// [CustomReplace]の正規表現が壊れているキーをTVTestのログに報告する(NicoJK同様)
+void CDataBroadcastingWV2::ReportReplaceErrors()
+{
+    for (const auto& key : this->m_commentNg.GetReplaceErrors())
+    {
+        this->m_pApp->AddLog((key + L"の正規表現が異常です。").c_str(), TVTest::LOG_TYPE_ERROR);
+    }
+}
+
 void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 {
     if (comments.empty()) return;
@@ -2255,16 +2267,39 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
         if (!c.past && !this->m_playbackActive)
             this->m_logWriter.Write(this->m_currentJkID, c.date, c.raw);
 
-        this->m_commentNg.ApplyReplace(c.text); // [CustomReplace] before NG/display
+        // [CustomReplace]: chatタグ全体を置換してから解釈しなおす。NicoJKと同じく
+        // ログファイルへの記録(上のWrite)には置換結果を反映しない。
+        if (this->m_commentNg.HasReplaces())
+        {
+            std::string tag = c.raw;
+            if (this->m_commentNg.ApplyReplace(tag))
+            {
+                Comment r;
+                if (JkcnslReader::ParseChatXml(tag, r))
+                {
+                    r.raw  = c.raw;  // 記録済みの原文を保つ
+                    r.past = c.past;
+                    c = std::move(r);
+                }
+                else
+                {
+                    // 置換の結果chatタグとして解釈できなくなったものは表示しない
+                    c.abone = true;
+                }
+            }
+        }
         // Past (backfilled) comments go to the log only, never flow on the canvas.
-        if (!c.past && !this->m_commentNg.IsNG(c))
+        if (!c.past && !c.abone && !this->m_commentNg.IsNG(c))
         {
             arr.push_back({
-                { "text",     c.text     },
-                { "color",    c.color    },
-                { "position", c.position },
-                { "size",     c.size     },
-                { "date",     c.date     },
+                { "text",       c.text       },
+                { "color",      c.color      },
+                { "position",   c.position   },
+                { "size",       c.size       },
+                { "date",       c.date       },
+                { "align",      c.align      },
+                { "insertLast", c.insertLast },
+                { "yourpost",   c.yourpost   },
             });
         }
         // nb = NG by regex/command (fixed); user NG is applied live in the panel.
@@ -2275,7 +2310,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
             { "date",   c.date   },
             { "refuge", c.refuge },
             { "past",   c.past   },
-            { "nb",     this->m_commentNg.IsNGExceptUser(c) },
+            { "nb",     c.abone || this->m_commentNg.IsNGExceptUser(c) },
         });
     }
 

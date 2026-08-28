@@ -41,6 +41,9 @@ public:
     void SetConnectionCallback(ConnectionCallback cb) { m_connCallback = std::move(cb); }
 
     static bool ParseChatLine(const std::string& line, Comment& out);
+    // jkcnslの行頭マーカーを除いた "<chat ...>...</chat>" 単体を解釈する。
+    // ParseChatLineと違い本文が空でも成功する([CustomReplace]の置換結果用)。
+    static bool ParseChatXml(const std::string& xml, Comment& out);
 
 private:
     Callback m_callback;

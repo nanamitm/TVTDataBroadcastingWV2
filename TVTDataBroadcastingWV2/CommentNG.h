@@ -12,8 +12,9 @@
 //   User0=,  User1=,  ...    exact user_id match
 //   Command0=, Command1=, ... exact mail-field token match (e.g. "184")
 //
-// Unlike NicoJK's sed-style replace over raw <chat> XML, this filters the
-// already-parsed Comment struct, which suits the WebView rendering pipeline.
+// NG filtering works on the already-parsed Comment struct, which suits the
+// WebView rendering pipeline. The [CustomReplace] substitutions below are
+// separate and run over the raw <chat> tag, as NicoJK does.
 class CommentNG
 {
 public:
@@ -43,8 +44,13 @@ public:
 
     bool HasUser(const std::string& userId) const;
 
-    // Apply [CustomReplace] sed-style substitutions to the comment text in place.
-    void ApplyReplace(std::string& text) const;
+    // Apply the [CustomReplace] sed-style substitutions to a whole <chat> tag
+    // in place, in ascending key order. Returns true if the tag was modified.
+    bool ApplyReplace(std::string& tag) const;
+    bool HasReplaces() const { return !m_replaces.empty(); }
+
+    // Keys whose pattern could not be compiled at the last Load() (for logging).
+    const std::vector<std::wstring>& GetReplaceErrors() const { return m_replaceErrors; }
 
 private:
     struct RegexRule {
@@ -52,6 +58,7 @@ private:
         std::regex  re;
     };
     struct ReplaceRule {
+        int         key = 0; // {n} of Pattern{n}; rules run in ascending order
         std::regex  re;
         std::string fmt; // std::regex_replace format ($1 etc.)
     };
@@ -60,7 +67,8 @@ private:
     std::vector<RegexRule>    m_regexes;
     std::vector<std::string>  m_users;    // exact user_id match
     std::vector<std::string>  m_commands; // exact mail token match
-    std::vector<ReplaceRule>  m_replaces; // [CustomReplace] text substitutions
+    std::vector<ReplaceRule>  m_replaces; // [CustomReplace] tag substitutions
+    std::vector<std::wstring> m_replaceErrors; // keys with an invalid pattern
 
     void LoadReplaces(const std::wstring& iniPath);
 

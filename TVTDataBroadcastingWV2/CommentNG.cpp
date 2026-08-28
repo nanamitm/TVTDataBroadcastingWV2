@@ -93,6 +93,7 @@ void CommentNG::Load(const std::wstring& iniPath)
 void CommentNG::LoadReplaces(const std::wstring& iniPath)
 {
     m_replaces.clear();
+    m_replaceErrors.clear();
 
     std::vector<wchar_t> buf(4096);
     for (;;) {
@@ -102,36 +103,61 @@ void CommentNG::LoadReplaces(const std::wstring& iniPath)
         buf.resize(buf.size() * 2);
     }
 
-    // Each entry: "Replace{n} = s{delim}regex{delim}replacement{delim}". The
-    // delimiter is the first char after 's' (NicoJK-style sed substitution).
-    static const std::regex reSed(R"(^[Ss](.)([\s\S]+?)\1([\s\S]*?)\1g?$)");
+    // NicoJK互換: "Pattern{n} = s{区切り}正規表現{区切り}置換{区切り}g"。
+    // 区切り文字は s の次の1文字。先頭が大文字 'S' のものは無効なパターンを表す。
+    // 旧名の "Replace{n}" も受け付ける。処理順は {n} の昇順。
+    static const std::regex reSed(R"(^([Ss])(.)([\s\S]+?)\2([\s\S]*?)\2g?$)");
     for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) {
         std::wstring entry(p);
         auto eq = entry.find(L'=');
         if (eq == std::wstring::npos) continue;
+        std::wstring key = entry.substr(0, eq);
+
+        // キー名は Pattern{n} / Replace{n} のみ。Comment{n} などは読み飛ばす。
+        size_t prefixLen = 0;
+        if (key.size() > 7 && _wcsnicmp(key.c_str(), L"Pattern", 7) == 0) prefixLen = 7;
+        else if (key.size() > 7 && _wcsnicmp(key.c_str(), L"Replace", 7) == 0) prefixLen = 7;
+        if (prefixLen == 0) continue;
+        wchar_t* endp = nullptr;
+        long index = wcstol(key.c_str() + prefixLen, &endp, 10);
+        if (endp == key.c_str() + prefixLen || (endp && *endp)) continue;
+
         std::string val = WideToUtf8(entry.substr(eq + 1));
         std::smatch m;
-        if (!std::regex_match(val, m, reSed)) continue;
+        if (!std::regex_match(val, m, reSed)) {
+            if (!val.empty()) m_replaceErrors.push_back(key);
+            continue;
+        }
+        if (m[1].str() == "S") continue; // 無効状態のパターン
         try {
             ReplaceRule r;
-            r.re.assign(m[2].str());
-            r.fmt = m[3].str();
+            r.key = static_cast<int>(index);
+            r.re.assign(m[3].str());
+            r.fmt = m[4].str();
             m_replaces.push_back(std::move(r));
         } catch (const std::regex_error&) {
-            // skip invalid pattern
+            m_replaceErrors.push_back(key);
         }
     }
+    std::stable_sort(m_replaces.begin(), m_replaces.end(),
+                     [](const ReplaceRule& a, const ReplaceRule& b) { return a.key < b.key; });
 }
 
-void CommentNG::ApplyReplace(std::string& text) const
+bool CommentNG::ApplyReplace(std::string& tag) const
 {
+    bool replaced = false;
     for (const auto& r : m_replaces) {
         try {
-            text = std::regex_replace(text, r.re, r.fmt);
+            std::string next = std::regex_replace(tag, r.re, r.fmt);
+            if (next != tag) {
+                tag.swap(next);
+                replaced = true;
+            }
         } catch (const std::regex_error&) {
-            // ignore
+            // 置換フォーマット異常のため無視する
         }
     }
+    return replaced;
 }
 
 bool CommentNG::IsNG(const Comment& c) const

@@ -27,30 +27,46 @@ static void JkDbg(const char* msg)
     return "";
 }
 
-/*static*/ bool JkcnslReader::ParseChatLine(const std::string& line, Comment& out)
+/*static*/ bool JkcnslReader::ParseChatXml(const std::string& xml, Comment& out)
 {
-    if (line.size() < 2 || line[0] != '-') return false;
-    const std::string xml = line.substr(1);
-    if (xml.find("<chat") == std::string::npos) return false;
+    if (xml.compare(0, 5, "<chat") != 0) return false;
 
-    auto dateStr = GetXmlAttr(xml, "date");
-    if (dateStr.empty()) return false;
-    try { out.date = std::stoll(dateStr); } catch (...) { return false; }
-
+    // 属性は開始タグの範囲だけから読む。本文に "... align=..." のような文字列が
+    // 現れても拾わないようにするため(NicoJKのProcessChatTagと同じ考え方)。
     auto contentStart = xml.find('>');
     if (contentStart == std::string::npos) return false;
     auto contentEnd = xml.rfind("</chat>");
-    if (contentEnd == std::string::npos || contentEnd <= contentStart) return false;
-    out.text = xml.substr(contentStart + 1, contentEnd - contentStart - 1);
-    if (out.text.empty()) return false;
+    if (contentEnd == std::string::npos || contentEnd < contentStart) return false;
+    const std::string attrs = xml.substr(0, contentStart);
 
-    out.userId = GetXmlAttr(xml, "user_id");
-    out.mail   = GetXmlAttr(xml, "mail");
+    auto dateStr = GetXmlAttr(attrs, "date");
+    if (dateStr.empty()) return false;
+    try { out.date = std::stoll(dateStr); } catch (...) { return false; }
+
+    out.text = xml.substr(contentStart + 1, contentEnd - contentStart - 1);
+
+    out.userId = GetXmlAttr(attrs, "user_id");
+    out.mail   = GetXmlAttr(attrs, "mail");
     out.raw    = xml; // the raw <chat ...>...</chat> tag (for logfile recording)
-    out.refuge = xml.find("x_refuge=\"1\"") != std::string::npos
-              || xml.find("nx_jikkyo=\"1\"") != std::string::npos;
+    out.refuge = GetXmlAttr(attrs, "x_refuge") == "1"
+              || GetXmlAttr(attrs, "nx_jikkyo") == "1";
+    // NicoJKのローカル拡張属性。通常は[CustomReplace]の置換で付与される
+    out.abone      = GetXmlAttr(attrs, "abone") == "1";
+    out.yourpost   = GetXmlAttr(attrs, "yourpost") == "1";
+    out.insertLast = GetXmlAttr(attrs, "insert_at") == "last";
+    auto align = GetXmlAttr(attrs, "align");
+    out.align = (align == "left" || align == "right") ? align : std::string();
     CommentFetcher::ParseMail(out.mail, out.color, out.position, out.size);
     return true;
+}
+
+/*static*/ bool JkcnslReader::ParseChatLine(const std::string& line, Comment& out)
+{
+    if (line.size() < 2 || line[0] != '-') return false;
+    if (!ParseChatXml(line.substr(1), out)) return false;
+    // ストリームから来た空コメントは無視する(置換結果の空文字列は許容されるため
+    // ParseChatXml側では弾いていない)
+    return !out.text.empty();
 }
 
 void JkcnslReader::SetConnected(bool connected)

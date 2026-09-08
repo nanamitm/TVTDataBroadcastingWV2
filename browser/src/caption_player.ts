@@ -1,144 +1,116 @@
-import { CanvasMainThreadRenderer, MPEGTSFeeder, type PartialCanvasRendererOption } from "aribb24.js";
 import { playRomSound } from "web-bml";
 import { VideoPlayer } from "./video_player";
 
-const MAX_CAPTION_DURATION_SECONDS = 3 * 60;
+type SendMessage = (message: any) => void;
 
-type CaptionTrack = {
-    feeder: MPEGTSFeeder;
-    renderer: CanvasMainThreadRenderer;
-    previousPresentation: number | undefined;
+export type NativeCaptionImage = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    stride: number;
+    data: string;
 };
 
-// web-bmlからPESを受け取り、外部PCRクロックに合わせて字幕を描画する
+// PESの分離はweb-bmlに任せ、字幕のデコードと描画はホスト側のlibaribcaptionで行う。
 export class CaptionPlayer extends VideoPlayer {
-    private readonly captionTrack: CaptionTrack;
-    private readonly superimposeTrack: CaptionTrack;
-    private pcr: number | undefined;
-    private paintQueued = false;
+    private readonly canvases = [document.createElement("canvas"), document.createElement("canvas")];
+    private readonly sendMessage: SendMessage;
     private audioNode?: AudioNode;
 
-    public constructor(video: HTMLVideoElement, container: HTMLElement) {
+    public constructor(video: HTMLVideoElement, container: HTMLElement, sendMessage: SendMessage) {
         super(video, container);
-
-        const rendererOption: PartialCanvasRendererOption = {
-            font: {
-                normal: "丸ゴシック",
-                arib: "丸ゴシック",
-            },
-            color: {
-                stroke: "black",
-            },
-            resize: {
-                target: "container",
-                objectFit: "none",
-            },
-        };
-
-        this.captionTrack = {
-            feeder: new MPEGTSFeeder({ recieve: { type: "Caption" }, tokenizer: {}, offset: {} }),
-            renderer: new CanvasMainThreadRenderer(rendererOption),
-            previousPresentation: undefined,
-        };
-        this.superimposeTrack = {
-            feeder: new MPEGTSFeeder({ recieve: { type: "Superimpose" }, tokenizer: {}, offset: {} }),
-            renderer: new CanvasMainThreadRenderer(rendererOption),
-            previousPresentation: undefined,
-        };
-
-        // TVTestから渡される外部PCRを使うため、Controllerの動画時計の代わりに
-        // フィーダーの読み出し開始位置を明示する。
-        this.captionTrack.feeder.prepare(0);
-        this.superimposeTrack.feeder.prepare(0);
-        this.captionTrack.renderer.onAttach(container);
-        this.superimposeTrack.renderer.onAttach(container);
+        this.sendMessage = sendMessage;
+        for (const canvas of this.canvases) {
+            canvas.style.position = "absolute";
+            canvas.style.left = "0";
+            canvas.style.top = "0";
+            canvas.style.width = "100%";
+            canvas.style.height = "100%";
+            canvas.style.pointerEvents = "none";
+            this.container.append(canvas);
+        }
+        this.sendMessage({ type: "captionReset" });
     }
 
     public setSource(_source: string): void {
     }
 
     public updateTime(pcr: number): void {
-        this.pcr = pcr / 1000;
-
-        // content()で、この時刻までに届いたPESの非同期デコードを開始する。
-        this.captionTrack.feeder.content(this.pcr);
-        this.superimposeTrack.feeder.content(this.pcr);
-
-        if (!this.paintQueued) {
-            this.paintQueued = true;
-            requestAnimationFrame(() => {
-                this.paintQueued = false;
-                if (this.pcr == null) {
-                    return;
-                }
-                this.paint(this.captionTrack, this.pcr);
-                this.paint(this.superimposeTrack, this.pcr);
-            });
-        }
+        const layoutElement = this.container.parentElement ?? this.container;
+        const pixelRatio = globalThis.devicePixelRatio || 1;
+        this.sendMessage({
+            type: "captionTime",
+            time: pcr,
+            width: Math.max(1, Math.round(layoutElement.clientWidth * pixelRatio)),
+            height: Math.max(1, Math.round(layoutElement.clientHeight * pixelRatio)),
+        });
     }
 
     public push(streamId: number, pes: Uint8Array, pts?: number): void {
-        if (streamId === 0xbd && pts != null) {
-            // web-bmlのPTSは90 kHz、aribb24.js v2の時刻単位は秒。
-            this.captionTrack.feeder.feedB24(pes, pts / 90000);
-        } else if (streamId === 0xbf && this.pcr != null) {
-            // 文字スーパーにはPTSがないため、受信時点のPCRを表示時刻にする。
-            this.superimposeTrack.feeder.feedB24(pes, this.pcr);
+        if (streamId !== 0xbd && streamId !== 0xbf) {
+            return;
+        }
+        this.sendMessage({
+            type: "captionPes",
+            streamId,
+            data: Array.from(pes),
+            ...(pts == null ? {} : { pts }),
+        });
+    }
+
+    public draw(track: number, frameWidth: number | undefined, frameHeight: number | undefined,
+                images: NativeCaptionImage[]): void {
+        const canvas = this.canvases[track];
+        if (canvas == null) {
+            return;
+        }
+        if (frameWidth != null && frameHeight != null &&
+            (canvas.width !== frameWidth || canvas.height !== frameHeight)) {
+            canvas.width = frameWidth;
+            canvas.height = frameHeight;
+        }
+        const context = canvas.getContext("2d");
+        if (context == null) {
+            return;
+        }
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        for (const image of images) {
+            if (image.width <= 0 || image.height <= 0 || image.stride < image.width * 4) {
+                continue;
+            }
+            const binary = atob(image.data);
+            const source = Uint8Array.from(binary, c => c.charCodeAt(0));
+            if (source.length < image.stride * image.height) {
+                continue;
+            }
+            const pixels = new Uint8ClampedArray(image.width * image.height * 4);
+            for (let y = 0; y < image.height; ++y) {
+                pixels.set(source.subarray(y * image.stride, y * image.stride + image.width * 4),
+                           y * image.width * 4);
+            }
+            // libaribcaptionのDirectWrite出力はpremultiplied RGBAだが、
+            // ImageDataの入力はstraight alphaなので色成分を戻してから渡す。
+            for (let i = 0; i < pixels.length; i += 4) {
+                const alpha = pixels[i + 3];
+                if (alpha > 0 && alpha < 255) {
+                    pixels[i] = Math.min(255, Math.round(pixels[i] * 255 / alpha));
+                    pixels[i + 1] = Math.min(255, Math.round(pixels[i + 1] * 255 / alpha));
+                    pixels[i + 2] = Math.min(255, Math.round(pixels[i + 2] * 255 / alpha));
+                }
+            }
+            context.putImageData(new ImageData(pixels, image.width, image.height), image.x, image.y);
         }
     }
 
-    private paint(track: CaptionTrack, currentTime: number): void {
-        this.ensureRendererSize(track);
-        const presentation = track.feeder.content(currentTime);
-        if (presentation == null) {
-            if (track.previousPresentation != null) {
-                track.renderer.clear();
-                track.previousPresentation = undefined;
-            }
-            return;
-        }
-
-        const duration = Math.min(presentation.duration, MAX_CAPTION_DURATION_SECONDS);
-        if (currentTime >= presentation.pts + duration) {
-            const endTime = presentation.pts + duration;
-            if (track.previousPresentation !== endTime) {
-                track.renderer.clear();
-                track.previousPresentation = endTime;
-            }
-            return;
-        }
-
-        if (track.previousPresentation === presentation.pts) {
-            return;
-        }
-
-        track.renderer.clear();
-        track.renderer.render(presentation.state, structuredClone(presentation.data), presentation.info);
-        track.previousPresentation = presentation.pts;
-
+    public playBuiltinSound(sound: number): void {
         if (this.audioNode != null && this.container.style.display !== "none") {
-            for (const token of presentation.data) {
-                if (token.tag === "BuiltinSoundReplay") {
-                    playRomSound(token.sound, this.audioNode);
-                }
-            }
+            playRomSound(sound, this.audioNode);
         }
     }
 
     public showCC(): void {
         this.container.style.display = "";
-    }
-
-    private ensureRendererSize(track: CaptionTrack): void {
-        const layoutElement = this.container.parentElement ?? this.container;
-        const pixelRatio = globalThis.devicePixelRatio || 1;
-        const width = Math.max(1, Math.round(layoutElement.clientWidth * pixelRatio));
-        const height = Math.max(1, Math.round(layoutElement.clientHeight * pixelRatio));
-        const canvas = track.renderer.getPresentationCanvas();
-        if (canvas.width !== width || canvas.height !== height) {
-            track.renderer.resize(width, height);
-            track.previousPresentation = undefined;
-        }
     }
 
     public hideCC(): void {

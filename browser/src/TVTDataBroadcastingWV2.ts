@@ -3,7 +3,7 @@ import { ChannelInfo, ChannelsClient } from "./channels";
 import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "web-bml";
 import { decodeTS } from "web-bml/ts";
-import { CaptionPlayer } from "./caption_player";
+import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
 
 declare global {
     interface Window {
@@ -88,7 +88,7 @@ const roundGothic: BMLBrowserFontFace = { source: "url('../dist/KosugiMaru-Regul
 const boldRoundGothic: BMLBrowserFontFace = { source: "url('../dist/KosugiMaru-Bold.woff2'), local('MS Gothic')" };
 const squareGothic: BMLBrowserFontFace = { source: "url('../dist/Kosugi-Regular.woff2'), local('MS Gothic')" };
 const ccContainer = browserElement.querySelector(".arib-video-cc-container") as HTMLElement;
-const player = new CaptionPlayer(document.createElement("video"), ccContainer);
+const player = new CaptionPlayer(document.createElement("video"), ccContainer, postMessage);
 // リモコン
 const remoteControl = new StatusBarIndicator(browserElement.querySelector(".remote-control-receiving-status")!, browserElement.querySelector(".remote-control-networking-status")!);
 
@@ -366,6 +366,18 @@ type FromWebViewMessage = {
 } | {
     type: "channelsUpdate",
     channels: ChannelInfo[],
+} | {
+    type: "captionReset",
+} | {
+    type: "captionPes",
+    streamId: number,
+    data: number[],
+    pts?: number,
+} | {
+    type: "captionTime",
+    time: number,
+    width: number,
+    height: number,
 };
 
 bmlBrowser.addEventListener("videochanged", (evt) => {
@@ -477,6 +489,15 @@ type ToWebViewMessage = {
     enable: boolean,
     showIndicator: boolean,
 } | {
+    type: "captionImage",
+    track: number,
+    frameWidth?: number,
+    frameHeight?: number,
+    images: NativeCaptionImage[],
+} | {
+    type: "captionSound",
+    sound: number,
+} | {
     type: "nvramRead",
     filename: string,
     structure: string,
@@ -568,6 +589,10 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         bmlBrowser.content.processKeyDown(data.keyCode);
         bmlBrowser.content.processKeyUp(data.keyCode);
         remoteControlStatusTimeout = performance.now() + remoteControlStatusTimeoutMillis;
+    } else if (data.type === "captionImage") {
+        player.draw(data.track, data.frameWidth, data.frameHeight, data.images);
+    } else if (data.type === "captionSound") {
+        player.playBuiltinSound(data.sound);
     } else if (data.type === "caption") {
         if (data.enable) {
             if (data.showIndicator) {

@@ -253,6 +253,11 @@
       <DelayLoadDLLs>shcore.dll;winhttp.dll</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>thirdparty\libaribcaption-config;thirdparty\libaribcaption\include;thirdparty\libaribcaption\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CommentFetcher.h" />
     <ClInclude Include="CommentNG.h" />
@@ -264,6 +269,7 @@
     <ClInclude Include="CommentLogReader.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
+    <ClInclude Include="NativeCaptionRenderer.h" />
     <ClInclude Include="OneSeg.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="proxy.h" />
@@ -281,6 +287,7 @@
     <ClCompile Include="CommentLogReader.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
+    <ClCompile Include="NativeCaptionRenderer.cpp" />
     <ClCompile Include="OneSeg.cpp" />
     <ClCompile Include="proxy.cpp" />
     <ClCompile Include="TVTDataBroadcastingWV2.cpp" />
@@ -291,6 +298,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="thirdparty\libaribcaption\src\base\aligned_alloc.cpp;thirdparty\libaribcaption\src\base\logger.cpp;thirdparty\libaribcaption\src\base\md5.c;thirdparty\libaribcaption\src\common\caption_capi.cpp;thirdparty\libaribcaption\src\common\context.cpp;thirdparty\libaribcaption\src\common\context_capi.cpp;thirdparty\libaribcaption\src\decoder\b24_codesets.cpp;thirdparty\libaribcaption\src\decoder\b24_colors.cpp;thirdparty\libaribcaption\src\decoder\b24_drcs_conv.cpp;thirdparty\libaribcaption\src\decoder\decoder.cpp;thirdparty\libaribcaption\src\decoder\decoder_capi.cpp;thirdparty\libaribcaption\src\decoder\decoder_impl.cpp;thirdparty\libaribcaption\src\renderer\bitmap.cpp;thirdparty\libaribcaption\src\renderer\canvas.cpp;thirdparty\libaribcaption\src\renderer\drcs_renderer.cpp;thirdparty\libaribcaption\src\renderer\font_provider.cpp;thirdparty\libaribcaption\src\renderer\font_provider_directwrite.cpp;thirdparty\libaribcaption\src\renderer\image_capi.cpp;thirdparty\libaribcaption\src\renderer\region_renderer.cpp;thirdparty\libaribcaption\src\renderer\renderer.cpp;thirdparty\libaribcaption\src\renderer\renderer_capi.cpp;thirdparty\libaribcaption\src\renderer\renderer_impl.cpp;thirdparty\libaribcaption\src\renderer\text_renderer.cpp;thirdparty\libaribcaption\src\renderer\text_renderer_directwrite.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>ARIBCC_IMPLEMENTATION;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

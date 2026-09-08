@@ -1,0 +1,3 @@
+[submodule "TVTDataBroadcastingWV2/thirdparty/libaribcaption"]
+	path = TVTDataBroadcastingWV2/thirdparty/libaribcaption
+	url = https://github.com/nanamitm/libaribcaption.git

@@ -9,6 +9,7 @@
 #include <wil/stl.h>
 #include <wil/win32_helpers.h>
 #include "NVRAMSettingsDialog.h"
+#include "NativeCaptionRenderer.h"
 #include "proxy.h"
 #include "InputDialog.h"
 #include "OneSeg.h"
@@ -491,6 +492,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // ストリームだけが死んでいる場合に、画面のコメントを消さずに張り直す。
     void UpdateCommentChannel(bool fromWatchdog = false);
     void UpdateCaptionState(bool showIndicator);
+    bool EnsureNativeCaptionRenderer();
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
     INT GetIniItem(const wchar_t* key, INT def);
@@ -519,6 +521,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
 
     wil::com_ptr<ICoreWebView2Controller> webViewController;
     wil::com_ptr<ICoreWebView2> webView;
+    std::unique_ptr<NativeCaptionRenderer> nativeCaptionRenderer;
 
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
     static INT_PTR CALLBACK RemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
@@ -1562,6 +1565,28 @@ void CDataBroadcastingWV2::InitWebView2()
     }
 }
 
+bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
+{
+    if (this->nativeCaptionRenderer)
+    {
+        return true;
+    }
+    auto renderer = std::make_unique<NativeCaptionRenderer>([this](const nlohmann::json& message)
+    {
+        if (this->webView)
+        {
+            this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+        }
+    });
+    if (!renderer->Initialize())
+    {
+        this->m_pApp->AddLog(L"libaribcaptionの初期化に失敗しました。", TVTest::LOG_TYPE_ERROR);
+        return false;
+    }
+    this->nativeCaptionRenderer = std::move(renderer);
+    return true;
+}
+
 void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
 {
     auto&& typeValue = a["type"];
@@ -1570,7 +1595,55 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         return;
     }
     auto type = typeValue.get<std::string>();
-    if (type == "videoChanged")
+    if (type == "captionReset")
+    {
+        if (this->EnsureNativeCaptionRenderer())
+        {
+            this->nativeCaptionRenderer->Reset();
+        }
+    }
+    else if (type == "captionPes")
+    {
+        constexpr std::size_t MAX_CAPTION_PES_SIZE = 1024 * 1024;
+        auto&& data = a["data"];
+        if (this->EnsureNativeCaptionRenderer() && data.is_array() && data.size() <= MAX_CAPTION_PES_SIZE &&
+            a["streamId"].is_number_integer())
+        {
+            std::vector<std::uint8_t> bytes;
+            bytes.reserve(data.size());
+            for (const auto& value : data)
+            {
+                if (!value.is_number_integer())
+                {
+                    return;
+                }
+                const int byte = value.get<int>();
+                if (byte < 0 || byte > 0xff)
+                {
+                    return;
+                }
+                bytes.push_back(static_cast<std::uint8_t>(byte));
+            }
+            std::optional<std::int64_t> pts;
+            if (a.contains("pts") && a["pts"].is_number())
+            {
+                pts = static_cast<std::int64_t>(a["pts"].get<double>());
+            }
+            this->nativeCaptionRenderer->Push(a["streamId"].get<int>(), bytes, pts);
+        }
+    }
+    else if (type == "captionTime")
+    {
+        if (this->EnsureNativeCaptionRenderer() && a["time"].is_number() &&
+            a["width"].is_number_integer() && a["height"].is_number_integer())
+        {
+            this->nativeCaptionRenderer->Update(
+                static_cast<std::int64_t>(a["time"].get<double>()),
+                std::clamp(a["width"].get<int>(), 1, 7680),
+                std::clamp(a["height"].get<int>(), 1, 4320));
+        }
+    }
+    else if (type == "videoChanged")
     {
         auto left = a["left"].get<double>();
         auto right = a["right"].get<double>();

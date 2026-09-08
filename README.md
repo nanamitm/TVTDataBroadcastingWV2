@@ -32,7 +32,7 @@ TVTest起動時には有効にならないようになっているため右ク�
 
 プラグイン有効時に表示されるリモコンかパネルに追加されるリモコンかTVTest側の設定でキーなどをデータ放送の操作に割り当てて操作することが出来ます。
 
-字幕ボタンを押すと[aribb24.js](https://github.com/monyone/aribb24.js)を使った字幕を表示することが出来ます。
+字幕ボタンを押すと[libaribcaption](https://github.com/xqq/libaribcaption)を使った字幕を表示することが出来ます。
 
 テレ東(BSや系列局含)では初回は50秒ほど待たないとデータ放送が表示されません。
 
@@ -122,7 +122,11 @@ INI `[TVTDataBroadcastingWV2]`の`RefugeUri`(NX-Jikkyo等の避難所URI)、`cha
 
 Visual C++ 2022が必要(2019でもおそらく可能)
 
-NuGetパッケージを復元しTVTDataBroadcastingWV2.slnをビルド
+サブモジュールを取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
+
+```sh
+git submodule update --init --recursive
+```
 
 Release x64ビルド後、起動時のパネル復元スモークテストは以下で実行できます。
 

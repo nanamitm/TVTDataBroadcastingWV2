@@ -32,7 +32,13 @@ TVTest起動時には有効にならないようになっているため右ク�
 
 プラグイン有効時に表示されるリモコンかパネルに追加されるリモコンかTVTest側の設定でキーなどをデータ放送の操作に割り当てて操作することが出来ます。
 
-字幕ボタンを押すと[libaribcaption](https://github.com/xqq/libaribcaption)を使った字幕を表示することが出来ます。
+### 字幕
+
+字幕ボタンを押すと[libaribcaption](https://github.com/xqq/libaribcaption)を使った字幕を表示できます。
+
+字幕ストリームのTS/PES分離はweb-bml、ARIB STD-B24字幕のデコードとDirectWriteによる描画はネイティブ側のlibaribcaptionが担当します。aribb24.jsは直接使用していません。
+
+libaribcaptionはGitサブモジュールとして取り込み、ソースをプラグイン本体に組み込んでビルドします。そのため、実行環境へlibaribcaptionを別途インストールする必要はありません。
 
 テレ東(BSや系列局含)では初回は50秒ほど待たないとデータ放送が表示されません。
 
@@ -122,11 +128,13 @@ INI `[TVTDataBroadcastingWV2]`の`RefugeUri`(NX-Jikkyo等の避難所URI)、`cha
 
 Visual C++ 2022が必要(2019でもおそらく可能)
 
-サブモジュールを取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
+サブモジュール（libaribcaptionを含む）を取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
 
 ```sh
 git submodule update --init --recursive
 ```
+
+新しくクローンする場合は、`git clone --recursive`を使用しても構いません。browser以下のnpmパッケージとlibaribcaptionのサブモジュールは別々に取得します。
 
 Release x64ビルド後、起動時のパネル復元スモークテストは以下で実行できます。
 

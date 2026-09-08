@@ -7,6 +7,7 @@
 #define IDD_SETTING_NVRAM               105
 #define IDD_INPUT                       106
 #define IDD_MOMENTUM_PANEL              107
+#define IDD_SETTING_CAPTION             108
 #define IDC_TOGGLE_COMMENT              1055
 #define IDC_KEY_D                       1000
 #define IDC_KEY_LEFT                    1001
@@ -58,15 +59,29 @@
 #define IDC_CHECK_RESTORE_CAPTION_STATE 1052
 #define IDC_EDIT_COMMENT_OPACITY        1053
 #define IDC_EDIT_COMMENT_DURATION       1054
+#define IDC_BUTTON_CAPTION_SETTING      1056
+#define IDC_COMBO_FACE                  1057
+#define IDC_COMBO_FACE1                 1058
+#define IDC_COMBO_FACE2                 1059
+#define IDC_CHECK_SHOW_CAPTION          1060
+#define IDC_CHECK_SHOW_SUPERIMPOSE      1061
+#define IDC_EDIT_CAPTION_DELAY          1062
+#define IDC_EDIT_STROKE_WIDTH           1063
+#define IDC_EDIT_ORN_STROKE_WIDTH       1064
+#define IDC_CHECK_NO_BACKGROUND         1065
+#define IDC_CHECK_REPLACE_FULL_ALNUM    1066
+#define IDC_CHECK_REPLACE_FULL_JAPANESE 1067
+#define IDC_CHECK_REPLACE_DRCS          1068
+#define IDC_CHECK_IGNORE_SMALL          1069
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        107
+#define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1055
+#define _APS_NEXT_CONTROL_VALUE         1070
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

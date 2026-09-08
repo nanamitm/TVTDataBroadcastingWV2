@@ -269,6 +269,7 @@
     <ClInclude Include="CommentLogReader.h" />
     <ClInclude Include="InputDialog.h" />
     <ClInclude Include="NVRAMSettingsDialog.h" />
+    <ClInclude Include="CaptionSettingsDialog.h" />
     <ClInclude Include="NativeCaptionRenderer.h" />
     <ClInclude Include="OneSeg.h" />
     <ClInclude Include="pch.h" />
@@ -287,6 +288,7 @@
     <ClCompile Include="CommentLogReader.cpp" />
     <ClCompile Include="InputDialog.cpp" />
     <ClCompile Include="NVRAMSettingsDialog.cpp" />
+    <ClCompile Include="CaptionSettingsDialog.cpp" />
     <ClCompile Include="NativeCaptionRenderer.cpp" />
     <ClCompile Include="OneSeg.cpp" />
     <ClCompile Include="proxy.cpp" />

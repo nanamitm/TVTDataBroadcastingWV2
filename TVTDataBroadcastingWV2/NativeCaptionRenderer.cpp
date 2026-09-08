@@ -12,6 +12,8 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
+std::string wstrToUTF8String(const wchar_t* ws);
+
 namespace
 {
 constexpr int STREAM_CAPTION = 0xbd;
@@ -55,8 +57,6 @@ struct NativeCaptionRenderer::Impl
         {
             return false;
         }
-        track.decoder->SetReplaceMSZFullWidthAlphanumeric(true);
-        track.decoder->SetReplaceMSZFullWidthJapanese(true);
 
         track.renderer = std::make_unique<aribcaption::Renderer>(context);
         if (!track.renderer->Initialize(type,
@@ -65,11 +65,49 @@ struct NativeCaptionRenderer::Impl
         {
             return false;
         }
-        track.renderer->SetDefaultFontFamily({"MS Gothic"}, true);
-        track.renderer->SetForceStrokeText(true);
-        track.renderer->SetStrokeWidth(3.0f);
-        track.renderer->SetReplaceDRCS(false);
+        ApplySettings(track);
         return true;
+    }
+
+    void ApplySettings(Track& track)
+    {
+        if (track.decoder)
+        {
+            track.decoder->SetReplaceMSZFullWidthAlphanumeric(settings.replaceFullAlnum);
+            track.decoder->SetReplaceMSZFullWidthJapanese(settings.replaceFullJapanese);
+        }
+        if (track.renderer)
+        {
+            std::vector<std::string> fontFamily;
+            for (const auto* name : {&settings.faceName, &settings.faceName1, &settings.faceName2})
+            {
+                if (!name->empty())
+                {
+                    fontFamily.push_back(wstrToUTF8String(name->c_str()));
+                }
+            }
+            if (!fontFamily.empty())
+            {
+                track.renderer->SetDefaultFontFamily(fontFamily, true);
+            }
+            track.renderer->SetForceNoBackground(settings.noBackground);
+            // 縁取り幅は10倍で保持している
+            track.renderer->SetForceStrokeText(settings.strokeWidth > 0);
+            track.renderer->SetStrokeWidth(
+                (settings.strokeWidth > 0 ? settings.strokeWidth : settings.ornStrokeWidth) / 10.0f);
+            track.renderer->SetReplaceDRCS(settings.replaceDrcs);
+            track.renderer->SetForceNoRuby(settings.ignoreSmall);
+        }
+    }
+
+    bool IsTrackVisible(int index) const
+    {
+        return index == 0 ? settings.showCaption : settings.showSuperimpose;
+    }
+
+    std::int64_t TrackDelayMs(int index) const
+    {
+        return index == 0 ? settings.delayTime : settings.delayTimeSuper;
     }
 
     void SendClear(int index)
@@ -124,6 +162,7 @@ struct NativeCaptionRenderer::Impl
     }
 
     MessageCallback callback;
+    NativeCaptionSettings settings;
     aribcaption::Context context;
     std::array<Track, 2> tracks;
     int frameWidth = 0;
@@ -211,12 +250,29 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
             }
         }
     }
-    if (impl_->tracks[0].renderer)
+    for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
     {
-        impl_->RenderTrack(0, currentTimeMs, frameSizeChanged);
+        if (!impl_->tracks[i].renderer)
+        {
+            continue;
+        }
+        if (!impl_->IsTrackVisible(i))
+        {
+            if (impl_->tracks[i].visible)
+            {
+                impl_->SendClear(i);
+            }
+            continue;
+        }
+        impl_->RenderTrack(i, currentTimeMs - impl_->TrackDelayMs(i), frameSizeChanged);
     }
-    if (impl_->tracks[1].renderer)
+}
+
+void NativeCaptionRenderer::SetSettings(const NativeCaptionSettings& settings)
+{
+    impl_->settings = settings;
+    for (auto& track : impl_->tracks)
     {
-        impl_->RenderTrack(1, currentTimeMs, frameSizeChanged);
+        impl_->ApplySettings(track);
     }
 }

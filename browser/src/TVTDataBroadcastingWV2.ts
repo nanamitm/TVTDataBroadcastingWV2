@@ -571,7 +571,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         tsStream.push(Uint8Array.from(ts));
         const curPCR = pcr;
         if (prevPCR !== curPCR && curPCR != null) {
-            player.updateTime(curPCR - 450);
+            // 表示遅延はホスト側の設定(DelayTime)で調整する
+            player.updateTime(curPCR);
         }
     } else if (data.type === "streamBase64") {
         if (!oneSegLaunched && cProfile) {
@@ -582,7 +583,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         tsStream.push(fromBase64(ts));
         const curPCR = pcr;
         if (prevPCR !== curPCR && curPCR != null) {
-            player.updateTime(curPCR - 450);
+            // 表示遅延はホスト側の設定(DelayTime)で調整する
+            player.updateTime(curPCR);
         }
     } else if (data.type === "key") {
         remoteControlStatusContainer.style.visibility = "visible";

@@ -9,6 +9,7 @@
 #include <wil/stl.h>
 #include <wil/win32_helpers.h>
 #include "NVRAMSettingsDialog.h"
+#include "CaptionSettingsDialog.h"
 #include "NativeCaptionRenderer.h"
 #include "proxy.h"
 #include "InputDialog.h"
@@ -493,6 +494,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void UpdateCommentChannel(bool fromWatchdog = false);
     void UpdateCaptionState(bool showIndicator);
     bool EnsureNativeCaptionRenderer();
+    NativeCaptionSettings LoadCaptionSettings();
+    bool SaveCaptionSettings(const NativeCaptionSettings& settings);
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
     INT GetIniItem(const wchar_t* key, INT def);
@@ -738,6 +741,51 @@ INT CDataBroadcastingWV2::GetIniItem(const wchar_t* key, INT def)
 bool CDataBroadcastingWV2::SetIniItem(const wchar_t* key, const wchar_t* data)
 {
     return WritePrivateProfileStringW(L"TVTDataBroadcastingWV2", key, data, this->iniFile.c_str());
+}
+
+// キー名と既定値はTVCaption3に合わせている
+NativeCaptionSettings CDataBroadcastingWV2::LoadCaptionSettings()
+{
+    NativeCaptionSettings settings;
+    settings.faceName = this->GetIniItem(L"FaceName", L"MS Gothic");
+    settings.faceName1 = this->GetIniItem(L"FaceName1", L"");
+    settings.faceName2 = this->GetIniItem(L"FaceName2", L"");
+    settings.strokeWidth = std::clamp(this->GetIniItem(L"StrokeWidth", 30), 0, 100);
+    settings.ornStrokeWidth = std::clamp(this->GetIniItem(L"OrnStrokeWidth", 50), 0, 100);
+    settings.showCaption = this->GetIniItem(L"ShowFlags", 65535) != 0;
+    settings.showSuperimpose = this->GetIniItem(L"ShowFlagsSuper", 65535) != 0;
+    settings.delayTime = std::clamp(this->GetIniItem(L"DelayTime", 450), -5000, 5000);
+    settings.delayTimeSuper = std::clamp(this->GetIniItem(L"DelayTimeSuper", 0), -5000, 5000);
+    settings.noBackground = this->GetIniItem(L"NoBackground", 0) != 0;
+    settings.replaceFullAlnum = this->GetIniItem(L"ReplaceFullAlnum", 1) != 0;
+    settings.replaceFullJapanese = this->GetIniItem(L"ReplaceFullJapanese", 1) != 0;
+    settings.replaceDrcs = this->GetIniItem(L"ReplaceDrcs", 0) != 0;
+    settings.ignoreSmall = this->GetIniItem(L"IgnoreSmall", 0) != 0;
+    return settings;
+}
+
+bool CDataBroadcastingWV2::SaveCaptionSettings(const NativeCaptionSettings& settings)
+{
+    auto setInt = [this](const wchar_t* key, int value)
+    {
+        WCHAR buf[16];
+        swprintf_s(buf, L"%d", value);
+        return this->SetIniItem(key, buf);
+    };
+    // DelayTimeSuperはダイアログから設定できないのでここでは書き戻さない
+    return this->SetIniItem(L"FaceName", settings.faceName.c_str()) &&
+           this->SetIniItem(L"FaceName1", settings.faceName1.c_str()) &&
+           this->SetIniItem(L"FaceName2", settings.faceName2.c_str()) &&
+           setInt(L"StrokeWidth", settings.strokeWidth) &&
+           setInt(L"OrnStrokeWidth", settings.ornStrokeWidth) &&
+           setInt(L"ShowFlags", settings.showCaption ? 65535 : 0) &&
+           setInt(L"ShowFlagsSuper", settings.showSuperimpose ? 65535 : 0) &&
+           setInt(L"DelayTime", settings.delayTime) &&
+           setInt(L"NoBackground", settings.noBackground) &&
+           setInt(L"ReplaceFullAlnum", settings.replaceFullAlnum) &&
+           setInt(L"ReplaceFullJapanese", settings.replaceFullJapanese) &&
+           setInt(L"ReplaceDrcs", settings.replaceDrcs) &&
+           setInt(L"IgnoreSmall", settings.ignoreSmall);
 }
 
 bool CDataBroadcastingWV2::Initialize()
@@ -1586,6 +1634,7 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
             this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
         }
     });
+    renderer->SetSettings(this->LoadCaptionSettings());
     if (!renderer->Initialize())
     {
         this->nativeCaptionRendererFailed = true;
@@ -3504,6 +3553,33 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                 pThis->EnablePanelButtons(pThis->m_pApp->IsPluginEnabled());
             }
             EndDialog(hDlg, LOWORD(wParam));
+        }
+        else if (LOWORD(wParam) == IDC_BUTTON_CAPTION_SETTING)
+        {
+            TVTest::ShowDialogInfo Info;
+
+            Info.Flags = 0;
+            Info.hinst = g_hinstDLL;
+            Info.pszTemplate = MAKEINTRESOURCE(IDD_SETTING_CAPTION);
+            Info.pMessageFunc = CaptionSettingsDialog::DlgProc;
+            std::unique_ptr<CaptionSettingsDialog> dialog(new CaptionSettingsDialog(pThis->LoadCaptionSettings()));
+            Info.pClientData = dialog.get();
+            Info.hwndOwner = hDlg;
+
+            if (pThis->m_pApp->ShowDialog(&Info) == IDOK)
+            {
+                const auto& settings = dialog->GetSettings();
+                if (!pThis->SaveCaptionSettings(settings))
+                {
+                    MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の字幕表示設定", MB_ICONERROR | MB_OK);
+                }
+                else if (pThis->nativeCaptionRenderer)
+                {
+                    // DelayTimeSuperはINIから読み直す
+                    auto applied = pThis->LoadCaptionSettings();
+                    pThis->nativeCaptionRenderer->SetSettings(applied);
+                }
+            }
         }
         else if (LOWORD(wParam) == IDC_BUTTON_NVRAM_SETTING)
         {

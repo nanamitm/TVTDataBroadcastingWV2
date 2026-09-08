@@ -3,6 +3,7 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <set>
 
 namespace
@@ -45,9 +46,21 @@ void InitFontCombo(HWND hDlg, int id, const std::set<std::wstring>& families, co
 
 std::wstring GetComboText(HWND hDlg, int id)
 {
-    std::wstring text(LF_FACESIZE, L'\0');
-    const UINT length = GetDlgItemTextW(hDlg, id, &text[0], static_cast<int>(text.size()));
-    text.resize(length);
+    // 列挙したフォント名はLOGFONT由来だが、コンボボックスには
+    // それより長いDirectWriteのファミリ名も入力できる
+    HWND hControl = GetDlgItem(hDlg, id);
+    if (!hControl)
+    {
+        return {};
+    }
+    const int length = GetWindowTextLengthW(hControl);
+    if (length <= 0)
+    {
+        return {};
+    }
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(hControl, &text[0], length + 1);
+    text.resize(copied > 0 ? static_cast<std::size_t>(copied) : 0);
     return text;
 }
 

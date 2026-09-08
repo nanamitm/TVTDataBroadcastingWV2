@@ -1635,6 +1635,7 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
         }
     });
     renderer->SetSettings(this->LoadCaptionSettings());
+    renderer->SetEnabled(this->caption);
     if (!renderer->Initialize())
     {
         this->nativeCaptionRendererFailed = true;
@@ -2424,6 +2425,10 @@ bool CDataBroadcastingWV2::OnFullscreenChange(bool fFullscreen)
 
 void CDataBroadcastingWV2::UpdateCaptionState(bool showIndicator)
 {
+    if (this->nativeCaptionRenderer)
+    {
+        this->nativeCaptionRenderer->SetEnabled(this->caption);
+    }
     if (!this->webView)
     {
         return;

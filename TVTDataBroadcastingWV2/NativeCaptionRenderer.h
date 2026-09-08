@@ -52,6 +52,8 @@ public:
     bool Initialize();
     // Initialize()の前後どちらでも呼べる
     void SetSettings(const NativeCaptionSettings& settings);
+    // 字幕が非表示の間は描画とブラウザへの送信を行わない
+    void SetEnabled(bool enabled);
     void Reset();
     void Push(int streamId, const std::vector<std::uint8_t>& data, std::optional<std::int64_t> pts90kHz);
     void Update(std::int64_t currentTimeMs, int frameWidth, int frameHeight);

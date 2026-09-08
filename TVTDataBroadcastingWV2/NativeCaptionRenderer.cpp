@@ -163,6 +163,8 @@ struct NativeCaptionRenderer::Impl
 
     MessageCallback callback;
     NativeCaptionSettings settings;
+    bool enabled = false;
+    bool forceRender = false;
     aribcaption::Context context;
     std::array<Track, 2> tracks;
     int frameWidth = 0;
@@ -251,6 +253,14 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
             }
         }
     }
+    if (!impl_->enabled)
+    {
+        // 字幕オフの間はデコードだけ続け、描画とブラウザへの送信は行わない
+        return;
+    }
+    // 表示再開直後はlibaribcaptionが差分なしと判断しても描き直す必要がある
+    const bool forceRedraw = frameSizeChanged || impl_->forceRender;
+    impl_->forceRender = false;
     for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
     {
         if (!impl_->tracks[i].renderer)
@@ -265,7 +275,29 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
             }
             continue;
         }
-        impl_->RenderTrack(i, currentTimeMs - impl_->TrackDelayMs(i), frameSizeChanged);
+        impl_->RenderTrack(i, currentTimeMs - impl_->TrackDelayMs(i), forceRedraw);
+    }
+}
+
+void NativeCaptionRenderer::SetEnabled(bool enabled)
+{
+    if (impl_->enabled == enabled)
+    {
+        return;
+    }
+    impl_->enabled = enabled;
+    if (enabled)
+    {
+        impl_->forceRender = true;
+        return;
+    }
+    // 表示再開時に期限切れの字幕が一瞬見えないよう消しておく
+    for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
+    {
+        if (impl_->tracks[i].visible)
+        {
+            impl_->SendClear(i);
+        }
     }
 }
 

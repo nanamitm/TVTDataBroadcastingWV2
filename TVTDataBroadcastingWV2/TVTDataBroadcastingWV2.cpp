@@ -522,6 +522,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     wil::com_ptr<ICoreWebView2Controller> webViewController;
     wil::com_ptr<ICoreWebView2> webView;
     std::unique_ptr<NativeCaptionRenderer> nativeCaptionRenderer;
+    // 初期化に失敗した場合、字幕メッセージごとに再試行しないよう覚えておく
+    bool nativeCaptionRendererFailed = false;
 
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
     static INT_PTR CALLBACK RemoteControlDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
@@ -1571,6 +1573,12 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
     {
         return true;
     }
+    if (this->nativeCaptionRendererFailed)
+    {
+        // captionTimeはPCR更新のたびに届くため、失敗を覚えておかないと
+        // 毎秒何度も初期化とエラーログ出力を繰り返してしまう。
+        return false;
+    }
     auto renderer = std::make_unique<NativeCaptionRenderer>([this](const nlohmann::json& message)
     {
         if (this->webView)
@@ -1580,6 +1588,7 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
     });
     if (!renderer->Initialize())
     {
+        this->nativeCaptionRendererFailed = true;
         this->m_pApp->AddLog(L"libaribcaptionの初期化に失敗しました。", TVTest::LOG_TYPE_ERROR);
         return false;
     }
@@ -1597,6 +1606,8 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     auto type = typeValue.get<std::string>();
     if (type == "captionReset")
     {
+        // チャンネル変更などでページが読み込み直された時は初期化を再試行する
+        this->nativeCaptionRendererFailed = false;
         if (this->EnsureNativeCaptionRenderer())
         {
             this->nativeCaptionRenderer->Reset();

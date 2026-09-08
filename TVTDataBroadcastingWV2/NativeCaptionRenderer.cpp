@@ -223,7 +223,8 @@ void NativeCaptionRenderer::Push(int streamId, const std::vector<std::uint8_t>& 
     {
         return;
     }
-    if (result.caption->has_builtin_sound)
+    // 表示しないトラックの内蔵音は鳴らさない
+    if (result.caption->has_builtin_sound && impl_->IsTrackVisible(index))
     {
         impl_->callback({{"type", "captionSound"}, {"sound", result.caption->builtin_sound_id}});
     }

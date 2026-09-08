@@ -83,12 +83,9 @@ struct NativeCaptionRenderer::Impl
         auto& track = tracks[index];
         aribcaption::RenderResult result;
         const auto status = track.renderer->Render(currentTimeMs, result);
-        if (status == aribcaption::RenderStatus::kError)
+        if (status == aribcaption::RenderStatus::kError || status == aribcaption::RenderStatus::kNoImage)
         {
-            return;
-        }
-        if (status == aribcaption::RenderStatus::kNoImage)
-        {
+            // kErrorで何もしないと、表示中の字幕が消えずに残り続けてしまう。
             if (track.visible)
             {
                 SendClear(index);

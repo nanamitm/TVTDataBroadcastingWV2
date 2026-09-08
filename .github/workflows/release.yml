@@ -30,6 +30,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
+      with:
+        # libaribcaptionをサブモジュールとして取り込んでビルドしている
+        submodules: recursive
 
     - name: Get version
       id: version
@@ -84,6 +87,7 @@ jobs:
         mkdir $name
         copy LICENSE "$name/TVTDataBroadcastingWV2-LICENSE"
         copy LICENSE.nlohmann.json.txt "$name/TVTDataBroadcastingWV2-LICENSE.json.txt"
+        copy LICENSE.libaribcaption.txt "$name/TVTDataBroadcastingWV2-LICENSE.libaribcaption.txt"
         copy README.md "$name/TVTDataBroadcastingWV2-README.txt"
         copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp $name/ || copy "$env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp" $name/
         mkdir "$name/TVTDataBroadcastingWV2/resources/dist"

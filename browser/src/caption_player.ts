@@ -3,6 +3,19 @@ import { VideoPlayer } from "./video_player";
 
 type SendMessage = (message: any) => void;
 
+function toBase64(input: Uint8Array): string {
+    if ("toBase64" in globalThis.Uint8Array.prototype) {
+        return input.toBase64();
+    }
+    let binary = "";
+    // String.fromCharCode()の引数が多すぎるとスタックが溢れるため分割する
+    const chunkSize = 0x8000;
+    for (let i = 0; i < input.length; i += chunkSize) {
+        binary += String.fromCharCode(...input.subarray(i, i + chunkSize));
+    }
+    return window.btoa(binary);
+}
+
 export type NativeCaptionImage = {
     x: number;
     y: number;
@@ -54,7 +67,7 @@ export class CaptionPlayer extends VideoPlayer {
         this.sendMessage({
             type: "captionPes",
             streamId,
-            data: Array.from(pes),
+            data: toBase64(pes),
             ...(pts == null ? {} : { pts }),
         });
     }

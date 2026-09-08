@@ -371,7 +371,7 @@ type FromWebViewMessage = {
 } | {
     type: "captionPes",
     streamId: number,
-    data: number[],
+    data: string,
     pts?: number,
 } | {
     type: "captionTime",

@@ -1596,6 +1596,79 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
     return true;
 }
 
+static int Base64Value(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+    {
+        return c - 'A';
+    }
+    if (c >= 'a' && c <= 'z')
+    {
+        return c - 'a' + 26;
+    }
+    if (c >= '0' && c <= '9')
+    {
+        return c - '0' + 52;
+    }
+    if (c == '+')
+    {
+        return 62;
+    }
+    if (c == '/')
+    {
+        return 63;
+    }
+    return -1;
+}
+
+static bool DecodeBase64(const std::string& input, std::vector<std::uint8_t>& output)
+{
+    if (input.size() % 4 != 0)
+    {
+        return false;
+    }
+    output.clear();
+    output.reserve(input.size() / 4 * 3);
+    for (std::size_t i = 0; i < input.size(); i += 4)
+    {
+        std::uint32_t value = 0;
+        int count = 3;
+        for (std::size_t j = 0; j < 4; j++)
+        {
+            const char c = input[i + j];
+            if (c == '=')
+            {
+                // パディングは最終ブロックの末尾1〜2文字のみ許す
+                if (i + 4 != input.size() || j < 2)
+                {
+                    return false;
+                }
+                for (std::size_t k = j; k < 4; k++)
+                {
+                    if (input[i + k] != '=')
+                    {
+                        return false;
+                    }
+                }
+                count = static_cast<int>(j) - 1;
+                value <<= 6 * (4 - j);
+                break;
+            }
+            const int index = Base64Value(c);
+            if (index < 0)
+            {
+                return false;
+            }
+            value = (value << 6) | static_cast<std::uint32_t>(index);
+        }
+        for (int j = 0; j < count; j++)
+        {
+            output.push_back(static_cast<std::uint8_t>((value >> (16 - j * 8)) & 0xff));
+        }
+    }
+    return true;
+}
+
 void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
 {
     auto&& typeValue = a["type"];
@@ -1616,24 +1689,16 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     else if (type == "captionPes")
     {
         constexpr std::size_t MAX_CAPTION_PES_SIZE = 1024 * 1024;
+        constexpr std::size_t MAX_CAPTION_PES_BASE64_SIZE = (MAX_CAPTION_PES_SIZE + 2) / 3 * 4;
         auto&& data = a["data"];
-        if (this->EnsureNativeCaptionRenderer() && data.is_array() && data.size() <= MAX_CAPTION_PES_SIZE &&
+        if (this->EnsureNativeCaptionRenderer() && data.is_string() &&
+            data.get_ref<const std::string&>().size() <= MAX_CAPTION_PES_BASE64_SIZE &&
             a["streamId"].is_number_integer())
         {
             std::vector<std::uint8_t> bytes;
-            bytes.reserve(data.size());
-            for (const auto& value : data)
+            if (!DecodeBase64(data.get_ref<const std::string&>(), bytes))
             {
-                if (!value.is_number_integer())
-                {
-                    return;
-                }
-                const int byte = value.get<int>();
-                if (byte < 0 || byte > 0xff)
-                {
-                    return;
-                }
-                bytes.push_back(static_cast<std::uint8_t>(byte));
+                return;
             }
             std::optional<std::int64_t> pts;
             if (a.contains("pts") && a["pts"].is_number())

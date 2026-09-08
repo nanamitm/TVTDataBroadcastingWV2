@@ -16,6 +16,7 @@
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include <stdlib.h>
+#include <algorithm>
 #include <mutex>
 #include <atomic>
 #include <string>

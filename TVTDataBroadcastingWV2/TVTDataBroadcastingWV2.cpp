@@ -3578,11 +3578,15 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                 {
                     MessageBoxW(hDlg, L"設定を保存できませんでした", L"TVTDataBroadcastingWV2の字幕表示設定", MB_ICONERROR | MB_OK);
                 }
-                else if (pThis->nativeCaptionRenderer)
+                else
                 {
-                    // DelayTimeSuperはINIから読み直す
-                    auto applied = pThis->LoadCaptionSettings();
-                    pThis->nativeCaptionRenderer->SetSettings(applied);
+                    // フォント指定が原因で初期化に失敗していた場合に再試行できるようにする
+                    pThis->nativeCaptionRendererFailed = false;
+                    if (pThis->nativeCaptionRenderer)
+                    {
+                        // DelayTimeSuperはINIから読み直す
+                        pThis->nativeCaptionRenderer->SetSettings(pThis->LoadCaptionSettings());
+                    }
                 }
             }
         }

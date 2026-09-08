@@ -89,16 +89,10 @@ export class CaptionPlayer extends VideoPlayer {
                 pixels.set(source.subarray(y * image.stride, y * image.stride + image.width * 4),
                            y * image.width * 4);
             }
-            // libaribcaptionのDirectWrite出力はpremultiplied RGBAだが、
-            // ImageDataの入力はstraight alphaなので色成分を戻してから渡す。
-            for (let i = 0; i < pixels.length; i += 4) {
-                const alpha = pixels[i + 3];
-                if (alpha > 0 && alpha < 255) {
-                    pixels[i] = Math.min(255, Math.round(pixels[i] * 255 / alpha));
-                    pixels[i + 1] = Math.min(255, Math.round(pixels[i + 1] * 255 / alpha));
-                    pixels[i + 2] = Math.min(255, Math.round(pixels[i + 2] * 255 / alpha));
-                }
-            }
+            // libaribcaptionの出力はstraight alphaのRGBA8888(本家のpng_writerも
+            // そのままPNGへ書き出している)ため、色成分は変換せずImageDataへ渡す。
+            // 半透明の背景色はCanvas::ClearRect()が生の色をそのまま書き込むので、
+            // ここでアルファ除算を行うと黒以外の半透明背景が白飛びしてしまう。
             context.putImageData(new ImageData(pixels, image.width, image.height), image.x, image.y);
         }
     }

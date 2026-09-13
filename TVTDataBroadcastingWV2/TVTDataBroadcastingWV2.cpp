@@ -479,6 +479,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void RefreshAuthState();   // query jkcnsl login state on a worker thread
     void PushAuthState();      // push the cached auth state to the momentum panel
     void PushNgUsers();        // push the NG user list to the momentum panel
+    // 勢いパネルの選択行を現在の実況チャンネルに合わせる。変化がなければ送らない。
+    void PushMomentumCurrentChannel(bool force = false);
+    std::string    m_momentumSentVideo;
+    bool           m_momentumSentValid = false;
     bool m_loggedIn = false;
     bool m_streamConnected = false;
     bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
@@ -683,6 +687,7 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
         this->packetQueue.clear();
         this->UpdateCommentChannel();
     }
+    this->PushMomentumCurrentChannel();
     Tune();
     return true;
 }
@@ -3859,7 +3864,7 @@ LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
 <div id="post"><button id="cb" title="コマンド選択">▷</button><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
 )HTML"
 LR"HTML(<script>
-let ch=[],sc=2,sa=false,sid=null;
+let ch=[],sc=2,sa=false,cur=null;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
 function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();window.chrome.webview.postMessage({cmd:'sortChanged',col:sc,asc:sa});}
 function render(){
@@ -3872,14 +3877,15 @@ function render(){
   tb.innerHTML='';
   s.forEach(c=>{
     const col=fc(c.force),tr=document.createElement('tr');
-    if(c.id===sid)tr.className='sel';
+    // 選択行はホストから通知される現在の実況チャンネルで決める
+    if(c.video&&c.video===cur)tr.className='sel';
     const vals=[c.video||'',c.name||'',c.force>=0?c.force:'???',c.programTitle||''];
     vals.forEach((v,i)=>{
       const td=document.createElement('td');td.textContent=String(v);
       if(i===0||i===2)td.style.color=col;if(i===3)td.className='pe';
       tr.appendChild(td);
     });
-    tr.addEventListener('click',()=>{sid=c.id;render();window.chrome.webview.postMessage({cmd:'select',id:c.id});});
+    tr.addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'select',id:c.id});});
     tb.appendChild(tr);
   });
 }
@@ -4031,6 +4037,7 @@ logEl.addEventListener('contextmenu',e=>{
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
+  else if(m.type==='currentChannel'){cur=m.video;render();}
   else if(m.type==='commentLog'){logAdd(m.items);}
   else if(m.type==='ngUsers'){setNgUsers(m.users);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
@@ -4184,6 +4191,7 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 this->momentumWebView->ExecuteScript(jsonToUpdateScript(sj).c_str(), nullptr);
                             }
                             this->SendMomentumChannels();
+                            this->PushMomentumCurrentChannel(true);
                             this->PushAuthState();
                             this->PushNgUsers();
                             return S_OK;
@@ -4217,6 +4225,19 @@ void CDataBroadcastingWV2::SendMomentumChannels()
         });
     }
     nlohmann::json msg{{"type","channelsUpdate"},{"channels",channels}};
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
+}
+
+void CDataBroadcastingWV2::PushMomentumCurrentChannel(bool force)
+{
+    const std::string video = this->DetectJkChannel();
+    if (!force && this->m_momentumSentValid && this->m_momentumSentVideo == video) return;
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    this->m_momentumSentVideo = video;
+    this->m_momentumSentValid = true;
+    // 実況の一覧にないチャンネルはnullを送り、どの行も選択しない
+    nlohmann::json msg{ { "type", "currentChannel" },
+                        { "video", video.empty() ? nlohmann::json(nullptr) : nlohmann::json(video) } };
     this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
 }
 

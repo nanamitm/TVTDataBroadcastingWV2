@@ -3514,16 +3514,14 @@ INT_PTR CALLBACK CDataBroadcastingWV2::CacheSettingsDlgProc(HWND hDlg, UINT uMsg
         {
             SetDlgItemTextW(hDlg, IDC_EDIT_CACHE_SERVER_URL,
                             utf8StrToWString(info.cacheServerUrl.c_str()).c_str());
-            SetDlgItemTextW(hDlg, IDC_STATIC_CACHE_STATUS,
-                            info.cacheServerUrl.empty() ? L"現在: ニコニコ実況へ直結"
-                                                        : L"現在: キャッシュサーバー経由");
         }
         else
         {
             // 現在値が読めないままOKすると既存の設定を消しかねないので編集させない
             EnableWindow(GetDlgItem(hDlg, IDC_EDIT_CACHE_SERVER_URL), FALSE);
             EnableWindow(GetDlgItem(hDlg, IDOK), FALSE);
-            SetDlgItemTextW(hDlg, IDC_STATIC_CACHE_STATUS, L"jkcnslの設定を取得できませんでした");
+            MessageBoxW(hDlg, L"jkcnslの設定を取得できませんでした。",
+                        L"TVTDataBroadcastingWV2のキャッシュサーバー設定", MB_ICONERROR | MB_OK);
         }
         return 1;
     }

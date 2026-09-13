@@ -2181,6 +2181,9 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
     this->m_jkcnslReader.Stop();
+    // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
+    this->m_manualJkVideo.clear();
+    if (!finalize) this->PushMomentumCurrentChannel();
     this->m_jkcnslLogin.Stop();
     // jkcnslの応答を待たずに問い合わせを打ち切る (UIスレッドを固まらせない)
     if (this->m_authCancelEvent) SetEvent(this->m_authCancelEvent);

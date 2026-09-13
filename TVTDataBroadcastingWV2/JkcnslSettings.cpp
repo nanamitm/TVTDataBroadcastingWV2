@@ -175,9 +175,10 @@ constexpr DWORD kExitWaitMs = 1000;
     return true;
 }
 
-/*static*/ bool JkcnslSettings::SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url)
+/*static*/ bool JkcnslSettings::SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url,
+                                                 HANDLE cancelEvent)
 {
     // "Scache_server_url {url}" sets it; "Scache_server_url" (no arg) clears it.
     std::string cmd = url.empty() ? "Scache_server_url" : ("Scache_server_url " + url);
-    return RunCommand(jkcnslPath, cmd);
+    return RunCommand(jkcnslPath, cmd, nullptr, cancelEvent);
 }

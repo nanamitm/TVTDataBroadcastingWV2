@@ -31,7 +31,11 @@ public:
                            HANDLE cancelEvent = nullptr);
 
     // Set (non-empty) or clear (empty) jkcnsl's cache_server_url. When set,
-    // 'L{jkChannel}' streams route through that cache/refuge server (e.g.
-    // NX-Jikkyo); when cleared, jkcnsl uses the direct nicovideo path.
-    static bool SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url);
+    // 'L{chatStreamID}' streams route through that cache server (jkcnslが
+    // {cache_server_url}/watch/{id} へ避難所プロトコルで繋ぐ); when cleared,
+    // jkcnsl uses the direct nicovideo path. 利用者の設定なので、UIからの
+    // 明示的な保存操作以外で呼ばないこと。
+    // cancelEvent: RunCommandと同じ。応答を待たずに打ち切れる。
+    static bool SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url,
+                                  HANDLE cancelEvent = nullptr);
 };

@@ -40,6 +40,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_LOGIN (WM_APP + 6)
 #define WM_APP_AUTH (WM_APP + 7)
 #define WM_APP_CONN (WM_APP + 8)
+#define WM_APP_CACHE_URL (WM_APP + 9)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -461,6 +462,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // 無効化時に問い合わせを打ち切るためのイベント (手動リセット)
     HANDLE         m_authCancelEvent = nullptr;
     JkcnslSettings::LoginInfo m_authResult;
+    // cache_server_urlの保存はjkcnslの起動を伴うのでワーカーで行う
+    std::thread    m_cacheUrlThread;
+    std::atomic<bool> m_cacheUrlBusy{ false };
     CommentNG      m_commentNg;
     JikkyoStreamTable m_chTable;
     CommentLogWriter  m_logWriter;
@@ -478,6 +482,11 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void OnLoginEvent(JkcnslLogin::Event ev, const std::string& message);
     void RefreshAuthState();   // query jkcnsl login state on a worker thread
     void PushAuthState();      // push the cached auth state to the momentum panel
+    // jkcnslのcache_server_urlをワーカーで保存する (UIからの明示操作でのみ呼ぶ)
+    void SetCacheServerUrlAsync(const std::string& url);
+    // 保存操作の状態を勢いパネルへ送る ("progress"/"success"/"failure")
+    void PushCacheUrlStatus(const wchar_t* state, const wchar_t* message);
+    HANDLE EnsureAuthCancelEvent();
     void PushNgUsers();        // push the NG user list to the momentum panel
     // 勢いパネルの選択行を現在の実況チャンネルに合わせる。変化がなければ送らない。
     void PushMomentumCurrentChannel(bool force = false);
@@ -1215,6 +1224,21 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     {
         pThis->m_streamConnected = (wParam != 0);
         pThis->PushAuthState();
+        break;
+    }
+    case WM_APP_CACHE_URL:
+    {
+        if (wParam)
+        {
+            pThis->PushCacheUrlStatus(L"success",
+                L"キャッシュサーバー設定を保存しました。次回接続から反映されます。");
+            // 保存後の実際の値を読み直して入力欄へ反映する
+            pThis->RefreshAuthState();
+        }
+        else
+        {
+            pThis->PushCacheUrlStatus(L"failure", L"キャッシュサーバー設定の保存に失敗しました。");
+        }
         break;
     }
     }
@@ -2188,12 +2212,14 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     // jkcnslの応答を待たずに問い合わせを打ち切る (UIスレッドを固まらせない)
     if (this->m_authCancelEvent) SetEvent(this->m_authCancelEvent);
     if (this->m_authThread.joinable()) this->m_authThread.join();
+    if (this->m_cacheUrlThread.joinable()) this->m_cacheUrlThread.join();
     if (this->m_authCancelEvent)
     {
         CloseHandle(this->m_authCancelEvent);
         this->m_authCancelEvent = nullptr;
     }
     this->m_authBusy = false;
+    this->m_cacheUrlBusy = false;
     this->m_authRefreshPending = false;
     this->m_logWriter.Close();
 
@@ -2944,13 +2970,9 @@ void CDataBroadcastingWV2::RefreshAuthState()
     this->m_authRefreshPending = false;
     // 直前のスレッドは終了済みなのでjoinは即座に返る
     if (this->m_authThread.joinable()) this->m_authThread.join();
-    if (!this->m_authCancelEvent)
-    {
-        this->m_authCancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    }
     std::wstring path = this->GetJkcnslPath();
     HWND hwnd = this->hMessageWnd;
-    HANDLE cancelEvent = this->m_authCancelEvent;
+    HANDLE cancelEvent = this->EnsureAuthCancelEvent();
     this->m_authThread = std::thread([this, path, hwnd, cancelEvent]() {
         JkcnslSettings::LoginInfo info;
         JkcnslSettings::QueryLogin(path, info, cancelEvent);
@@ -2965,6 +2987,48 @@ void CDataBroadcastingWV2::RefreshAuthState()
     });
 }
 
+// 無効化時にjkcnslの応答待ちを打ち切るためのイベント。問い合わせ系の
+// ワーカーで共有する (UIスレッドからのみ生成する)。
+HANDLE CDataBroadcastingWV2::EnsureAuthCancelEvent()
+{
+    if (!this->m_authCancelEvent)
+    {
+        this->m_authCancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
+    return this->m_authCancelEvent;
+}
+
+// jkcnslのcache_server_urlを保存する。jkcnslを起動して応答を待つので、
+// RefreshAuthStateと同じくワーカーへ逃がしてUIスレッドを固まらせない。
+void CDataBroadcastingWV2::SetCacheServerUrlAsync(const std::string& url)
+{
+    if (this->m_cacheUrlBusy.exchange(true))
+    {
+        this->PushCacheUrlStatus(L"failure", L"前の保存処理が完了していません。");
+        return;
+    }
+    // 直前のスレッドは終了済みなのでjoinは即座に返る
+    if (this->m_cacheUrlThread.joinable()) this->m_cacheUrlThread.join();
+    std::wstring path = this->GetJkcnslPath();
+    HWND hwnd = this->hMessageWnd;
+    HANDLE cancelEvent = this->EnsureAuthCancelEvent();
+    this->m_cacheUrlThread = std::thread([this, path, url, hwnd, cancelEvent]() {
+        bool ok = JkcnslSettings::SetCacheServerUrl(path, url, cancelEvent);
+        // 次の保存がすぐ動けるよう、通知の前に解除する
+        this->m_cacheUrlBusy = false;
+        PostMessageW(hwnd, WM_APP_CACHE_URL, ok ? 1 : 0, 0);
+    });
+}
+
+void CDataBroadcastingWV2::PushCacheUrlStatus(const wchar_t* state, const wchar_t* message)
+{
+    if (!this->momentumWebView || !this->momentumWebViewReady) return;
+    nlohmann::json j{ { "type", "cacheUrlStatus" },
+                      { "state", wstrToUTF8String(state) },
+                      { "message", wstrToUTF8String(message) } };
+    this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
+}
+
 void CDataBroadcastingWV2::PushAuthState()
 {
     if (!this->momentumWebView || !this->momentumWebViewReady) return;
@@ -2973,10 +3037,16 @@ void CDataBroadcastingWV2::PushAuthState()
     std::wstring refugeColW = this->GetIniItem(L"RefugeEditBoxColor", L"#ffbbbb");
     std::wstring boxColW    = this->m_postTargetRefuge ? refugeColW : nicoColW;
 
+    std::string cacheUrl;
+    {
+        std::lock_guard<std::mutex> lock(this->m_authMutex);
+        cacheUrl = this->m_authResult.cacheServerUrl;
+    }
     nlohmann::json j{ { "type", "authState" },
                       { "loggedIn", this->m_loggedIn },
                       { "connected", this->m_streamConnected },
                       { "target", this->m_postTargetRefuge ? "refuge" : "nico" },
+                      { "cacheUrl", cacheUrl },
                       { "boxColor", wstrToUTF8String(boxColW.c_str()) } };
     this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
 }
@@ -3834,8 +3904,11 @@ LR"HTML(#lb:hover{background:var(--hov)}
 #lb.authin{border-color:#3a8a3a;color:#3a8a3a}
 #login{display:flex;flex-direction:column;gap:3px;padding:5px 4px;
        border-top:1px solid rgba(128,128,128,.3)}
-#lh{font-size:8pt;opacity:.75;line-height:1.4}
+#lh,#lch{font-size:8pt;opacity:.75;line-height:1.4}
+#lch{margin-top:2px;border-top:1px solid rgba(128,128,128,.2);padding-top:4px}
 #login .row{display:flex;gap:4px}
+#lcu{flex:1;min-width:0;font:inherit;font-size:8pt;color:var(--fg);background:var(--bg);
+     border:1px solid var(--sb);border-radius:3px;padding:2px 4px}
 #login button:disabled{opacity:.45;cursor:default}
 #login button{font:inherit;color:var(--fg);background:var(--bg);
        border:1px solid var(--sb);border-radius:3px;padding:2px 8px;cursor:pointer}
@@ -3893,6 +3966,11 @@ LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
   <button id="ldo">ログイン</button>
   <button id="lcancel">中止</button>
   <button id="lout" style="margin-left:auto">ログアウト</button>
+</div>
+<div id="lch">キャッシュサーバー経由で接続する場合はURLを指定します(jkcnslのcache_server_url)。空にするとニコニコ実況へ直結します。</div>
+<div class="row">
+  <input id="lcu" type="text" placeholder="wss://{キャッシュサーバー}" spellcheck="false">
+  <button id="lcs">保存</button>
 </div>
 <div id="ls"></div>
 </div>
@@ -3992,8 +4070,10 @@ function pickFg(hex){
   const r=parseInt(h.substr(0,2),16)||0,g=parseInt(h.substr(2,2),16)||0,b=parseInt(h.substr(4,2),16)||0;
   return (r*299+g*587+b*114)/1000>=160?'#000':'#fff';
 }
-function setAuth(loggedIn,connected,boxColor){
+function setAuth(loggedIn,connected,boxColor,cacheUrl){
   authKnown=true;
+  // 入力中の値を上書きしない
+  const cu=$('lcu');if(document.activeElement!==cu)cu.value=cacheUrl||'';
 )HTML"
 LR"HTML(  // NicoJK流: 未接続なら投稿欄を隠す
   pi.style.display=connected?'':'none';
@@ -4031,6 +4111,16 @@ $('lout').addEventListener('click',()=>{
   setLogin('progress','');window.chrome.webview.postMessage({cmd:'logout'});
 });
 $('lcancel').addEventListener('click',()=>{window.chrome.webview.postMessage({cmd:'loginCancel'});});
+// キャッシュサーバーURL(jkcnslのcache_server_url)。保存ボタンでのみ書き換える
+function setCacheUrlStatus(s,msg){
+  const ls=$('ls');ls.textContent=msg||'';
+  ls.className=(s==='success'||s==='failure')?s:'';
+  $('lcs').disabled=(s==='progress');
+}
+$('lcs').addEventListener('click',()=>{
+  setCacheUrlStatus('progress','キャッシュサーバー設定を保存しています…');
+  window.chrome.webview.postMessage({cmd:'setCacheUrl',url:$('lcu').value.trim()});
+});
 // コメントログ一覧 / タブ切替
 const logEl=$('log');
 let atBottom=true;
@@ -4089,7 +4179,8 @@ function _update(m){
   else if(m.type==='ngUsers'){setNgUsers(m.users);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
   else if(m.type==='loginStatus'){setLogin(m.state,m.message);}
-  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.boxColor);}
+  else if(m.type==='authState'){setAuth(m.loggedIn,m.connected,m.boxColor,m.cacheUrl);}
+  else if(m.type==='cacheUrlStatus'){setCacheUrlStatus(m.state,m.message);}
   else if(m.type==='thm'){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
@@ -4203,6 +4294,8 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 }
                                 else if (cmd == "loginCancel")
                                     this->m_jkcnslLogin.Cancel();
+                                else if (cmd == "setCacheUrl")
+                                    this->SetCacheServerUrlAsync(j.value("url", std::string()));
                                 else if (cmd == "sortChanged")
                                 {
                                     this->SetIniItem(L"MomentumSortColumn", std::to_wstring(j["col"].get<int>()).c_str());

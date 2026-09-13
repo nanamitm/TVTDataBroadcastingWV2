@@ -501,6 +501,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // fromWatchdog: 定期的な切断チェックからの呼び出し。同一チャンネルのまま
     // ストリームだけが死んでいる場合に、画面のコメントを消さずに張り直す。
     void UpdateCommentChannel(bool fromWatchdog = false);
+    std::string BuildJkcnslCommand(int jkID, bool& isMix, bool& targetRefuge);
     void UpdateCaptionState(bool showIndicator);
     bool EnsureNativeCaptionRenderer();
     NativeCaptionSettings LoadCaptionSettings();
@@ -2737,14 +2738,65 @@ std::string CDataBroadcastingWV2::EffectiveJkChannel() const
     return this->m_manualJkVideo.empty() ? this->DetectJkChannel() : this->m_manualJkVideo;
 }
 
+static int ParseJkID(const std::string& video)
+{
+    int jkID = 0;
+    for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
+    return jkID;
+}
+
+// jkcnslへ送る接続コマンドを組み立てる。接続できるストリームがなければ空。
+// コメント機能が無効な場合はチャンネル表が読み込まれていないので常に空になる。
+std::string CDataBroadcastingWV2::BuildJkcnslCommand(int jkID, bool& isMix, bool& targetRefuge)
+{
+    isMix = false;
+    targetRefuge = false;
+
+    JikkyoStream st;
+    if (jkID <= 0 || !this->m_chTable.Resolve(jkID, st)) return "";
+
+    std::string refugeUri = wstrToUTF8String(this->GetIniItem(L"RefugeUri", L"").c_str());
+    bool mixing  = this->GetIniItem(L"RefugeMixing", 0) != 0;
+    bool dropFwd = this->GetIniItem(L"DropForwardedComment", 0) != 0;
+    bool postToRefuge = this->GetIniItem(L"PostToRefuge", 0) != 0;
+    const std::string cookie; // empty: jkcnsl uses its stored login session
+
+    // NicoJK connection decision (NicoJK.cpp ~4305):
+    //   refuge available + RefugeUri set  -> R command (optionally mixed with nico)
+    //   else nico chatStreamID + (no RefugeUri or mixing) -> L command
+    if (!st.refugeChatStreamID.empty() && !refugeUri.empty())
+    {
+        // 置換後の文字列に同じ差し込み文字列が含まれていても止まるよう、
+        // 検索位置を置換した分だけ進める
+        auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+            for (size_t i = s.find(from); i != std::string::npos; i = s.find(from, i + to.size()))
+                s.replace(i, from.size(), to);
+        };
+        std::string uri = refugeUri;
+        replaceAll(uri, "{jkID}", "jk" + std::to_string(jkID));
+        replaceAll(uri, "{chatStreamID}", st.refugeChatStreamID);
+
+        isMix = mixing && !st.chatStreamID.empty();
+        int type = (dropFwd || isMix) ? 2 : 1;
+        std::string cmd = "R" + std::to_string(type) + " " + uri;
+        if (isMix) cmd += " " + st.chatStreamID + " " + cookie; // R2 {uri} {nicoId} {cookie}
+        targetRefuge = isMix ? postToRefuge : true;
+        return cmd;
+    }
+    if (!st.chatStreamID.empty() && (refugeUri.empty() || mixing))
+    {
+        return "L" + st.chatStreamID + (cookie.empty() ? "" : (" " + cookie));
+    }
+    return "";
+}
+
 void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
 {
     // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
     // 勢いリストからの手動指定があればそちらを優先する。ウォッチドッグからの
     // 呼び出しでも手動指定先を張り直すだけで、選局中のチャンネルには戻さない。
     std::string video = this->EffectiveJkChannel();
-    int jkID = 0;
-    for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
+    int jkID = ParseJkID(video);
     if (jkID <= 0)
     {
         // 実況の一覧にないチャンネル -> 切断する。つないだままだと選局後も
@@ -2762,44 +2814,9 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     // During playback the live stream stays off; PlaybackTick drives the log.
     if (this->m_playbackActive) return;
 
-    JikkyoStream st;
-    bool have = this->m_chTable.Resolve(jkID, st);
-
-    std::string refugeUri = wstrToUTF8String(this->GetIniItem(L"RefugeUri", L"").c_str());
-    bool mixing  = this->GetIniItem(L"RefugeMixing", 0) != 0;
-    bool dropFwd = this->GetIniItem(L"DropForwardedComment", 0) != 0;
-    bool postToRefuge = this->GetIniItem(L"PostToRefuge", 0) != 0;
-    const std::string cookie; // empty: jkcnsl uses its stored login session
-
-    // NicoJK connection decision (NicoJK.cpp ~4305):
-    //   refuge available + RefugeUri set  -> R command (optionally mixed with nico)
-    //   else nico chatStreamID + (no RefugeUri or mixing) -> L command
-    std::string cmd;
     bool isMix = false, targetRefuge = false;
-    if (have && !st.refugeChatStreamID.empty() && !refugeUri.empty())
-    {
-        // 置換後の文字列に同じ差し込み文字列が含まれていても止まるよう、
-        // 検索位置を置換した分だけ進める
-        auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
-            for (size_t i = s.find(from); i != std::string::npos; i = s.find(from, i + to.size()))
-                s.replace(i, from.size(), to);
-        };
-        std::string uri = refugeUri;
-        replaceAll(uri, "{jkID}", "jk" + std::to_string(jkID));
-        replaceAll(uri, "{chatStreamID}", st.refugeChatStreamID);
-
-        isMix = mixing && !st.chatStreamID.empty();
-        int type = (dropFwd || isMix) ? 2 : 1;
-        cmd = "R" + std::to_string(type) + " " + uri;
-        if (isMix) cmd += " " + st.chatStreamID + " " + cookie; // R2 {uri} {nicoId} {cookie}
-        targetRefuge = isMix ? postToRefuge : true;
-    }
-    else if (have && !st.chatStreamID.empty() && (refugeUri.empty() || mixing))
-    {
-        cmd = "L" + st.chatStreamID + (cookie.empty() ? "" : (" " + cookie));
-        targetRefuge = false;
-    }
-    else
+    const std::string cmd = this->BuildJkcnslCommand(jkID, isMix, targetRefuge);
+    if (cmd.empty())
     {
         // Channel not supported (no stream id) -> disconnect, like NicoJK.
         // ウォッチドッグから毎回ログを吐かないよう、実際に切るときだけ出力する。
@@ -4293,6 +4310,10 @@ void CDataBroadcastingWV2::SwitchToMomentumChannelById(int id)
         // チューニング空間に見つからない -> 選局せずにそのjkへ接続する。
         // 録画再生中は過去ログの再生先が変わって紛らわしいので行わない。
         if (video.empty() || this->m_playbackActive) return;
+        // 接続できるストリームがない(コメント機能が無効な場合も含む)と、
+        // 今のチャンネルのコメントを切ったうえで何にも繋がらないので何もしない
+        bool isMix = false, targetRefuge = false;
+        if (this->BuildJkcnslCommand(ParseJkID(video), isMix, targetRefuge).empty()) return;
         this->m_manualJkVideo = video;
         this->UpdateCommentChannel();
         this->PushMomentumCurrentChannel();

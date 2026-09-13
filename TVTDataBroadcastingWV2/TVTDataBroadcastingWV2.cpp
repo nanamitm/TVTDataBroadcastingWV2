@@ -3505,9 +3505,11 @@ INT_PTR CALLBACK CDataBroadcastingWV2::CacheSettingsDlgProc(HWND hDlg, UINT uMsg
     case WM_INITDIALOG:
     {
         SendDlgItemMessageW(hDlg, IDC_EDIT_CACHE_SERVER_URL, EM_LIMITTEXT, 1023, 0);
+        // UIスレッドを止めて待つので、既定より短い上限で打ち切る
         HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
         JkcnslSettings::LoginInfo info;
-        bool ok = JkcnslSettings::QueryLogin(pThis->GetJkcnslPath(), info);
+        bool ok = JkcnslSettings::QueryLogin(pThis->GetJkcnslPath(), info, nullptr,
+                                             JkcnslSettings::kUiTimeoutMs);
         SetCursor(oldCursor);
         pThis->m_dlgCacheServerUrl = ok ? info.cacheServerUrl : std::string();
         if (ok)
@@ -3538,7 +3540,8 @@ INT_PTR CALLBACK CDataBroadcastingWV2::CacheSettingsDlgProc(HWND hDlg, UINT uMsg
             if (urlUtf8 != pThis->m_dlgCacheServerUrl)
             {
                 HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-                bool ok = JkcnslSettings::SetCacheServerUrl(pThis->GetJkcnslPath(), urlUtf8);
+                bool ok = JkcnslSettings::SetCacheServerUrl(pThis->GetJkcnslPath(), urlUtf8,
+                                                           JkcnslSettings::kUiTimeoutMs);
                 SetCursor(oldCursor);
                 if (!ok)
                 {

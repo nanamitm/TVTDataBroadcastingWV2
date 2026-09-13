@@ -3,7 +3,6 @@
 #include <vector>
 
 namespace {
-constexpr DWORD kTimeoutMs = 8000;
 // 'q'を送った後の終了待ち。応答しない場合は強制終了する。
 constexpr DWORD kExitWaitMs = 1000;
 }
@@ -11,7 +10,8 @@ constexpr DWORD kExitWaitMs = 1000;
 /*static*/ bool JkcnslSettings::RunCommand(const std::wstring& jkcnslPath,
                                            const std::string& command,
                                            std::string* output,
-                                           HANDLE cancelEvent)
+                                           HANDLE cancelEvent,
+                                           DWORD timeoutMs)
 {
     if (command.find_first_of("\r\n") != std::string::npos) return false;
     if (GetFileAttributesW(jkcnslPath.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
@@ -77,7 +77,7 @@ constexpr DWORD kExitWaitMs = 1000;
     // 2) Read stdout until a terminator line ('.'/'!'/'?') appears or we time out.
     std::string buf;
     HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    ULONGLONG deadline = GetTickCount64() + kTimeoutMs;
+    ULONGLONG deadline = GetTickCount64() + timeoutMs;
     char rb[2048];
     bool sawTerminator = false;
     HANDLE waits[2] = { ioEvent, cancelEvent };
@@ -149,12 +149,12 @@ constexpr DWORD kExitWaitMs = 1000;
 }
 
 /*static*/ bool JkcnslSettings::QueryLogin(const std::wstring& jkcnslPath, LoginInfo& out,
-                                          HANDLE cancelEvent)
+                                          HANDLE cancelEvent, DWORD timeoutMs)
 {
     out = LoginInfo{};
     std::string output;
     // "S" with no argument dumps all settings as "-key value" lines.
-    if (!RunCommand(jkcnslPath, "S", &output, cancelEvent)) return false;
+    if (!RunCommand(jkcnslPath, "S", &output, cancelEvent, timeoutMs)) return false;
 
     size_t start = 0;
     while (start <= output.size()) {
@@ -174,9 +174,10 @@ constexpr DWORD kExitWaitMs = 1000;
     return true;
 }
 
-/*static*/ bool JkcnslSettings::SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url)
+/*static*/ bool JkcnslSettings::SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url,
+                                                 DWORD timeoutMs)
 {
     // "Scache_server_url {url}" sets it; "Scache_server_url" (no arg) clears it.
     std::string cmd = url.empty() ? "Scache_server_url" : ("Scache_server_url " + url);
-    return RunCommand(jkcnslPath, cmd);
+    return RunCommand(jkcnslPath, cmd, nullptr, nullptr, timeoutMs);
 }

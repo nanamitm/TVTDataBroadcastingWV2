@@ -34,7 +34,5 @@ public:
     // {cache_server_url}/watch/{id} へ避難所プロトコルで繋ぐ); when cleared,
     // jkcnsl uses the direct nicovideo path. 利用者の設定なので、UIからの
     // 明示的な保存操作以外で呼ばないこと。
-    // cancelEvent: RunCommandと同じ。応答を待たずに打ち切れる。
-    static bool SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url,
-                                  HANDLE cancelEvent = nullptr);
+    static bool SetCacheServerUrl(const std::wstring& jkcnslPath, const std::string& url);
 };

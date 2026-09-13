@@ -482,13 +482,18 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // 勢いパネルの選択行を現在の実況チャンネルに合わせる。変化がなければ送らない。
     void PushMomentumCurrentChannel(bool force = false);
     std::string    m_momentumSentVideo;
+    bool           m_momentumSentManual = false;
     bool           m_momentumSentValid = false;
+    // 勢いリストで選局できないチャンネルをクリックしたときの接続先(例: "jk141")。
+    // 空なら選局中のチャンネルから判定する。実際にチャンネルが変わると解除する。
+    std::string    m_manualJkVideo;
+    std::string EffectiveJkChannel() const;
     bool m_loggedIn = false;
     bool m_streamConnected = false;
     bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId, bool* prior = nullptr) const;
-    void SwitchToMomentumChannel(int index);
+    bool SwitchToMomentumChannel(int index);
     void SwitchToMomentumChannelById(int id);
     void SendComments(std::vector<Comment> comments);
     void ReportReplaceErrors();
@@ -685,6 +690,8 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
     {
         this->currentServiceIsOneSeg = false;
         this->packetQueue.clear();
+        // 選局し直したら勢いリストからの手動指定は解除して自動判定に戻す
+        this->m_manualJkVideo.clear();
         this->UpdateCommentChannel();
     }
     this->PushMomentumCurrentChannel();
@@ -2624,6 +2631,14 @@ void CDataBroadcastingWV2::PlaybackTick()
         this->m_playbackActive = true;
         this->m_jkcnslReader.Stop();   // stop live comments
         this->m_logWriter.Close();     // stop recording during playback
+        // 手動指定したjkの過去ログを再生しないよう、選局中のチャンネルに戻す。
+        // 再生中のUpdateCommentChannel()はm_currentJkIDを決めるだけで接続はしない。
+        if (!this->m_manualJkVideo.empty())
+        {
+            this->m_manualJkVideo.clear();
+            this->UpdateCommentChannel();
+            this->PushMomentumCurrentChannel();
+        }
         this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
         this->ClearOnScreenComments();
         this->m_playbackLastT = 0;     // force initial seek
@@ -2717,10 +2732,17 @@ std::string CDataBroadcastingWV2::DetectJkChannel() const
         this->currentService.ServiceID);
 }
 
+std::string CDataBroadcastingWV2::EffectiveJkChannel() const
+{
+    return this->m_manualJkVideo.empty() ? this->DetectJkChannel() : this->m_manualJkVideo;
+}
+
 void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
 {
     // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
-    std::string video = this->DetectJkChannel();
+    // 勢いリストからの手動指定があればそちらを優先する。ウォッチドッグからの
+    // 呼び出しでも手動指定先を張り直すだけで、選局中のチャンネルには戻さない。
+    std::string video = this->EffectiveJkChannel();
     int jkID = 0;
     for (char c : video) { if (c >= '0' && c <= '9') jkID = jkID * 10 + (c - '0'); }
     if (jkID <= 0)
@@ -3824,6 +3846,7 @@ th:hover{background:var(--hov)}
 td{padding:1px 4px;white-space:nowrap;overflow:hidden}
 tr:hover td{background:var(--hov)}
 tr.sel td{background:var(--sel)}
+tr.sel.man td{font-style:italic}
 .pe{color:#9acd32}
 #w::-webkit-scrollbar{width:8px}
 #w::-webkit-scrollbar-track{background:transparent}
@@ -3864,7 +3887,7 @@ LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
 <div id="post"><button id="cb" title="コマンド選択">▷</button><input id="pi" type="text" maxlength="75" placeholder="コメントを投稿 (Enterで送信)"><span id="pr"></span><button id="lb" title="ニコニコログイン">設定</button></div>
 )HTML"
 LR"HTML(<script>
-let ch=[],sc=2,sa=false,cur=null;
+let ch=[],sc=2,sa=false,cur=null,curMan=false;
 function fc(v){return v<=0?'#808080':v<=50?'#008000':v<=100?'#0080FF':v<=200?'#FF8000':'#FF0000'}
 function srt(c){sc===c?sa=!sa:(sc=c,sa=c!==2);render();window.chrome.webview.postMessage({cmd:'sortChanged',col:sc,asc:sa});}
 function render(){
@@ -3878,7 +3901,10 @@ function render(){
   s.forEach(c=>{
     const col=fc(c.force),tr=document.createElement('tr');
     // 選択行はホストから通知される現在の実況チャンネルで決める
-    if(c.video&&c.video===cur)tr.className='sel';
+    if(c.video&&c.video===cur){
+      tr.className=curMan?'sel man':'sel';
+      if(curMan)tr.title='選局せずにこの実況に接続中 (チャンネルを変えると解除)';
+    }
     const vals=[c.video||'',c.name||'',c.force>=0?c.force:'???',c.programTitle||''];
     vals.forEach((v,i)=>{
       const td=document.createElement('td');td.textContent=String(v);
@@ -4037,7 +4063,7 @@ logEl.addEventListener('contextmenu',e=>{
 function _update(m){
   if(m.type==='channelsUpdate'){ch=m.channels;render();}
   else if(m.type==='sortConfig'){sc=m.col;sa=m.asc;render();}
-  else if(m.type==='currentChannel'){cur=m.video;render();}
+  else if(m.type==='currentChannel'){cur=m.video;curMan=!!m.manual;render();}
   else if(m.type==='commentLog'){logAdd(m.items);}
   else if(m.type==='ngUsers'){setNgUsers(m.users);}
   else if(m.type==='postResult'){showResult(m.status,m.message);}
@@ -4230,14 +4256,18 @@ void CDataBroadcastingWV2::SendMomentumChannels()
 
 void CDataBroadcastingWV2::PushMomentumCurrentChannel(bool force)
 {
-    const std::string video = this->DetectJkChannel();
-    if (!force && this->m_momentumSentValid && this->m_momentumSentVideo == video) return;
+    const std::string video = this->EffectiveJkChannel();
+    const bool manual = !this->m_manualJkVideo.empty();
+    if (!force && this->m_momentumSentValid &&
+        this->m_momentumSentVideo == video && this->m_momentumSentManual == manual) return;
     if (!this->momentumWebView || !this->momentumWebViewReady) return;
     this->m_momentumSentVideo = video;
+    this->m_momentumSentManual = manual;
     this->m_momentumSentValid = true;
     // 実況の一覧にないチャンネルはnullを送り、どの行も選択しない
     nlohmann::json msg{ { "type", "currentChannel" },
-                        { "video", video.empty() ? nlohmann::json(nullptr) : nlohmann::json(video) } };
+                        { "video", video.empty() ? nlohmann::json(nullptr) : nlohmann::json(video) },
+                        { "manual", manual } };
     this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
 }
 
@@ -4245,20 +4275,38 @@ void CDataBroadcastingWV2::SwitchToMomentumChannelById(int id)
 {
     for (int i = 0; i < (int)this->momentumChannels.size(); i++)
     {
-        if (this->momentumChannels[i].id == id)
+        if (this->momentumChannels[i].id != id) continue;
+
+        const std::string video = this->momentumChannels[i].video;
+        if (this->SwitchToMomentumChannel(i))
         {
-            this->SwitchToMomentumChannel(i);
+            // 選局中のチャンネルを選び直した場合はチャンネル変更が起きないので、
+            // ここで手動指定を解除して自動判定に戻す
+            if (!this->m_manualJkVideo.empty())
+            {
+                this->m_manualJkVideo.clear();
+                this->UpdateCommentChannel();
+                this->PushMomentumCurrentChannel();
+            }
             return;
         }
+        // チューニング空間に見つからない -> 選局せずにそのjkへ接続する。
+        // 録画再生中は過去ログの再生先が変わって紛らわしいので行わない。
+        if (video.empty() || this->m_playbackActive) return;
+        this->m_manualJkVideo = video;
+        this->UpdateCommentChannel();
+        this->PushMomentumCurrentChannel();
+        return;
     }
 }
 
-void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
+// 選局できたらtrue。対応するチャンネルが見つからない、または選局に失敗したらfalse。
+bool CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
 {
-    if (index < 0 || index >= (int)this->momentumChannels.size()) return;
+    if (index < 0 || index >= (int)this->momentumChannels.size()) return false;
     const auto& target = this->momentumChannels[index];
     const std::string& targetJk = target.video;
-    if (targetJk.empty()) return;
+    if (targetJk.empty()) return false;
 
     // Step 1: 全チューニングスペースを走査（NicoJKと同方式）
     // 2段階探索: stage 0 では [Channels] の優先指定(+)エントリのみ、stage 1 では任意に一致。
@@ -4294,8 +4342,8 @@ void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
                     sel.NetworkID = info.NetworkID;
                 }
                 sel.ServiceID = info.ServiceID;
-                this->m_pApp->SelectChannel(&sel);
-                return;
+                // 選局に失敗したら他の候補とフォールバックを試す
+                if (this->m_pApp->SelectChannel(&sel)) return true;
             }
         }
     }
@@ -4320,9 +4368,10 @@ void CDataBroadcastingWV2::SwitchToMomentumChannel(int index)
             sel.ServiceID = serviceId;
             sel.Space     = -1;
             sel.Channel   = -1;
-            if (this->m_pApp->SelectChannel(&sel)) return;
+            if (this->m_pApp->SelectChannel(&sel)) return true;
         }
     }
+    return false;
 }
 
 bool CDataBroadcastingWV2::OnVolumeChange(int Volume, bool fMute)

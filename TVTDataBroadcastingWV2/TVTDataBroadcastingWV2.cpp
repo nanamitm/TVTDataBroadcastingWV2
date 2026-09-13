@@ -490,7 +490,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::string EffectiveJkChannel() const;
     bool m_loggedIn = false;
     bool m_streamConnected = false;
-    bool m_postTargetRefuge = false; // jkcnsl cache_server_url set => posting to refuge
+    bool m_postTargetRefuge = false; // 接続先が避難所のときは投稿先も避難所
     std::string DetectJkChannel() const;
     std::string DetectJkChannelFor(WORD networkId, WORD serviceId, bool* prior = nullptr) const;
     bool SwitchToMomentumChannel(int index);
@@ -2327,11 +2327,12 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                     }
                 });
                 // NicoJK-style connection model: refuge via the R command +
-                // RefugeUri, nicovideo via the L command + chatStreamID. This
-                // does NOT use jkcnsl's cache_server_url, so clear it (otherwise
-                // L{chatStreamID} would be routed through the cache).
+                // RefugeUri, nicovideo via the L command + chatStreamID.
+                // jkcnslのcache_server_urlはここでは触らない。設定されていると
+                // L{chatStreamID}はキャッシュサーバー経由になるが、それはjkcnsl
+                // (nanamitm版)がこの設定を用意している目的そのものであり、
+                // NicoJKと共有するjkcnsl.jsonの利用者設定を勝手に消さない。
                 this->m_chTable.Load(this->iniFile);
-                JkcnslSettings::SetCacheServerUrl(this->GetJkcnslPath(), "");
                 // Comment log recording (NicoJK-compatible). Use a folder
                 // separate from NicoJK's to avoid conflicts.
                 {

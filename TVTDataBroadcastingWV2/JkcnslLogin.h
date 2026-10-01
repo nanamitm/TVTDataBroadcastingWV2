@@ -2,30 +2,22 @@
 #include "pch.h"
 #include <atomic>
 #include <functional>
-#include <mutex>
 #include <string>
 #include <thread>
 
-// Drives jkcnsl's nicovideo login over a single process. jkcnsl reads one
-// command per stdin line and emits '-' output lines terminated by '.' (ok) /
-// '!' (error) / '?' (unknown).
+// Drives nicovideo login for jkcnsl.
 //
-// jkcnsl authenticates through its bundled browser helper
-// (jkcnsl_login/jkcnsl-qt-login.exe): 'Ai' opens a browser window, the user
-// signs in there, and the helper hands the session cookie back over a named
-// pipe. Mail/password/one-time-password are no longer involved -- two-factor
-// authentication happens inside that browser window. Requires a jkcnsl build
-// with the browser helper; older mail+password builds are not supported.
+// jkcnsl no longer logs in by itself: login happens in JkcnslLoginWindow.exe
+// (shipped next to jkcnsl.exe), a GUI app that opens a dedicated Edge browser
+// and, when the user presses "jkcnslに保存", writes the session cookie into
+// jkcnsl's nicovideo_cookie setting. 2-factor authentication happens inside
+// that window too.
 //
-// Login sequence:
-//   Ai   -> -progress...  ; '.' success / '!' failure
-//           If a stored cookie is still valid jkcnsl answers '.' immediately
-//           without opening any window.
-//
-// Logout sequence (server-side logout, then drop the stale local settings):
-//   Ao                -> .
-//   Smail   (no arg)  -> .
-//   Spassword         -> .
+// Login:  launch JkcnslLoginWindow.exe, wait for it to exit, then query jkcnsl
+//         ("S") and report Success if a nicovideo_cookie is stored.
+// Logout: clear jkcnsl's stored cookie ("Snicovideo_cookie" with no value).
+//         The nicovideo-side session (browser logout) is handled in
+//         JkcnslLoginWindow itself.
 class JkcnslLogin
 {
 public:
@@ -44,44 +36,31 @@ public:
     void SetCallback(Callback cb) { m_callback = std::move(cb); }
     bool IsBusy() const { return m_running; }
 
-    // Start a browser login. Opens jkcnsl's helper window unless the stored
-    // cookie is still valid.
+    // Open JkcnslLoginWindow.exe (next to jkcnslPath) and report the result
+    // after it is closed.
     bool Login(const std::wstring& jkcnslPath);
-    // Log out on the nicovideo side, then clear the stored cookie/mail/password.
+    // Clear the cookie stored in jkcnsl.
     bool Logout(const std::wstring& jkcnslPath);
-    // Abort an in-progress login.
+    // Close JkcnslLoginWindow and stop waiting for it.
     void Cancel();
-    // Stop the helper without reporting a user-visible failure. Used during
+    // Stop waiting without reporting a user-visible failure. Used during
     // plug-in shutdown, before the callback target is destroyed.
+    // JkcnslLoginWindow itself is left open: the user may still be using it.
     void Stop();
 
 private:
-    enum class Mode { Login, Logout };
-    enum class State { LoginRun, LogoutRun, ClearMail, ClearPassword };
-
-    bool StartProcess(const std::wstring& jkcnslPath, Mode mode);
-    void WorkerLoop();
-    void ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf);
-    void HandleLine(const std::string& line);
-    bool WriteLine(const std::string& s);
+    void LoginWorker(std::wstring jkcnslPath);
+    void LogoutWorker(std::wstring jkcnslPath);
     void Finish(Event ev, const std::string& msg);
     void Notify(Event ev, const std::string& msg);
+    void JoinPrevious();
 
     Callback m_callback;
-    HANDLE m_hProcess    = nullptr;
-    HANDLE m_hStdinWrite = nullptr;
-    HANDLE m_hStdoutRead = nullptr;
-    HANDLE m_hStopEvent  = nullptr;
-    std::mutex m_stdinMutex;
+    HANDLE m_hProcess   = nullptr;
+    HANDLE m_hStopEvent = nullptr;
     std::thread m_thread;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_finished{ false };
-
-    Mode  m_mode  = Mode::Login;
-    State m_state = State::LoginRun;
-    // Set when jkcnsl reports the browser helper is missing, so the failure can
-    // name the real cause instead of the generic "login failed".
-    bool  m_helperMissing = false;
 };
 
 // Heap payload marshalled to the UI thread (the callback runs on the worker

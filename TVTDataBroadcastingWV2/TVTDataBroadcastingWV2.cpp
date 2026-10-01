@@ -2895,32 +2895,30 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
     {
     case JkcnslLogin::Event::Progress:
         state = L"progress";
-        if      (message == "start-login")  text = L"ログインを開始しています…";
-        else if (message == "start-logout") text = L"ログアウトしています…";
-        else if (message == "browser-open")
-            text = L"ブラウザーのウィンドウが開きます。そちらでニコニコにログインし、"
-                   L"ウィンドウ内のボタンで完了してください。"
+        if      (message == "start-logout") text = L"jkcnslのログイン情報を削除しています…";
+        else if (message == "helper-open")
+            text = L"JkcnslLoginWindowでニコニコにログインし、「jkcnslに保存」を押してから"
+                   L"ウィンドウを閉じてください。"
                    L"(ウィンドウが見当たらない場合はタスクバーを確認してください)";
-        else if (message == "helper-missing")
-            text = L"ログイン用ブラウザーが見つかりません。";
         else if (!message.empty())          text = utf8StrToWString(message.c_str()); // jkcnsl line (UTF-8)
         break;
     case JkcnslLogin::Event::Success:
         state = L"success";
-        text  = (message == "logout") ? L"ログアウトしました。"
-                                      : L"ニコニコログインに成功しました。チャンネル切替または再接続後に反映されます。";
+        text  = (message == "logout") ? L"jkcnslのログイン情報を削除しました。"
+                                      : L"ログイン情報を確認しました。チャンネル切替または再接続後に反映されます。";
         break;
     case JkcnslLogin::Event::Failure:
         state = L"failure";
         if      (message == "cancel")     text = L"ログインを中止しました。";
-        else if (message == "disconnect") text = L"jkcnslとの通信が切断されました。";
-        else if (message == "logout")     text = L"ログアウトに失敗しました。";
+        else if (message == "not-saved")  text = L"ログイン情報は保存されませんでした。";
+        else if (message == "query")      text = L"jkcnslのログイン状態を確認できませんでした。";
+        else if (message == "logout")     text = L"jkcnslのログイン情報の削除に失敗しました。";
         else if (message == "start")
             text = L"jkcnslを起動できませんでした。jkcnsl.exeがTVTest本体と"
                    L"同じフォルダーにあるか確認してください。";
         else if (message == "helper-missing")
-            text = L"ログイン用ブラウザーが見つかりません。jkcnsl.exeと同じ場所に"
-                   L"jkcnsl_loginフォルダーを配置してください。";
+            text = L"JkcnslLoginWindow.exeが見つかりません。jkcnsl.exeと同じ場所に"
+                   L"配置してください。";
         else                              text = L"ログインに失敗しました。";
         break;
     }
@@ -2930,8 +2928,10 @@ void CDataBroadcastingWV2::OnLoginEvent(JkcnslLogin::Event ev, const std::string
                       { "message", wstrToUTF8String(text.c_str()) } };
     this->momentumWebView->ExecuteScript(jsonToUpdateScript(j).c_str(), nullptr);
 
-    // A completed login/clear changes the authenticated state.
-    if (ev == JkcnslLogin::Event::Success) this->RefreshAuthState();
+    // A completed login/clear changes the authenticated state. Closing
+    // JkcnslLoginWindow without saving may also have changed it (e.g. a
+    // logout saved there), so re-query after any finished operation.
+    if (ev != JkcnslLogin::Event::Progress) this->RefreshAuthState();
 }
 
 // Queries jkcnsl's login state on a worker (the query spawns jkcnsl, which can
@@ -3971,11 +3971,11 @@ LR"HTML(<th onclick="srt(0)">実況番号<span id="a0"></span></th>
 </table></div>
 <div id="log" hidden></div>
 <div id="login" hidden>
-<div id="lh">ニコニコへのログインはブラウザーのウィンドウで行います。</div>
+<div id="lh">ニコニコへのログイン・ログアウトはJkcnslLoginWindowで行い、「jkcnslに保存」でjkcnslに反映します。</div>
 <div class="row">
   <button id="ldo">ログイン</button>
   <button id="lcancel">中止</button>
-  <button id="lout" style="margin-left:auto">ログアウト</button>
+  <button id="lout" style="margin-left:auto" title="jkcnslに保存されたログイン情報を削除">情報削除</button>
 </div>
 <div id="ls"></div>
 </div>
@@ -4091,7 +4091,7 @@ LR"HTML(  // NicoJK流: 未接続なら投稿欄を隠す
   }
   const lb=$('lb');
   lb.classList.toggle('authin',loggedIn);
-  // ブラウザーログインではクッキーしか得られないため、アカウント名は出せない
+  // JkcnslLoginWindowが保存するのはクッキーだけなので、アカウント名は出せない
   lb.title=loggedIn?'ニコニコにログイン中':'ニコニコログイン';
 }
 // 状態が分かるまで投稿欄は隠す
@@ -4099,7 +4099,7 @@ pi.style.display='none';
 function setLogin(s,msg){
   const ls=$('ls');ls.textContent=msg||'';
   ls.className=(s==='success'||s==='failure')?s:'';
-  // ブラウザー操作の間は二重起動を防ぐ
+  // JkcnslLoginWindowの操作中は二重起動を防ぐ
   const busy=(s==='progress');
   $('ldo').disabled=busy;$('lout').disabled=busy;$('lcancel').disabled=!busy;
   // 成功したらフォームを自動的に畳む(メッセージを少し見せてから)

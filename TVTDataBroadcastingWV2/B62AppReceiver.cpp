@@ -187,7 +187,7 @@ void AppReceiver::Reset(int newServiceId)
     std::function<void()> callback;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
-        hadApplication = this->application.has_value();
+        hadApplication = this->publishedApplication.has_value();
         this->serviceId = newServiceId;
         this->ResetLocked();
         callback = this->applicationChangedCallback;
@@ -215,6 +215,7 @@ void AppReceiver::ResetApplicationLocked()
     this->items.clear();
     this->itemBytes = 0;
     this->application.reset();
+    this->publishedApplication.reset();
     this->pathIndexDirty = true;
     this->pathIndex.clear();
     this->fileCache.clear();
@@ -236,9 +237,10 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
         {
             return;
         }
-        before = this->application;
+        before = this->publishedApplication;
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
-        if (before == this->application)
+        this->UpdatePublishedApplicationLocked();
+        if (before == this->publishedApplication)
         {
             return;
         }
@@ -814,10 +816,45 @@ void AppReceiver::RebuildPathIndexLocked()
     std::erase_if(this->fileCache, [&](const auto& entry) { return !this->pathIndex.contains(entry.first); });
 }
 
+bool AppReceiver::IsServableLocked(const std::string& path)
+{
+    this->RebuildPathIndexLocked();
+    auto entry = this->pathIndex.find(JoinPath({ path }));
+    return entry != this->pathIndex.end() && this->items.contains(entry->second.key);
+}
+
+void AppReceiver::UpdatePublishedApplicationLocked()
+{
+    if (this->publishedApplication == this->application)
+    {
+        return;
+    }
+    if (!this->application)
+    {
+        this->publishedApplication.reset();
+        return;
+    }
+    // Only checked while something is pending, and the path index is rebuilt
+    // only after a table or item actually changed. Waits for every file the
+    // tables list as well, so the first page does not load without its scripts.
+    if (!this->IsServableLocked(this->application->entryPath))
+    {
+        return;
+    }
+    for (const auto& [_, entry] : this->pathIndex)
+    {
+        if (!this->items.contains(entry.key))
+        {
+            return;
+        }
+    }
+    this->publishedApplication = this->application;
+}
+
 std::optional<AppReceiver::Application> AppReceiver::GetApplication() const
 {
     std::lock_guard<std::mutex> lock(this->mutex);
-    return this->application;
+    return this->publishedApplication;
 }
 
 std::optional<AppReceiver::File> AppReceiver::GetFile(const std::string& path)

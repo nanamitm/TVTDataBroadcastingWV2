@@ -122,6 +122,8 @@ private:
     void OnDamt(const SectionKey& key, const uint8_t* section, size_t size);
     void OnItemSection(const uint8_t* section, size_t size);
     void RebuildPathIndexLocked();
+    bool IsServableLocked(const std::string& path);
+    void UpdatePublishedApplicationLocked();
 
     mutable std::mutex mutex;
     std::function<void()> applicationChangedCallback;
@@ -139,7 +141,11 @@ private:
     std::map<ItemKey, std::vector<uint8_t>> items;
     size_t itemBytes = 0;
 
+    // The AUTOSTART application of the latest MH-AIT.
     std::optional<Application> application;
+    // What GetApplication() reports: application, once its first page can be
+    // served. The MH-AIT arrives long before the files do.
+    std::optional<Application> publishedApplication;
 
     bool pathIndexDirty = true;
     std::map<std::string, PathEntry> pathIndex;

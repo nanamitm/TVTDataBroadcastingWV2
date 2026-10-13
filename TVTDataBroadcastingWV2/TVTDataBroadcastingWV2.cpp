@@ -375,6 +375,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::vector<WCHAR> packetsToJsonBuf;
     // 4K data broadcasting (ARIB STD-B62) carried by BonDriver_dantto4k
     B62::AppReceiver b62Receiver;
+    // WebView2がアプリケーションのiframe内のリクエストを横取りできるか
+    bool b62Supported = false;
     void SendB62Application();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
@@ -1497,7 +1499,17 @@ void CDataBroadcastingWV2::InitWebView2()
 
             // 仮想ホスト以外へのリクエストは全てブロックする
             // 通信が有効になっている場合は内部のプロキシへの通信のみ許可する
-            webView->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            // 別オリジンのiframe (4Kデータ放送のアプリケーション) やワーカーからのリクエストは
+            // ICoreWebView2_22のフィルタでないとイベントが発生しない
+            if (auto webView22 = this->webView.try_query<ICoreWebView2_22>();
+                webView22 && SUCCEEDED(webView22->AddWebResourceRequestedFilterWithRequestSourceKinds(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)))
+            {
+                this->b62Supported = true;
+            }
+            else
+            {
+                webView->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            }
             this->webView->add_WebResourceRequested(Callback<ICoreWebView2WebResourceRequestedEventHandler>(
                 [this](ICoreWebView2* sender, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
                 wil::com_ptr<ICoreWebView2WebResourceRequest> request;
@@ -4609,7 +4621,8 @@ void CDataBroadcastingWV2::SendB62Application()
         return;
     }
     nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr } };
-    if (auto app = this->b62Receiver.GetApplication())
+    // iframe内の通信を遮断できない古いランタイムではアプリケーションを動かさない
+    if (auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt)
     {
         message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
         message["organizationId"] = app->organizationId;

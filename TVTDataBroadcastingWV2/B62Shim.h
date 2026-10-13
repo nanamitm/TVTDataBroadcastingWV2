@@ -129,6 +129,14 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("receiverDevice", receiverDevice);
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
+
+    // <object type="video/x-arib2-broadcast"> marks where the broadcast video
+    // goes. The plugin draws the video behind the page, so the object must be
+    // see-through instead of Chromium's white "plugin not supported" box.
+    // A constructed sheet needs no <head>, which does not exist yet here.
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync('object[type="video/x-arib2-broadcast" i], object[type="audio/x-arib2-broadcast" i] { visibility: hidden !important; }');
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
 })();
 )JS";
 

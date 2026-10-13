@@ -136,6 +136,14 @@ INI `[TVTDataBroadcastingWV2]`の`RefugeUri`(NX-Jikkyo等の避難所URI)、`cha
 
 放送のNetworkID/ServiceIDからニコニコ実況chへの対応付けは、本プラグイン自身のINI `[Channels]`を優先し、未設定のキーのみ既存の`NicoJK.ini`の`[Channels]`セクション(配置先の2階層上)へフォールバックします。BS/CS/プレミアム等は実際のNetworkID、地上波は`0xF`をキーの先頭に使います。
 
+## 4Kデータ放送 (フォーク独自機能・実験的)
+
+[BonDriver_dantto4k](https://github.com/nanamitm/dantto4k) が TS に載せる 4K データ放送 (ARIB STD-B62) を受信し、アプリケーションを映像の上に重ねて表示します。dantto4k 側でデータ放送を出力している必要があります (`BonDriver_dantto4k.ini` の `[appdata]` で `enable=true`、既定で有効)。
+
+- アプリケーションのファイルは `https://tvtdatabroadcastingwv2-b62.invalid/` から配信され、このプラグインの画面とは別オリジンの iframe で動きます。
+- 受信機 API (`navigator.receiverDevice` など) は、起動に必要な一部だけを代用品として用意しています。イベントメッセージ、キャッシュ、リモコンのキー入力はまだ未対応です。
+- 番組情報 (`getCurrentEventInformation`) はデータ放送ブラウザが受信した EIT から返します。
+
 ## 制約
 
 おおよそ実装されていますが一部のAPI、イベント、要素は未実装です。

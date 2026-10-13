@@ -90,6 +90,7 @@ jobs:
           copy LICENSE artifact/$dir/TVTDataBroadcastingWV2-LICENSE
           copy LICENSE.nlohmann.json.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.json.txt
           copy LICENSE.libaribcaption.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.libaribcaption.txt
+          copy LICENSE.dantto4k.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.dantto4k.txt
           copy README.md artifact/$dir/TVTDataBroadcastingWV2-README.txt
           copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp artifact/$dir/ || copy $env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp artifact/$dir/
           mkdir artifact/$dir/TVTDataBroadcastingWV2/resources/dist/

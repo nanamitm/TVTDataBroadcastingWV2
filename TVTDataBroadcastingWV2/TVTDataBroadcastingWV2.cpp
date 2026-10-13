@@ -23,7 +23,11 @@
 #include "JikkyoStreamTable.h"
 #include "CommentLogWriter.h"
 #include "CommentLogReader.h"
+#include "B62AppReceiver.h"
+#include "B62Shim.h"
 #include <shellapi.h>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 
 using namespace Microsoft::WRL;
 
@@ -40,6 +44,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_LOGIN (WM_APP + 6)
 #define WM_APP_AUTH (WM_APP + 7)
 #define WM_APP_CONN (WM_APP + 8)
+#define WM_APP_B62_APPLICATION (WM_APP + 9)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -368,6 +373,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::atomic<bool> webViewLoaded;
     PacketQueue packetQueue;
     std::vector<WCHAR> packetsToJsonBuf;
+    // 4K data broadcasting (ARIB STD-B62) carried by BonDriver_dantto4k
+    B62::AppReceiver b62Receiver;
+    void SendB62Application();
+    HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
     HWND hPanelWnd = nullptr;
@@ -612,6 +621,7 @@ bool CDataBroadcastingWV2::GetPluginInfo(TVTest::PluginInfo* pInfo)
 BOOL CALLBACK CDataBroadcastingWV2::StreamCallback(BYTE* pData, void* pClientData)
 {
     auto pThis = (CDataBroadcastingWV2*)pClientData;
+    pThis->b62Receiver.FeedPacket(pData);
     if (pThis->packetQueue.enqueuePacket(pData))
     {
         PostMessageW(pThis->hMessageWnd, WM_APP_PACKET, 0, 0);
@@ -691,6 +701,7 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
     {
         this->currentServiceIsOneSeg = false;
         this->packetQueue.clear();
+        this->b62Receiver.Reset(this->currentService.ServiceID);
         // 選局し直したら勢いリストからの手動指定は解除して自動判定に戻す
         this->m_manualJkVideo.clear();
         this->UpdateCommentChannel();
@@ -1023,6 +1034,11 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                 }
             }
         }
+        break;
+    }
+    case WM_APP_B62_APPLICATION:
+    {
+        pThis->SendB62Application();
         break;
     }
     case WM_APP_PACKET:
@@ -1466,6 +1482,8 @@ void CDataBroadcastingWV2::InitWebView2()
             settings->put_IsScriptEnabled(TRUE);
             settings->put_AreDefaultScriptDialogsEnabled(TRUE);
             settings->put_IsWebMessageEnabled(TRUE);
+            // 4Kデータ放送のアプリケーション向けに受信機APIの代用品を用意する
+            this->webView->AddScriptToExecuteOnDocumentCreated(B62::kShimScript, nullptr);
 
             this->webViewController->put_ParentWindow(this->hContainerWnd);
             RECT bounds;
@@ -1508,6 +1526,10 @@ void CDataBroadcastingWV2::InitWebView2()
                 if (this->proxySession && proxyUrl && this->enableNetwork)
                 {
                     return this->Proxy(args, proxyUrl);
+                }
+                else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
+                {
+                    return this->ServeB62File(args, uri.get() + wcslen(B62::kAppOrigin) + 1);
                 }
                 else if (_wcsnicmp(L"https://TVTDataBroadcastingWV2.invalid/", uri.get(), wcslen(L"https://TVTDataBroadcastingWV2.invalid/")))
                 {
@@ -1600,6 +1622,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
+                this->SendB62Application();
                 if (this->oneSegWindowIsShown)
                 {
                     this->webView->PostWebMessageAsJson(LR"({"type":"launchOneSeg"})");
@@ -2221,6 +2244,7 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->webViewLoaded = false;
 
     this->packetQueue.clear();
+    this->b62Receiver.Reset(this->currentService.ServiceID);
 
     if (this->hMessageWnd)
     {
@@ -2273,6 +2297,13 @@ void CDataBroadcastingWV2::CreateMessageWindow()
     RegisterClassExW(&wc);
     this->hMessageWnd = CreateWindowExW(0, L"TVTDataBroadcastingWV2 Message Window", L"TVTDataBroadcastingWV2 Message Window", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     SetWindowLongPtrW(this->hMessageWnd, GWLP_USERDATA, (LONG_PTR)this);
+    this->b62Receiver.SetApplicationChangedCallback([this]() {
+        // TSスレッドから呼ばれる
+        if (this->hMessageWnd)
+        {
+            PostMessageW(this->hMessageWnd, WM_APP_B62_APPLICATION, 0, 0);
+        }
+    });
 }
 
 bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
@@ -4568,6 +4599,80 @@ void CDataBroadcastingWV2::UpdateDigitButton()
         SetDlgItemTextW(this->hPanelWnd, IDC_KEY_10, L"10");
         SetDlgItemTextW(this->hPanelWnd, IDC_KEY_12, L"12");
     }
+}
+
+// 4Kデータ放送のアプリケーションの起動・終了をページに伝える
+void CDataBroadcastingWV2::SendB62Application()
+{
+    if (!this->webView || !this->webViewLoaded)
+    {
+        return;
+    }
+    nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr } };
+    if (auto app = this->b62Receiver.GetApplication())
+    {
+        message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
+        message["organizationId"] = app->organizationId;
+        message["applicationId"] = app->applicationId;
+        message["version"] = app->aitVersion;
+    }
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+}
+
+// 4Kデータ放送のアプリケーションのファイルを返す。pathはオリジン直後の"/"より後ろ
+HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR path)
+{
+    wil::com_ptr<ICoreWebView2Environment> env;
+    HRESULT hr = this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    // クエリとフラグメントを除いてパーセントデコードする
+    std::string encoded = wstrToUTF8String(std::wstring(path, wcscspn(path, L"?#")).c_str());
+    std::string decoded;
+    for (size_t i = 0; i < encoded.size(); i++)
+    {
+        if (encoded[i] == '%' && i + 2 < encoded.size() && isxdigit(static_cast<unsigned char>(encoded[i + 1])) && isxdigit(static_cast<unsigned char>(encoded[i + 2])))
+        {
+            decoded += static_cast<char>(std::stoi(encoded.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        }
+        else
+        {
+            decoded += encoded[i];
+        }
+    }
+
+    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+    auto file = this->b62Receiver.GetFile(decoded);
+    if (!file)
+    {
+        hr = env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", response.put());
+    }
+    else
+    {
+        wil::com_ptr<IStream> stream;
+        stream.attach(SHCreateMemStream(file->data.data(), static_cast<UINT>(file->data.size())));
+        if (!stream)
+        {
+            return E_OUTOFMEMORY;
+        }
+        // item_typeは放送由来なのでヘッダーを壊す文字が入っていれば使わない
+        std::wstring mimeType(file->mimeType.begin(), file->mimeType.end());
+        if (mimeType.empty() || mimeType.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+.-_;= ") != std::wstring::npos)
+        {
+            mimeType = L"application/octet-stream";
+        }
+        std::wstring headers = L"Content-Type: " + mimeType + L"\r\nCache-Control: no-store";
+        hr = env->CreateWebResourceResponse(stream.get(), 200, L"OK", headers.c_str(), response.put());
+    }
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    return args->put_Response(response.get());
 }
 
 TVTest::CTVTestPlugin* CreatePluginClass()

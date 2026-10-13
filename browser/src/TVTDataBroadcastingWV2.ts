@@ -4,6 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
+import { B62ApplicationFrame } from "./b62_application";
 
 declare global {
     interface Window {
@@ -463,6 +464,8 @@ function onMessage(msg: ResponseMessage) {
         pmtRetrieved = true;
     } else if (msg.type === "currentTime") {
         isRecord = new Date().getTime() - msg.timeUnixMillis >= 5 * 60 * 1000;
+    } else if (msg.type === "programInfo") {
+        b62Application.setProgramInfo(msg);
     }
     bmlBrowser.emitMessage(msg);
 }
@@ -543,6 +546,13 @@ type ToWebViewMessage = {
 } | {
     type: "channelsConfig",
     ws_uri: string,
+} | {
+    // 4Kデータ放送 (ARIB STD-B62) のアプリケーション。urlがnullなら終了
+    type: "b62Application",
+    url: string | null,
+    organizationId?: number,
+    applicationId?: number,
+    version?: number,
 };
 
 // 1分間無操作であればデータ取得中の表示を消す
@@ -683,8 +693,12 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         channelsClient = new ChannelsClient(data.ws_uri, (channels) => {
             postMessage({ type: "channelsUpdate", channels });
         });
+    } else if (data.type === "b62Application") {
+        b62Application.update(data.url, data.version);
     }
 }
+
+const b62Application = new B62ApplicationFrame(browserElement);
 
 let channelsClient: ChannelsClient | null = null;
 
@@ -713,6 +727,7 @@ function onResized() {
     const s = Math.min(scaleX, scaleY);
     document.body.style.transform = `translate(${Math.ceil((contentWidth * s + windowWidth) / 2 - contentWidth * s)}px, ${Math.ceil((contentHeight * s + windowHeight) / 2 - contentHeight * s)}px) scale(${s})`;
     document.body.style.transformOrigin = `0px 0px`;
+    b62Application.resize();
     const { left, top, right, bottom } = videoContainer.getBoundingClientRect();
     postMessage({
         type: "videoChanged",

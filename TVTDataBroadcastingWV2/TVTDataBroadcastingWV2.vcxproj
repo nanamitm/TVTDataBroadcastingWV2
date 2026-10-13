@@ -272,6 +272,9 @@
     <ClInclude Include="CaptionSettingsDialog.h" />
     <ClInclude Include="NativeCaptionRenderer.h" />
     <ClInclude Include="OneSeg.h" />
+    <ClInclude Include="B62AppReceiver.h" />
+    <ClInclude Include="B62Shim.h" />
+    <ClInclude Include="ZlibInflate.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="proxy.h" />
     <ClInclude Include="resource.h" />
@@ -291,6 +294,8 @@
     <ClCompile Include="CaptionSettingsDialog.cpp" />
     <ClCompile Include="NativeCaptionRenderer.cpp" />
     <ClCompile Include="OneSeg.cpp" />
+    <ClCompile Include="B62AppReceiver.cpp" />
+    <ClCompile Include="ZlibInflate.cpp" />
     <ClCompile Include="proxy.cpp" />
     <ClCompile Include="TVTDataBroadcastingWV2.cpp" />
     <ClCompile Include="pch.cpp">

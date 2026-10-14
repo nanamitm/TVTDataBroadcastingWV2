@@ -4985,9 +4985,25 @@ void CDataBroadcastingWV2::SendB62Captions()
     }
     auto captions = this->b62Receiver.TakeCaptions();
     auto eventMessages = this->b62Receiver.TakeEventMessages();
+    auto nptReferences = this->b62Receiver.TakeNptReferences();
     if (!this->webView || !this->webViewLoaded || !this->b62Supported)
     {
         return;
+    }
+    // UTC-NPT参照記述子 (NPTを時刻に使うイベントメッセージやsetAlarmByUTCNPT用)
+    for (const auto& reference : nptReferences)
+    {
+        nlohmann::json json{
+            { "type", "b62NptReference" },
+            { "emtTag", reference.emtTag },
+            { "utcSeconds", static_cast<uint32_t>(reference.utcReference >> 32) },
+            { "utcFraction", static_cast<uint32_t>(reference.utcReference) },
+            { "nptSeconds", static_cast<uint32_t>(reference.nptReference >> 32) },
+            { "nptFraction", static_cast<uint32_t>(reference.nptReference) },
+            { "leapIndicator", reference.leapIndicator },
+            { "scale", reference.scale },
+        };
+        this->webView->PostWebMessageAsJson(jsonToWString(json).c_str());
     }
     // イベントメッセージ (addGeneralEventMessageListener)。発火時刻はページが決める
     for (const auto& message : eventMessages)

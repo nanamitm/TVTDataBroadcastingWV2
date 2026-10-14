@@ -16,6 +16,7 @@ constexpr uint8_t kTableCaption = 0xC1;
 constexpr uint8_t kTableTaggedEmt = 0xC2;
 constexpr uint8_t kTableEmt = 0xA6;
 constexpr uint16_t kDescriptorEventMessage = 0xF003;
+constexpr uint16_t kDescriptorUtcNptReference = 0x8021;
 constexpr size_t kMaxQueuedCaptions = 64;
 constexpr uint16_t kDescriptorTransportProtocol = 0x802A;
 constexpr uint16_t kDescriptorSimpleApplicationLocation = 0x802B;
@@ -220,6 +221,8 @@ void AppReceiver::ResetApplicationLocked()
     this->captions.clear();
     this->eventMessages.clear();
     this->lastEventMessages.clear();
+    this->nptReferences.clear();
+    this->lastNptReferences.clear();
     this->items.clear();
     this->itemBytes = 0;
     this->application.reset();
@@ -253,6 +256,7 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
         const uint64_t filesGenerationBefore = this->filesGeneration;
         const size_t captionCount = this->captions.size();
         const size_t eventMessageCount = this->eventMessages.size();
+        const size_t nptReferenceCount = this->nptReferences.size();
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
         this->UpdatePublishedApplicationLocked();
         if (before != this->publishedApplication || loadingBefore != this->IsApplicationLoadingLocked())
@@ -261,6 +265,7 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
         }
         if ((this->captions.size() != captionCount && !this->captions.empty()) ||
             (this->eventMessages.size() != eventMessageCount && !this->eventMessages.empty()) ||
+            (this->nptReferences.size() != nptReferenceCount && !this->nptReferences.empty()) ||
             this->filesGeneration != filesGenerationBefore)
         {
             captionNotify = this->messageCallback;
@@ -280,6 +285,12 @@ void AppReceiver::SetMessageCallback(std::function<void()> callback)
 {
     std::lock_guard<std::mutex> lock(this->mutex);
     this->messageCallback = std::move(callback);
+}
+
+std::vector<AppReceiver::NptReference> AppReceiver::TakeNptReferences()
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return std::exchange(this->nptReferences, {});
 }
 
 std::vector<AppReceiver::EventMessage> AppReceiver::TakeEventMessages()
@@ -842,6 +853,33 @@ void AppReceiver::OnTaggedEmt(const std::vector<uint8_t>& body)
         // Descriptors from 0xF000 have a 16-bit length.
         const size_t length = tag >= 0xF000 ? descriptors.U16() : descriptors.U8();
         Reader body2 = descriptors.Sub(length);
+        if (tag == kDescriptorUtcNptReference)
+        {
+            if (body2.Left() < 17)
+            {
+                continue;
+            }
+            std::vector<uint8_t> raw(body2.Current(), body2.Current() + 17);
+            auto& last = this->lastNptReferences[emtTag];
+            if (last == raw)
+            {
+                continue;
+            }
+            last = raw;
+            NptReference reference;
+            reference.emtTag = emtTag;
+            reference.utcReference = (static_cast<uint64_t>(body2.U32()) << 32) | body2.U32();
+            reference.nptReference = (static_cast<uint64_t>(body2.U32()) << 32) | body2.U32();
+            const uint8_t flags = body2.U8();
+            reference.leapIndicator = flags >> 6;
+            reference.scale = (flags >> 4) & 0x03;
+            if (this->nptReferences.size() >= kMaxQueuedCaptions)
+            {
+                this->nptReferences.erase(this->nptReferences.begin());
+            }
+            this->nptReferences.push_back(reference);
+            continue;
+        }
         if (tag != kDescriptorEventMessage)
         {
             continue;

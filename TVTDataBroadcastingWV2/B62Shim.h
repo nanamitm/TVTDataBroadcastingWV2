@@ -277,6 +277,113 @@ constexpr wchar_t kShimScript[] = LR"JS(
             }
         },
     };
+    // UTC-NPT (ARIB STD-B62 Volume 2 3.3.12.3, ARIB TR-B39 11.2.4.2). The
+    // plugin page sends the latest UTC-NPT reference descriptor of each EMT
+    // and the broadcast clock; NPT values are seconds as a Number.
+    let utcNptState = { references: [], latestTag: null, clockOffsetMillis: 0, service: {} };
+    const utcNptListeners = [];
+    const utcNptAlarms = new Map();
+    let nextAlarmHandle = 0;
+    function invalidParam() {
+        const error = new Error("INVALID_PARAM_ERR");
+        error.name = "INVALID_PARAM_ERR";
+        return error;
+    }
+    function utcNptTag(param) {
+        const source = param && param.source;
+        return source && source.event_message_tag != null ? Number(source.event_message_tag) : null;
+    }
+    // The reference of the EMT the source names, or the latest one.
+    function utcNptReference(tag) {
+        const wanted = tag != null ? tag : utcNptState.latestTag;
+        return utcNptState.references.find(function (reference) { return reference.tag === wanted; }) || null;
+    }
+    function utcNptSource(reference) {
+        return Object.assign({}, utcNptState.service, { event_message_tag: reference.tag });
+    }
+    const dayMillis = 24 * 60 * 60 * 1000;
+    function leapBoundaryMillis(reference) {
+        return Math.floor(reference.utcMillis / dayMillis) * dayMillis + dayMillis;
+    }
+    // ARIB TR-B39 Fig. 11-3
+    function utcToNpt(reference, utcMillis) {
+        if (reference.scale !== 3) {
+            return reference.npt;
+        }
+        const boundary = leapBoundaryMillis(reference);
+        if (reference.leap === 1 && utcMillis >= boundary - 1000) {
+            utcMillis += 1000;
+        } else if (reference.leap === 2 && utcMillis >= boundary) {
+            utcMillis -= 1000;
+        }
+        return reference.npt + (utcMillis - reference.utcMillis) / 1000;
+    }
+    // ARIB TR-B39 Fig. 11-4; null when a stopped NPT never gets there
+    function nptToUtc(reference, npt) {
+        if (reference.scale !== 3) {
+            return npt <= reference.npt ? reference.utcMillis : null;
+        }
+        let utc = reference.utcMillis + (npt - reference.npt) * 1000;
+        const boundary = leapBoundaryMillis(reference);
+        if (reference.leap === 1 && utc >= boundary) {
+            utc -= 1000;
+        } else if (reference.leap === 2 && utc >= boundary - 1000) {
+            utc += 1000;
+        }
+        return utc;
+    }
+    // A listener runs once, when UTC-NPT becomes usable for it.
+    function notifyUtcNptListeners() {
+        for (let i = utcNptListeners.length - 1; i >= 0; i--) {
+            const entry = utcNptListeners[i];
+            const reference = utcNptReference(entry.tag);
+            if (!reference) {
+                continue;
+            }
+            utcNptListeners.splice(i, 1);
+            setTimeout(function () {
+                try {
+                    entry.listener({ source: utcNptSource(reference) });
+                } catch (e) {
+                    console.error(e);
+                }
+            }, 0);
+        }
+    }
+    function scheduleUtcNptAlarms() {
+        utcNptAlarms.forEach(function (alarm, handle) {
+            clearTimeout(alarm.timer);
+            alarm.timer = null;
+            const reference = utcNptReference(alarm.tag);
+            const due = reference ? nptToUtc(reference, alarm.value) : null;
+            if (due == null) {
+                return;
+            }
+            const delay = Math.max(0, due - (Date.now() + utcNptState.clockOffsetMillis));
+            alarm.timer = setTimeout(function () {
+                utcNptAlarms.delete(handle);
+                try {
+                    alarm.handler({ source: utcNptSource(reference), utcnpt_value: alarm.value });
+                } catch (e) {
+                    console.error(e);
+                }
+            }, Math.min(delay, 2147483647));
+        });
+    }
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "utcnpt" || !Array.isArray(data.references)) {
+            return;
+        }
+        utcNptState = {
+            references: data.references,
+            latestTag: data.latestTag,
+            clockOffsetMillis: Number(data.clockOffsetMillis) || 0,
+            service: data.service || {},
+        };
+        notifyUtcNptListeners();
+        scheduleUtcNptAlarms();
+    });
     const receiverDevice = {
         getSystemInformation: function (callback) {
             const info = Object.assign({}, systemInformation);
@@ -302,6 +409,47 @@ constexpr wchar_t kShimScript[] = LR"JS(
                         eventMessageListeners.splice(i, 1);
                     }
                 }
+            },
+            addUTCNPTReferenceMessageListener: function (param, listener) {
+                if (typeof listener !== "function") {
+                    throw invalidParam();
+                }
+                utcNptListeners.push({ tag: utcNptTag(param), listener: listener });
+                notifyUtcNptListeners();
+            },
+            removeUTCNPTReferenceMessageListener: function (param, listener) {
+                const tag = utcNptTag(param);
+                for (let i = utcNptListeners.length - 1; i >= 0; i--) {
+                    if (utcNptListeners[i].tag === tag && (listener == null || utcNptListeners[i].listener === listener)) {
+                        utcNptListeners.splice(i, 1);
+                    }
+                }
+            },
+            setAlarmByUTCNPT: function (param, handler) {
+                const value = Number(param && param.utcnpt_value);
+                if (typeof handler !== "function" || !isFinite(value)) {
+                    throw invalidParam();
+                }
+                const handle = (nextAlarmHandle = (nextAlarmHandle % 4294967295) + 1);
+                utcNptAlarms.set(handle, { tag: utcNptTag(param), value: value, handler: handler, timer: null });
+                scheduleUtcNptAlarms();
+                return handle;
+            },
+            unsetAlarmByUTCNPT: function (handle) {
+                const alarm = utcNptAlarms.get(handle);
+                if (alarm) {
+                    clearTimeout(alarm.timer);
+                    utcNptAlarms.delete(handle);
+                }
+            },
+            getUTCNPT: function (param) {
+                const reference = utcNptReference(utcNptTag(param));
+                if (!reference) {
+                    const error = new Error("MISC_ERR");
+                    error.name = "MISC_ERR";
+                    throw error;
+                }
+                return utcToNpt(reference, Date.now() + utcNptState.clockOffsetMillis);
             },
             addEventIDUpdateListener: function () { return true; },
             removeEventIDUpdateListener: function () { return true; },

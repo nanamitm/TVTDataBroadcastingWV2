@@ -54,6 +54,14 @@ export type B62Caption = {
     pts: number | null,
     // 字幕プラグインの表示遅延 (ミリ秒)
     delay: number,
+    // ARIB TR-B39 8.10.1.1でCaptionListenerに渡す項目
+    languageCode: string,
+    resolution: number,
+    referenceStartTimeSeconds: number,
+    referenceStartTimeFraction: number,
+    subtitleSequenceNumber: number,
+    subsampleNumber: number,
+    lastSubsampleNumber: number,
     data: string,
 };
 
@@ -263,7 +271,8 @@ export class B62ApplicationFrame {
             this.deliverCaption(caption);
             return;
         }
-        const begin = caption.dataType === 0 ? firstBeginMillis(caption.data) : 0;
+        // TMDが1111 (時刻制御なし) ならbeginは無視する (ARIB TR-B39 8.5.9.2)
+        const begin = caption.dataType === 0 && caption.tmd !== 0b1111 ? firstBeginMillis(caption.data) : 0;
         const due = caption.pts / 90 + begin + caption.delay;
         this.captionQueue.push({ due, caption });
         this.flushCaptions();
@@ -371,12 +380,20 @@ export class B62ApplicationFrame {
         }
     }
 
-    // ARIB STD-B62のCaptionListenerに渡す形 (運用規定。NHK BSP4Kの字幕ページが読む形に合わせる)
+    // ARIB STD-B62のCaptionListenerに渡す形 (ARIB TR-B39 8.10.1.1 図8-23、表8-26)。
+    // dataはTTML文書 (0000) とSVGフォント (0110) のときだけ入れ、それ以外は空文字列
     private deliverCaption(caption: B62Caption) {
         const payload = JSON.stringify({
-            data_type: toBinary4(caption.dataType),
+            ISO_639_language_code: caption.languageCode,
             TMD: toBinary4(caption.tmd),
-            data: caption.data,
+            resolution: toBinary4(caption.resolution),
+            reference_start_time_seconds: caption.referenceStartTimeSeconds,
+            reference_start_time_fraction: caption.referenceStartTimeFraction,
+            subtitle_sequence_number: caption.subtitleSequenceNumber,
+            subsample_number: caption.subsampleNumber,
+            last_subsample_number: caption.lastSubsampleNumber,
+            data_type: toBinary4(caption.dataType),
+            data: caption.dataType === 0 || caption.dataType === 6 ? caption.data : "",
         });
         this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "caption", componentTag: caption.componentTag, payload }, appOrigin);
     }

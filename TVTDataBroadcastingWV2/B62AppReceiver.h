@@ -50,6 +50,14 @@ public:
         uint8_t tmd = 0;
         // When the document's time zero is presented (90 kHz, TS timeline).
         std::optional<uint64_t> pts;
+        // What ARIB TR-B39 8.10.1.1 hands to CaptionListener besides the data
+        std::string languageCode;
+        uint8_t resolution = 0;
+        uint32_t referenceStartTimeSeconds = 0;
+        uint32_t referenceStartTimeFraction = 0;
+        uint8_t subtitleSequenceNumber = 0;
+        uint8_t subsampleNumber = 0;
+        uint8_t lastSubsampleNumber = 0;
         std::vector<uint8_t> data;
     };
 

@@ -4772,6 +4772,13 @@ void CDataBroadcastingWV2::SendB62Captions()
             { "tmd", caption.tmd },
             { "pts", caption.pts ? nlohmann::json(*caption.pts) : nlohmann::json(nullptr) },
             { "delay", superimpose ? settings.delayTimeSuper : settings.delayTime },
+            { "languageCode", caption.languageCode },
+            { "resolution", caption.resolution },
+            { "referenceStartTimeSeconds", caption.referenceStartTimeSeconds },
+            { "referenceStartTimeFraction", caption.referenceStartTimeFraction },
+            { "subtitleSequenceNumber", caption.subtitleSequenceNumber },
+            { "subsampleNumber", caption.subsampleNumber },
+            { "lastSubsampleNumber", caption.lastSubsampleNumber },
             { "data", std::string(caption.data.begin(), caption.data.end()) },
         };
         this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());

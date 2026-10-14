@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame, type B62Caption, type B62EventMessage } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent } from "./b62_application";
 
 declare global {
     interface Window {
@@ -81,7 +81,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode));
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }));
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -321,6 +321,9 @@ type FromWebViewMessage = {
 } | {
     type: "invisible",
     invisible: boolean,
+} | {
+    // 次の番組の情報を求める (b62FollowingEventで返る)
+    type: "b62GetFollowingEvent",
 } | {
     type: "tune",
     originalNetworkId: number,
@@ -563,7 +566,9 @@ type ToWebViewMessage = {
     organizationId?: number,
     applicationId?: number,
     version?: number,
-};
+} | ({
+    type: "b62FollowingEvent",
+} & B62FollowingEvent);
 
 // 1分間無操作であればデータ取得中の表示を消す
 let remoteControlStatusTimeoutMillis = 60 * 1000;
@@ -713,6 +718,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         b62Application.pushEventMessage(data);
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
+    } else if (data.type === "b62FollowingEvent") {
+        b62Application.setFollowingEvent(data);
     }
 }
 

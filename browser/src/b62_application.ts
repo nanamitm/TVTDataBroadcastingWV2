@@ -176,6 +176,13 @@ export type B62ProgramInfo = {
     durationSeconds: number | null,
 };
 
+// TVTestから得た次の番組の情報
+export type B62FollowingEvent = {
+    serviceId: number | null,
+    eventId: number | null,
+    startTimeUnixMillis: number | null,
+};
+
 export class B62ApplicationFrame {
     private readonly container: HTMLElement;
     private frame: HTMLIFrameElement | null = null;
@@ -193,13 +200,19 @@ export class B62ApplicationFrame {
     private eventQueue: { due: number, message: B62EventMessage }[] = [];
     private readonly onVideoChanged: () => void;
     private readonly playRomSound: (id: number) => void;
+    private readonly requestFollowingEvent: () => void;
+    // 次の番組の情報を待っているgetCurrentEventInformation
+    private eventInformationRequests: { source: Window, id: number }[] = [];
+    private eventInformationTimeout: number | null = null;
 
     // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
-    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす
-    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void) {
+    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす。
+    // requestFollowingEventは次の番組の情報を求め、setFollowingEvent()で答えてもらう
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
         this.playRomSound = playRomSound;
+        this.requestFollowingEvent = requestFollowingEvent;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -398,6 +411,46 @@ export class B62ApplicationFrame {
         this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "caption", componentTag: caption.componentTag, payload }, appOrigin);
     }
 
+    // getCurrentEventInformationに答える。followingは次の番組 (分からなければnull)
+    setFollowingEvent(following: B62FollowingEvent | null) {
+        if (this.eventInformationTimeout != null) {
+            window.clearTimeout(this.eventInformationTimeout);
+            this.eventInformationTimeout = null;
+        }
+        const requests = this.eventInformationRequests;
+        this.eventInformationRequests = [];
+        if (requests.length === 0) {
+            return;
+        }
+        // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
+        // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)
+        const info = this.programInfo;
+        const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
+        // 別のサービスや、今の番組より前の情報は使わない
+        const next = following != null && following.eventId != null && following.startTimeUnixMillis != null &&
+            following.serviceId === info?.serviceId && following.eventId !== info?.eventId &&
+            (start == null || following.startTimeUnixMillis > start.getTime()) ? following : null;
+        const data = {
+            service_id: info?.serviceId ?? null,
+            original_network_id: info?.originalNetworkId ?? null,
+            transport_stream_id: info?.transportStreamId ?? null,
+            event_id: info?.eventId ?? null,
+            event_name: info?.eventName ?? null,
+            start_time: start,
+            duration: info?.durationSeconds ?? null,
+            f_event_id: next?.eventId ?? null,
+            // 次の番組が分からなければ今の番組と同じ開始時刻にして、次の番組は無いものとして扱わせる
+            f_start_time: next?.startTimeUnixMillis != null ? new Date(next.startTimeUnixMillis) : start,
+        };
+        for (const request of requests) {
+            try {
+                request.source.postMessage({ source: "b62Host", id: request.id, data }, appOrigin);
+            } catch {
+                // アプリケーションが既に終了している
+            }
+        }
+    }
+
     setProgramInfo(programInfo: B62ProgramInfo) {
         this.programInfo = programInfo;
     }
@@ -469,24 +522,12 @@ export class B62ApplicationFrame {
             return;
         }
         if (message.type === "getEventInformation") {
-            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
-            // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)。
-            // 次の番組 (f_*) は分からないので、開始時刻だけ今の番組の終了時刻で埋める
-            const info = this.programInfo;
-            const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
-            const end = start != null && info?.durationSeconds != null ? new Date(start.getTime() + info.durationSeconds * 1000) : null;
-            const data = {
-                service_id: info?.serviceId ?? null,
-                original_network_id: info?.originalNetworkId ?? null,
-                transport_stream_id: info?.transportStreamId ?? null,
-                event_id: info?.eventId ?? null,
-                event_name: info?.eventName ?? null,
-                start_time: start,
-                duration: info?.durationSeconds ?? null,
-                f_event_id: null,
-                f_start_time: end ?? start,
-            };
-            (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+            // 次の番組の情報が届いてから答える
+            this.eventInformationRequests.push({ source: ev.source as Window, id: message.id });
+            if (this.eventInformationTimeout == null) {
+                this.eventInformationTimeout = window.setTimeout(() => this.setFollowingEvent(null), 1000);
+                this.requestFollowingEvent();
+            }
         } else if (message.type === "romsound") {
             if (Number.isInteger(message.id)) {
                 this.playRomSound(message.id);

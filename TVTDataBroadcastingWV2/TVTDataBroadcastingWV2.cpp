@@ -382,6 +382,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool b62Supported = false;
     void SendB62Application();
     void SendB62Captions();
+    void SendB62FollowingEvent();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
@@ -2087,6 +2088,41 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         this->m_commentNg.Load(this->iniFile);
         this->ReportReplaceErrors();
     }
+    else if (type == "b62GetFollowingEvent")
+    {
+        this->SendB62FollowingEvent();
+    }
+}
+
+// 4Kデータ放送のアプリケーションのgetCurrentEventInformationのために、次の番組の情報をページに渡す。
+// ページで解析しているEITは今の番組の分だけなので、TVTestが持っている情報を使う
+void CDataBroadcastingWV2::SendB62FollowingEvent()
+{
+    if (!this->webView)
+    {
+        return;
+    }
+    nlohmann::json message{
+        { "type", "b62FollowingEvent" },
+        { "serviceId", nullptr },
+        { "eventId", nullptr },
+        { "startTimeUnixMillis", nullptr },
+    };
+    TVTest::ProgramInfo info = {};
+    if (this->m_pApp->GetCurrentProgramInfo(&info, true))
+    {
+        message["serviceId"] = info.ServiceID;
+        message["eventId"] = info.EventID;
+        // StartTimeは日本時間
+        FILETIME fileTime;
+        if (info.StartTime.wYear != 0 && SystemTimeToFileTime(&info.StartTime, &fileTime))
+        {
+            const auto ticks = (static_cast<uint64_t>(fileTime.dwHighDateTime) << 32) | fileTime.dwLowDateTime;
+            const int64_t unixMillis = static_cast<int64_t>(ticks / 10000) - 11644473600000LL - 9LL * 60 * 60 * 1000;
+            message["startTimeUnixMillis"] = unixMillis;
+        }
+    }
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
 }
 
 // cors無効コマンドライン引数を追加するなどでWebView2側に任せることも可能ではあるけど融通が利かないためWinHTTPを使う あとバージョン依存の問題があるらしい?

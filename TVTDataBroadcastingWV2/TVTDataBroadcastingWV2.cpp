@@ -2363,12 +2363,18 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
         STATSTG statstg = {};
         hr = content->Stat(&statstg, STATFLAG_NONAME);
         auto size = statstg.cbSize.QuadPart;
-        if (SUCCEEDED(hr) && size <= std::numeric_limits<ULONG>::max())
-        {
-            contentBuffer.resize((ULONG)size);
-            content->Read(contentBuffer.data(), (ULONG)size, &contentSize);
-            contentBuffer.resize(contentSize);
+        if (FAILED(hr)) return hr;
+        if (size > ProxyLimits{}.payloadBytes) {
+            wil::com_ptr<ICoreWebView2Environment> env;
+            RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+            wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+            RETURN_IF_FAILED(env->CreateWebResourceResponse(nullptr, 413, L"Payload Too Large", L"", response.put()));
+            return args->put_Response(response.get());
         }
+        contentBuffer.resize(static_cast<ULONG>(size));
+        contentSize = 0;
+        RETURN_IF_FAILED(content->Read(contentBuffer.data(), static_cast<ULONG>(size), &contentSize));
+        contentBuffer.resize(contentSize);
     }
     wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
     hr = request->get_Headers(headers.put());

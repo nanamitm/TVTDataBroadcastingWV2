@@ -8,10 +8,16 @@
 #include <vector>
 
 class ProxyRequest;
+struct ProxyLimits {
+    size_t responseBytes = 16 * 1024 * 1024;
+    size_t payloadBytes = 4 * 1024 * 1024;
+    size_t concurrentRequests = 8;
+};
 struct ProxySessionState {
     std::mutex mutex;
     std::condition_variable idle;
     std::unordered_map<ProxyRequest*, std::shared_ptr<ProxyRequest>> requests;
+    ProxyLimits limits;
     size_t active = 0;
     bool stopping = false;
     HINTERNET session = nullptr;
@@ -25,7 +31,7 @@ class ProxySession {
 public:
     HINTERNET GetSession(bool protectedRequest = false);
     bool IgnoreCertificateErrors() const;
-    explicit ProxySession(bool ignoreCertificateErrors = false);
+    explicit ProxySession(bool ignoreCertificateErrors = false, ProxyLimits limits = {});
     ~ProxySession();
     void Shutdown();
     ProxySession(const ProxySession&) = delete;

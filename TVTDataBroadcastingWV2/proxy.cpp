@@ -155,11 +155,13 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
     }
     case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
     {
-        if (!WinHttpQueryDataAvailable(hInternet, nullptr))
-        {
+        DWORD length = 0, lengthSize = sizeof(length);
+        if (WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            nullptr, &length, &lengthSize, nullptr) && length > state->limits.responseBytes) {
             Fail();
             return;
         }
+        if (!WinHttpQueryDataAvailable(hInternet, nullptr)) { Fail(); return; }
         break;
     }
     case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
@@ -204,6 +206,10 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
             break;
         }
         auto prevSize = data.size();
+        if (prevSize > state->limits.responseBytes || size > state->limits.responseBytes - prevSize) {
+            Fail();
+            return;
+        }
         data.resize(prevSize + size);
         if (!WinHttpReadData(hInternet, data.data() + prevSize, size, nullptr))
         {
@@ -258,7 +264,7 @@ bool ProxyRequest::RequestAsync
     auto sharedState = session.state;
     {
         std::lock_guard lock(sharedState->mutex);
-        if (sharedState->stopping) return false;
+        if (sharedState->stopping || payload.size() > sharedState->limits.payloadBytes) return false;
         ++sharedState->active;
     }
     ProxyActivity activity(sharedState);
@@ -320,7 +326,7 @@ bool ProxyRequest::RequestAsync
     std::lock_guard requestLock(preq->mutex);
     {
         std::lock_guard lock(sharedState->mutex);
-        if (sharedState->stopping) return false;
+        if (sharedState->stopping || sharedState->requests.size() >= sharedState->limits.concurrentRequests) return false;
         sharedState->requests.emplace(preq.get(), preq);
     }
     if (WinHttpSetStatusCallback(request, StaticAsyncCallback,
@@ -359,9 +365,10 @@ ProxyRequest::~ProxyRequest()
     if (connect) WinHttpCloseHandle(connect);
 }
 
-ProxySession::ProxySession(bool ignoreCertificateErrors)
+ProxySession::ProxySession(bool ignoreCertificateErrors, ProxyLimits limits)
     : state(std::make_shared<ProxySessionState>()), ignoreCertificateErrors(ignoreCertificateErrors)
 {
+    state->limits = limits;
     state->session = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
     // Never share a pooled BML connection with address-restricted B62 traffic.

@@ -1575,7 +1575,19 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
                 {
-                    return this->ServeB62File(args, uri.get() + wcslen(B62::kAppOrigin) + 1);
+                    const auto path = uri.get() + wcslen(B62::kAppOrigin) + 1;
+                    // 通信で配信されるアプリケーションのファイルは、配信元のサーバーから代わりに取得する
+                    auto app = this->b62Receiver.GetApplication();
+                    if (app && !app->networkOrigin.empty())
+                    {
+                        if (!this->proxySession || !this->enableNetwork)
+                        {
+                            return S_OK;
+                        }
+                        const auto url = utf8StrToWString(app->networkOrigin.c_str()) + L"/" + path;
+                        return this->Proxy(args, url.c_str(), B62::kAppOrigin);
+                    }
+                    return this->ServeB62File(args, path);
                 }
                 // 通信が有効なら、4Kデータ放送のアプリケーションからのhttp/https通信を代わりに行う
                 else if (this->proxySession && this->enableNetwork && this->b62Supported &&
@@ -4894,7 +4906,13 @@ void CDataBroadcastingWV2::SendB62Application()
     nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr },
         { "loading", this->b62Supported && this->b62Receiver.IsApplicationLoading() } };
     // iframe内の通信を遮断できない古いランタイムではアプリケーションを動かさない
-    if (auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt)
+    auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt;
+    // 通信で配信されるアプリケーションは通信が有効なときだけ動かす
+    if (app && !app->networkOrigin.empty() && (!this->proxySession || !this->enableNetwork))
+    {
+        app.reset();
+    }
+    if (app)
     {
         message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
         message["organizationId"] = app->organizationId;

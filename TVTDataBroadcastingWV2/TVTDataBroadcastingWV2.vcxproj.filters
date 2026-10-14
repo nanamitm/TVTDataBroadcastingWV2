@@ -30,6 +30,9 @@
     <ClInclude Include="ProxyPolicy.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="B62Navigation.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="proxy.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

@@ -6,6 +6,7 @@
 #include "StartupPolicy.h"
 #include "AsyncLifetime.h"
 #include "ProxyPolicy.h"
+#include "B62Navigation.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -399,6 +400,12 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendB62Networking();
     std::shared_ptr<void> BeginB62Networking();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
+    bool HasB62File(LPCWSTR path);
+    // アプリケーションがiframeを移動させた外部のページのサーバーと、そのときのアプリケーション
+    // (B62Navigation.h)。アプリケーションが替われば使わない。WebViewのスレッドでのみ触る。
+    std::wstring b62NavigatedOrigin;
+    std::optional<B62::AppReceiver::Application> b62NavigatedApp;
+    HRESULT RedirectB62Navigation(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
     HWND hPanelWnd = nullptr;
@@ -1637,6 +1644,17 @@ void CDataBroadcastingWV2::InitWebView2()
                         const auto url = utf8StrToWString(app->networkOrigin.c_str()) + L"/" + path;
                         return this->Proxy(args, url.c_str(), B62::kAppOrigin);
                     }
+                    // アプリケーションが外部のページへ移動した後は、放送に無いファイルを
+                    // 移動先のサーバーから取得する (ルート相対のURLもここに来る)
+                    if (app && !this->b62NavigatedOrigin.empty() && this->b62NavigatedApp == app && !this->HasB62File(path))
+                    {
+                        if (!this->proxySession || !this->enableNetwork)
+                        {
+                            return S_OK;
+                        }
+                        const auto url = this->b62NavigatedOrigin + L"/" + path;
+                        return this->Proxy(args, url.c_str(), B62::kAppOrigin);
+                    }
                     return this->ServeB62File(args, path);
                 }
                 // 通信が有効なら、4Kデータ放送のアプリケーションからのhttp/https通信を代わりに行う
@@ -1644,6 +1662,14 @@ void CDataBroadcastingWV2::InitWebView2()
                     (!_wcsnicmp(uri.get(), L"https://", 8) || !_wcsnicmp(uri.get(), L"http://", 7)) &&
                     IsFromB62Application(request.get()))
                 {
+                    // iframe自体を外部のページへ移動させるときは、アプリケーションのオリジンで開き直す
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT context{};
+                    wil::unique_cotaskmem_string method;
+                    if (SUCCEEDED(args->get_ResourceContext(&context)) && context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT &&
+                        SUCCEEDED(request->get_Method(method.put())) && !_wcsicmp(method.get(), L"GET"))
+                    {
+                        return this->RedirectB62Navigation(args, uri.get());
+                    }
                     return this->ProxyB62(args, request.get(), uri.get());
                 }
                 else if (_wcsnicmp(L"https://TVTDataBroadcastingWV2.invalid/", uri.get(), wcslen(L"https://TVTDataBroadcastingWV2.invalid/")))
@@ -2504,6 +2530,8 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
     this->webViewLifetime.Cancel();
+    this->b62NavigatedOrigin.clear();
+    this->b62NavigatedApp.reset();
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
     if (this->hMessageWnd) {
@@ -5110,17 +5138,10 @@ void CDataBroadcastingWV2::SendB62Captions()
     }
 }
 
-// 4Kデータ放送のアプリケーションのファイルを返す。pathはオリジン直後の"/"より後ろ
-HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR path)
+// アプリケーションのオリジン直後の"/"より後ろを、放送のファイルのパスにする
+// (クエリとフラグメントを除いてパーセントデコードする)
+static std::string DecodeB62Path(LPCWSTR path)
 {
-    wil::com_ptr<ICoreWebView2Environment> env;
-    HRESULT hr = this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    // クエリとフラグメントを除いてパーセントデコードする
     std::string encoded = wstrToUTF8String(std::wstring(path, wcscspn(path, L"?#")).c_str());
     std::string decoded;
     for (size_t i = 0; i < encoded.size(); i++)
@@ -5135,9 +5156,69 @@ HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEven
             decoded += encoded[i];
         }
     }
+    return decoded;
+}
+
+bool CDataBroadcastingWV2::HasB62File(LPCWSTR path)
+{
+    return this->b62Receiver.GetFile(DecodeB62Path(path)).has_value();
+}
+
+// アプリケーションがiframeを外部のページへ移動させようとしたら、同じパスの
+// アプリケーションのオリジンのページへリダイレクトし、移動先のサーバーを覚えておく
+// (B62Navigation.h)。リダイレクトに従わない場合に備えて本文でも移動させる。
+HRESULT CDataBroadcastingWV2::RedirectB62Navigation(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri)
+{
+    wil::com_ptr<ICoreWebView2Environment> env;
+    HRESULT hr = this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+    const auto split = B62Navigation::SplitUrl(uri);
+    const auto app = this->b62Receiver.GetApplication();
+    if (!split || !app)
+    {
+        hr = env->CreateWebResourceResponse(nullptr, 403, L"Blocked", L"", response.put());
+        if (FAILED(hr))
+        {
+            return hr;
+        }
+        return args->put_Response(response.get());
+    }
+    this->b62NavigatedOrigin = split->first;
+    this->b62NavigatedApp = app;
+    const std::wstring target = std::wstring(B62::kAppOrigin) + L"/" + split->second;
+    const std::string body = wstrToUTF8String((L"<!DOCTYPE html><meta charset=\"utf-8\"><script>location.replace(" +
+        B62Navigation::ScriptStringLiteral(target) + L")</script>").c_str());
+    wil::com_ptr<IStream> stream;
+    stream.attach(SHCreateMemStream(reinterpret_cast<const BYTE*>(body.data()), static_cast<UINT>(body.size())));
+    if (!stream)
+    {
+        return E_OUTOFMEMORY;
+    }
+    const std::wstring headers = L"Location: " + target + L"\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store";
+    hr = env->CreateWebResourceResponse(stream.get(), 302, L"Found", headers.c_str(), response.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    return args->put_Response(response.get());
+}
+
+// 4Kデータ放送のアプリケーションのファイルを返す。pathはオリジン直後の"/"より後ろ
+HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR path)
+{
+    wil::com_ptr<ICoreWebView2Environment> env;
+    HRESULT hr = this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
 
     wil::com_ptr<ICoreWebView2WebResourceResponse> response;
-    auto file = this->b62Receiver.GetFile(decoded);
+    auto file = this->b62Receiver.GetFile(DecodeB62Path(path));
     if (!file)
     {
         hr = env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", response.put());

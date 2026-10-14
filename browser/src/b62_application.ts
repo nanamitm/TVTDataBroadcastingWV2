@@ -219,6 +219,8 @@ export class B62ApplicationFrame {
     private readonly onKeySetChanged: (keySet: number | null) => void;
     // 表示中の文書のkeySet (OIPFのビット)。アプリケーションが無ければnull
     private keySet: number | null = null;
+    // 受信済みのファイルとその版 (キャッシュイベント用)
+    private files: [string, string][] = [];
     // 次の番組の情報を待っているgetCurrentEventInformation
     private eventInformationRequests: { source: Window, id: number }[] = [];
     private eventInformationTimeout: number | null = null;
@@ -475,6 +477,16 @@ export class B62ApplicationFrame {
         }
     }
 
+    // 受信済みのファイルの一覧が変わった
+    setFiles(files: [string, string][]) {
+        this.files = files;
+        this.postFiles();
+    }
+
+    private postFiles() {
+        this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "cacheFiles", files: this.files }, appOrigin);
+    }
+
     setProgramInfo(programInfo: B62ProgramInfo) {
         this.programInfo = programInfo;
     }
@@ -571,6 +583,7 @@ export class B62ApplicationFrame {
         } else if (message.type === "hello") {
             // 新しい文書はまだkeySetを設定していない
             this.setKeySet(0);
+            this.postFiles();
             this.postCaptionComponents();
             this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {

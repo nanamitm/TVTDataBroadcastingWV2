@@ -130,6 +130,153 @@ constexpr wchar_t kShimScript[] = LR"JS(
         setTimeout(function () { finish({}); }, 1000);
         notifyParent({ type: type, id: id });
     }
+    // Cache events (ARIB STD-B62 Volume 2 3.3.13, ARIB TR-B39 10.7.14). The
+    // plugin keeps every broadcast file it has received, so a file is "stored"
+    // as soon as it is there. The plugin page sends the list of received files
+    // with their versions (MPU and item) whenever it changes; the events come
+    // from comparing it with the previous list.
+    const cacheListeners = [];
+    const storedPaths = new Set();
+    // path -> version; null until the first list arrives
+    let cacheFiles = null;
+    // "a/b/" for a directory, "a/b/c.html" for a file, relative to the
+    // application root. null for a path outside this application.
+    function cachePath(path) {
+        try {
+            const u = new URL(String(path), location.href);
+            if (u.origin !== location.origin) {
+                return null;
+            }
+            return decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+        } catch (e) {
+            return null;
+        }
+    }
+    // The version of what path names: a file's own, or every file under a
+    // directory. undefined when nothing of it has been received.
+    function cacheState(files, path) {
+        if (!files) {
+            return undefined;
+        }
+        if (!path.endsWith("/") && files.has(path)) {
+            return files.get(path);
+        }
+        const prefix = path === "" || path.endsWith("/") ? path : path + "/";
+        const versions = [];
+        files.forEach(function (version, file) {
+            if (file.startsWith(prefix)) {
+                versions.push(file + "=" + version);
+            }
+        });
+        return versions.length > 0 ? versions.sort().join("\n") : undefined;
+    }
+    function isDirectoryPath(files, path) {
+        return path.endsWith("/") || !(files && files.has(path));
+    }
+    function fireCacheEvent(entry, event) {
+        setTimeout(function () {
+            if (cacheListeners.indexOf(entry) < 0) {
+                return;
+            }
+            try {
+                entry.listener(entry.originalPath, event);
+            } catch (e) {
+                console.error(e);
+            }
+        }, 0);
+    }
+    function addCacheListener(path, listener) {
+        const resolved = cachePath(path);
+        if (resolved == null || typeof listener !== "function") {
+            const error = new Error("INVALID_PARAM_ERR");
+            error.name = "INVALID_PARAM_ERR";
+            throw error;
+        }
+        const entry = { path: resolved, originalPath: String(path), listener: listener };
+        cacheListeners.push(entry);
+        return entry;
+    }
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "cacheFiles" || !Array.isArray(data.files)) {
+            return;
+        }
+        const previous = cacheFiles;
+        const next = new Map();
+        data.files.forEach(function (file) {
+            if (Array.isArray(file) && typeof file[0] === "string") {
+                next.set(file[0], String(file[1]));
+            }
+        });
+        cacheFiles = next;
+        cacheListeners.slice().forEach(function (entry) {
+            const stored = storedPaths.has(entry.path);
+            const before = cacheState(previous, entry.path);
+            const after = cacheState(next, entry.path);
+            if (before === after) {
+                return;
+            }
+            if (after === undefined) {
+                // A file that disappears is not notified, only a directory.
+                if (previous && isDirectoryPath(previous, entry.path)) {
+                    fireCacheEvent(entry, "deleted");
+                }
+            } else if (stored) {
+                // Stored as soon as it arrives, so the update is notified as
+                // finished storing (ARIB TR-B39 10.7.14).
+                fireCacheEvent(entry, "store_finished");
+            } else if (previous) {
+                fireCacheEvent(entry, "updated");
+            }
+        });
+    });
+    const cacheEvent = {
+        addCacheEventListener: function (path, listener) {
+            const entry = addCacheListener(path, listener);
+            if (storedPaths.has(entry.path) && cacheState(cacheFiles, entry.path) !== undefined) {
+                fireCacheEvent(entry, "store_finished");
+            }
+        },
+        removeCacheEventListener: function (path, listener) {
+            const resolved = cachePath(path);
+            for (let i = cacheListeners.length - 1; i >= 0; i--) {
+                const entry = cacheListeners[i];
+                if (entry.path === resolved && (listener == null || entry.listener === listener)) {
+                    cacheListeners.splice(i, 1);
+                }
+            }
+        },
+        storeDataResource: function (path, listener) {
+            const resolved = cachePath(path);
+            if (resolved == null) {
+                const error = new Error("INVALID_PARAM_ERR");
+                error.name = "INVALID_PARAM_ERR";
+                throw error;
+            }
+            storedPaths.add(resolved);
+            if (typeof listener === "function") {
+                addCacheListener(path, listener);
+            }
+            // Already received: finished for everyone watching the path.
+            if (cacheState(cacheFiles, resolved) !== undefined) {
+                cacheListeners.forEach(function (entry) {
+                    if (entry.path === resolved) {
+                        fireCacheEvent(entry, "store_finished");
+                    }
+                });
+            }
+        },
+        releaseDataResource: function (path) {
+            if (path == null) {
+                storedPaths.clear();
+                return;
+            }
+            const resolved = cachePath(path);
+            if (resolved != null) {
+                storedPaths.delete(resolved);
+            }
+        },
+    };
     const receiverDevice = {
         getSystemInformation: function (callback) {
             const info = Object.assign({}, systemInformation);
@@ -137,7 +284,10 @@ constexpr wchar_t kShimScript[] = LR"JS(
             return info;
         },
         getCurrentEventInformation: function (callback) { askParent("getEventInformation", callback); },
-        getDeviceIdentifier: function (type, callback) { later(callback, null); return null; },
+        // The identifier asked for is the CAS module ID (ARIB TR-B39 Table
+        // 10-59), which is not available here; null means it could not be
+        // obtained.
+        getDeviceIdentifier: function (type, callback) { later(callback, null); },
         streamEvent: {
             addGeneralEventMessageListener: function (param, listener) {
                 if (typeof listener === "function") {
@@ -156,12 +306,7 @@ constexpr wchar_t kShimScript[] = LR"JS(
             addEventIDUpdateListener: function () { return true; },
             removeEventIDUpdateListener: function () { return true; },
         },
-        cacheEvent: {
-            storeDataResource: function () { return true; },
-            releaseDataResource: function () { return true; },
-            addCacheEventListener: function () { return true; },
-            removeCacheEventListener: function () { return true; },
-        },
+        cacheEvent: cacheEvent,
     };
     const browserPseudo = {
         readPersistentArray: function (filename, structure) {

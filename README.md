@@ -149,7 +149,7 @@ jkcnsl(nanamitm版)の`cache_server_url`を設定すると、ニコニコ実況�
 [BonDriver_dantto4k](https://github.com/nanamitm/dantto4k) が TS に載せる 4K データ放送 (ARIB STD-B62) を受信し、アプリケーションを映像の上に重ねて表示します。dantto4k 側でデータ放送を出力している必要があります (`BonDriver_dantto4k.ini` の `[appdata]` で `enable=true`、既定で有効)。
 
 - アプリケーションのファイルは `https://tvtdatabroadcastingwv2-b62.invalid/` から配信され、このプラグインの画面とは別オリジンの iframe で動きます。
-- 受信機 API (`navigator.receiverDevice` など) は、起動に必要な一部だけを代用品として用意しています。イベントメッセージ、キャッシュ、リモコンのキー入力はまだ未対応です。
+- 受信機 API (`navigator.receiverDevice` など) は、アプリケーションが使う一部を代用品として用意しています。キー入力、字幕 (`addCaptionListener`)、イベントメッセージ、キャッシュイベント (`cacheEvent`) に対応しています。キャッシュは受信済みのファイルすべてを保持しているものとして扱います。`getDeviceIdentifier` (CAS モジュール ID) は常に取得できなかったこと (null) を返します。
 - 番組情報 (`getCurrentEventInformation`) はデータ放送ブラウザが受信した EIT から返します。次の番組の情報は TVTest から取得します。
 - 通信機能を有効にすると (`EnableNetwork=1`、または実行中の切り替え)、アプリケーションの http/https の通信もプラグインが代わりに行い、CORS のヘッダーを付けて返します。無効のときはすべて遮断します。
 - 通信で配信されるアプリケーション (MH-AIT の伝送プロトコルが HTTP、BSテレ東4K など) は、通信機能が有効なときだけ起動します。ファイルは配信元のサーバーからプラグインが代わりに取得し、放送で配信されるものと同じオリジンで動かします。

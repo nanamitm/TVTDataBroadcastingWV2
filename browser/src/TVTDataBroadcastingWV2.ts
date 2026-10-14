@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence, type B62NptReference } from "./b62_application";
 
 declare global {
     interface Window {
@@ -612,6 +612,8 @@ type ToWebViewMessage = {
     type: "b62Files",
     files: [string, string][],
 } | ({
+    type: "b62NptReference",
+} & B62NptReference) | ({
     type: "b62FollowingEvent",
 } & B62FollowingEvent);
 
@@ -803,6 +805,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
                 remoteControl.setB62NetworkingStatus(false);
             }, 1000);
         }
+    } else if (data.type === "b62NptReference") {
+        b62Application.setNptReference(data);
     } else if (data.type === "b62Files") {
         b62Application.setFiles(data.files);
     } else if (data.type === "b62FollowingEvent") {

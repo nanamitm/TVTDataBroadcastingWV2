@@ -84,6 +84,42 @@ export type B62EventMessage = {
     privateData: string,
 };
 
+// ネイティブから届くUTC-NPT参照記述子 (ARIB STD-B60 11.2.2.1)
+export type B62NptReference = {
+    emtTag: number,
+    utcSeconds: number,
+    utcFraction: number,
+    nptSeconds: number,
+    nptFraction: number,
+    leapIndicator: number,
+    scale: number,
+};
+
+// UTCがutcMillisのときNPTがnpt秒だった。scaleが3なら時刻と同じ速さで進み、1なら止まっている
+type NptReference = { utcMillis: number, npt: number, leap: number, scale: number };
+
+const dayMillis = 24 * 60 * 60 * 1000;
+
+// うるう秒の調整の境目。参照時刻のUTCの日の終わり (ARIB STD-B60 11.2.2.1のUTC_NPT_leap_indicator)
+function leapBoundaryMillis(reference: NptReference): number {
+    return Math.floor(reference.utcMillis / dayMillis) * dayMillis + dayMillis;
+}
+
+// NPTからUTC (ARIB TR-B39 図11-4)。止まっているNPTが届かない値ならnull
+function nptToUtcMillis(reference: NptReference, npt: number): number | null {
+    if (reference.scale !== 3) {
+        return npt <= reference.npt ? reference.utcMillis : null;
+    }
+    let utc = reference.utcMillis + (npt - reference.npt) * 1000;
+    const boundary = leapBoundaryMillis(reference);
+    if (reference.leap === 1 && utc >= boundary) {
+        utc -= 1000;
+    } else if (reference.leap === 2 && utc >= boundary - 1000) {
+        utc += 1000;
+    }
+    return utc;
+}
+
 // NTPの秒は1900年起点。最上位ビットが0なら2036年からの周回 (ARIB STD-B60 11.2.2.2)
 function ntpToUnixMillis(seconds: number, fraction: number): number {
     const era = seconds < 0x80000000 ? 2 ** 32 : 0;
@@ -211,7 +247,13 @@ export class B62ApplicationFrame {
     private captionQueue: { due: number, caption: B62Caption }[] = [];
     // 放送の時刻 (TOT) と、それを受け取ったときのPCR
     private broadcastTime: { unixMillis: number, pcrMillis: number | null } | null = null;
-    private eventQueue: { due: number, message: B62EventMessage }[] = [];
+    // nptはNPTで時刻を指定したもの (NPTの参照が変わったら発火時刻を計算し直す)
+    private eventQueue: { due: number, message: B62EventMessage, npt?: number }[] = [];
+    // EMT_tagごとの最新のUTC-NPT参照と、最後に届いたもののEMT_tag
+    private nptReferences = new Map<number, NptReference>();
+    private latestNptTag: number | null = null;
+    // NPTの参照がまだ無いため待っているイベントメッセージ
+    private nptPending: B62EventMessage[] = [];
     private readonly onVideoChanged: () => void;
     private readonly playRomSound: (id: number) => void;
     private readonly requestFollowingEvent: () => void;
@@ -244,6 +286,10 @@ export class B62ApplicationFrame {
     update(url: string | null, version?: number) {
         if (url == null || !url.startsWith(appOrigin + "/")) {
             this.destroyedKey = null;
+            // NPTの参照はサービスのもの
+            this.nptReferences.clear();
+            this.latestNptTag = null;
+            this.nptPending = [];
             this.close();
             return;
         }
@@ -326,8 +372,75 @@ export class B62ApplicationFrame {
 
     // TOTの時刻
     setBroadcastTime(unixMillis: number) {
+        const hadTime = this.broadcastTime != null;
         this.broadcastTime = { unixMillis, pcrMillis: this.currentTimeMillis };
+        // 放送の時刻が分かるまで待たせていたNPTのイベントメッセージ
+        if (!hadTime && this.nptPending.length > 0) {
+            const waiting = this.nptPending;
+            this.nptPending = [];
+            for (const pending of waiting) {
+                this.pushEventMessage(pending);
+            }
+        }
         this.flushEventMessages();
+        this.postUtcNpt();
+    }
+
+    // UTC-NPT参照記述子が届いた (NPT参照メッセージ、ARIB TR-B39 11.2.4.2)
+    setNptReference(message: B62NptReference) {
+        const reference: NptReference = {
+            utcMillis: ntpToUnixMillis(message.utcSeconds, message.utcFraction),
+            npt: message.nptSeconds + message.nptFraction / 2 ** 32,
+            leap: message.leapIndicator,
+            scale: message.scale,
+        };
+        this.nptReferences.set(message.emtTag, reference);
+        this.latestNptTag = message.emtTag;
+        // NPTが付け直されたかもしれないので、NPTで待っているものは計算し直す
+        const retimed = this.eventQueue.filter(entry => entry.npt != null);
+        this.eventQueue = this.eventQueue.filter(entry => entry.npt == null);
+        const waiting = this.nptPending;
+        this.nptPending = [];
+        for (const entry of retimed) {
+            this.queueNptEventMessage(entry.message, entry.npt!);
+        }
+        for (const pending of waiting) {
+            this.pushEventMessage(pending);
+        }
+        this.flushEventMessages();
+        this.postUtcNpt();
+    }
+
+    private latestNptReference(): NptReference | null {
+        return this.latestNptTag != null ? this.nptReferences.get(this.latestNptTag) ?? null : null;
+    }
+
+    private queueNptEventMessage(message: B62EventMessage, npt: number) {
+        const reference = this.latestNptReference();
+        const due = reference != null ? nptToUtcMillis(reference, npt) : null;
+        if (due == null) {
+            this.nptPending.push(message);
+            return;
+        }
+        this.eventQueue.push({ due, message, npt });
+    }
+
+    // アプリケーションのUTC-NPTのAPI (getUTCNPTなど) のために、参照と放送の時刻を渡す
+    private postUtcNpt() {
+        const now = this.broadcastNow();
+        this.frame?.contentWindow?.postMessage({
+            source: "b62Host",
+            type: "utcnpt",
+            references: [...this.nptReferences].map(([tag, reference]) => ({ tag, ...reference })),
+            latestTag: this.latestNptTag,
+            // 放送の時刻とこのPCの時計の差
+            clockOffsetMillis: now != null ? now - Date.now() : 0,
+            service: {
+                original_network_id: this.programInfo?.originalNetworkId ?? null,
+                tlv_stream_id: this.programInfo?.transportStreamId ?? null,
+                service_id: this.programInfo?.serviceId ?? null,
+            },
+        }, appOrigin);
     }
 
     // 今の放送の時刻 (TOTにその後進んだPCRを足したもの)
@@ -355,8 +468,16 @@ export class B62ApplicationFrame {
             if (start != null) {
                 due = start + (message.timeSeconds + message.timeFraction / 2 ** 32) * 1000;
             }
+        } else if (message.timeMode === 2) {
+            // NPTの参照が届くまで待つ
+            if (this.broadcastNow() == null) {
+                this.nptPending.push(message);
+                return;
+            }
+            this.queueNptEventMessage(message, message.timeSeconds + message.timeFraction / 2 ** 32);
+            this.flushEventMessages();
+            return;
         } else if (message.timeMode !== 0) {
-            // NPTはUTC-NPT参照記述子が必要なので未対応
             console.warn("[TVTDataBroadcastingWV2] unsupported event message time_mode", message.timeMode);
             return;
         }
@@ -584,6 +705,7 @@ export class B62ApplicationFrame {
             // 新しい文書はまだkeySetを設定していない
             this.setKeySet(0);
             this.postFiles();
+            this.postUtcNpt();
             this.postCaptionComponents();
             this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {

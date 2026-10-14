@@ -80,6 +80,17 @@ public:
         std::vector<uint8_t> privateData;
     };
 
+    // UTC-NPT reference descriptor of an NPT reference message (ARIB STD-B60
+    // 11.2.2.1): NPT was nptReference when UTC was utcReference.
+    struct NptReference
+    {
+        uint8_t emtTag = 0;
+        uint64_t utcReference = 0; // NTP format
+        uint64_t nptReference = 0; // seconds and fraction like the NTP format
+        uint8_t leapIndicator = 0;
+        uint8_t scale = 0;
+    };
+
     static constexpr uint32_t kFormatIdentifier = 0x44344B41; // 'D4KA'
 
     // Called on the TS thread when the application to run changes.
@@ -92,6 +103,8 @@ public:
     void SetMessageCallback(std::function<void()> callback);
     std::vector<Caption> TakeCaptions();
     std::vector<EventMessage> TakeEventMessages();
+    // New or changed NPT references; the message callback is called for these too.
+    std::vector<NptReference> TakeNptReferences();
 
     std::optional<Application> GetApplication() const;
     // True while the MH-AIT names an application whose files are still being
@@ -199,6 +212,9 @@ private:
     std::map<uint32_t, PendingItem> pendingItems;
     std::vector<Caption> captions;
     std::vector<EventMessage> eventMessages;
+    std::vector<NptReference> nptReferences;
+    // EMT_tag -> last UTC-NPT reference descriptor, as the message repeats every second
+    std::map<uint8_t, std::vector<uint8_t>> lastNptReferences;
     // (EMT_tag, message_group_id, message_id upper 8 bits) -> last message_version and private data
     std::map<std::tuple<uint8_t, uint16_t, uint8_t>, std::pair<uint8_t, std::vector<uint8_t>>> lastEventMessages;
     std::map<ItemKey, std::vector<uint8_t>> items;

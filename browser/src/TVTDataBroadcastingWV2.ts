@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence } from "./b62_application";
 
 declare global {
     interface Window {
@@ -93,7 +93,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }));
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence());
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -589,6 +589,29 @@ type ToWebViewMessage = {
 } & B62FollowingEvent);
 
 let b62NetworkingTimeout: number | null = null;
+
+// 4Kデータ放送のアプリケーションに渡す視聴者の居住地域 (ARIB TR-B39 10.1.5)。
+// BMLの受信機設定 (nvram://receiverinfo/) と同じものを使う
+function getB62Residence(): B62Residence {
+    const read = (filename: string, structure: string): unknown => {
+        try {
+            return bmlBrowser.nvram.readPersistentArray(filename, structure)?.[0];
+        } catch {
+            return undefined;
+        }
+    };
+    const toHex = (bits: string) => bits.match(/.{4}/g)!.map(x => parseInt(x, 2).toString(16)).join("");
+    // 県域指定ビットマップ (56ビット) の左からprefecture番目のビット
+    const prefecture = read("nvram://receiverinfo/prefecture", "U:1B");
+    const prefectureCode = typeof prefecture === "number" && prefecture >= 1 && prefecture <= 56
+        ? toHex("0".repeat(prefecture - 1) + "1" + "0".repeat(56 - prefecture)) : "";
+    // 緊急警報信号の地域符号 (12ビット)
+    const region = read("nvram://receiverinfo/regioncode", "U:2B");
+    const regionCode = typeof region === "number" && region > 0 && region < 0x1000 ? toHex(region.toString(2).padStart(12, "0")) : "";
+    const zip = read("nvram://receiverinfo/zipcode", "S:7B");
+    const zipCode = typeof zip === "string" ? zip.replace(/[^0-9]/g, "").slice(0, 7) : "";
+    return { _prefecture: prefectureCode, _regioncode: regionCode, _zipcode: zipCode };
+}
 
 // 1分間無操作であればデータ取得中の表示を消す
 let remoteControlStatusTimeoutMillis = 60 * 1000;

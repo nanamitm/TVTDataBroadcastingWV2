@@ -183,6 +183,13 @@ export type B62FollowingEvent = {
     startTimeUnixMillis: number | null,
 };
 
+// 視聴者居住地域情報 (ARIB TR-B39 10.1.5)。未設定は空文字列
+export type B62Residence = {
+    _prefecture: string,
+    _regioncode: string,
+    _zipcode: string,
+};
+
 export class B62ApplicationFrame {
     private readonly container: HTMLElement;
     private frame: HTMLIFrameElement | null = null;
@@ -201,6 +208,7 @@ export class B62ApplicationFrame {
     private readonly onVideoChanged: () => void;
     private readonly playRomSound: (id: number) => void;
     private readonly requestFollowingEvent: () => void;
+    private readonly getResidence: () => B62Residence;
     // 次の番組の情報を待っているgetCurrentEventInformation
     private eventInformationRequests: { source: Window, id: number }[] = [];
     private eventInformationTimeout: number | null = null;
@@ -208,11 +216,13 @@ export class B62ApplicationFrame {
     // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
     // playRomSoundは受信機内蔵音 (romsound://) を鳴らす。
     // requestFollowingEventは次の番組の情報を求め、setFollowingEvent()で答えてもらう
-    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void) {
+    // getResidenceは受信機に設定された視聴者の居住地域を返す
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void, getResidence: () => B62Residence) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
         this.playRomSound = playRomSound;
         this.requestFollowingEvent = requestFollowingEvent;
+        this.getResidence = getResidence;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -534,6 +544,7 @@ export class B62ApplicationFrame {
             }
         } else if (message.type === "hello") {
             this.postCaptionComponents();
+            this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {
             this.videoRect = message.rect;
             this.videoOverlays = message.above ?? [];

@@ -17,6 +17,14 @@ constexpr wchar_t kShimScript[] = LR"JS(
         return;
     }
     const storagePrefix = "b62:";
+    // Receivers for advanced BS put "A-PAB/1.0" in the user agent, and some
+    // applications (BS TV Tokyo 4K) run as on a PC, with their own emulators
+    // in place of the receiver APIs, when it is missing.
+    try {
+        const userAgent = navigator.userAgent + " A-PAB/1.0";
+        Object.defineProperty(Navigator.prototype, "userAgent", { get: function () { return userAgent; }, configurable: true });
+    } catch (e) {
+    }
     function notifyParent(message) {
         try {
             window.top.postMessage(Object.assign({ source: "b62Application" }, message), "*");
@@ -207,6 +215,67 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("receiverDevice", receiverDevice);
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
+
+    // Viewer's residence information area (ARIB TR-B39 10.1.1, 10.1.5): the
+    // receiver answers localStorage "_prefecture", "_regioncode" and "_zipcode"
+    // with its settings, "" when not set. The plugin page sends them; the last
+    // ones are kept so they are there when the next application starts.
+    const residenceKeys = ["_prefecture", "_regioncode", "_zipcode"];
+    const storageGetItem = Storage.prototype.getItem;
+    const storageSetItem = Storage.prototype.setItem;
+    const storageRemoveItem = Storage.prototype.removeItem;
+    let residence = {};
+    try {
+        residence = JSON.parse(storageGetItem.call(localStorage, storagePrefix + "residence")) || {};
+    } catch (e) {
+    }
+    function isResidenceKey(storage, key) {
+        try {
+            return storage === window.localStorage && residenceKeys.indexOf(String(key)) >= 0;
+        } catch (e) {
+            return false;
+        }
+    }
+    Storage.prototype.getItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            const value = residence[String(key)];
+            return typeof value === "string" ? value : "";
+        }
+        return storageGetItem.apply(this, arguments);
+    };
+    // Applications cannot change the receiver's settings.
+    Storage.prototype.setItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            return;
+        }
+        return storageSetItem.apply(this, arguments);
+    };
+    Storage.prototype.removeItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            return;
+        }
+        return storageRemoveItem.apply(this, arguments);
+    };
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "residence" || !data.residence) {
+            return;
+        }
+        const next = {};
+        residenceKeys.forEach(function (key) {
+            const value = data.residence[key];
+            next[key] = typeof value === "string" ? value : "";
+        });
+        residence = next;
+        try {
+            storageSetItem.call(localStorage, storagePrefix + "residence", JSON.stringify(residence));
+        } catch (e) {
+        }
+    });
+    // ARIB STD-B62 Volume 2 3.3.10. The queries are defined by the operational
+    // rules; none of the optional functions they ask about (BS/terrestrial
+    // shared NVRAM, sourceIs, ...) is provided.
+    define("capabilities", { hasCapability: function () { return false; } });
 
     // Built-in receiver sounds: <audio src="romsound://7"> (or a <source> child)
     // cannot load, so play() asks the plugin page to play the sound instead.

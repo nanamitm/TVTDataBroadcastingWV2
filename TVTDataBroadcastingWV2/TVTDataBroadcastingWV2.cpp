@@ -46,6 +46,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_CONN (WM_APP + 8)
 #define WM_APP_B62_APPLICATION (WM_APP + 9)
 #define WM_APP_B62_CAPTION (WM_APP + 10)
+#define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -61,6 +62,8 @@ struct DeferralResponse
     std::vector<BYTE> content;
     // 空でなければAccess-Control-Allow-Originとして付ける (4Kデータ放送のアプリケーション向け)
     std::wstring allowOrigin;
+    // 4Kデータ放送のアプリケーションの通信中であることを表す。最後の参照が無くなると通信が終わったことになる
+    std::shared_ptr<void> networkingToken;
 };
 
 #define IDT_SHOW_EVR_WINDOW 1
@@ -383,6 +386,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendB62Application();
     void SendB62Captions();
     void SendB62FollowingEvent();
+    // 通信中の4Kデータ放送のアプリケーションのリクエストの数 (メッセージウィンドウのスレッドでのみ触る)
+    int b62NetworkingCount = 0;
+    void SendB62Networking();
+    std::shared_ptr<void> BeginB62Networking();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
@@ -1057,6 +1064,14 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_APP_B62_CAPTION:
     {
         pThis->SendB62Captions();
+        break;
+    }
+    case WM_APP_B62_NETWORKING_DONE:
+    {
+        if (pThis->b62NetworkingCount > 0 && --pThis->b62NetworkingCount == 0)
+        {
+            pThis->SendB62Networking();
+        }
         break;
     }
     case WM_APP_PACKET:
@@ -2094,6 +2109,36 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     }
 }
 
+// 4Kデータ放送のアプリケーションの通信が始まったことを記録する。
+// 戻り値の最後の参照が無くなったとき (応答を返したときや失敗したとき) に終わったことになる
+std::shared_ptr<void> CDataBroadcastingWV2::BeginB62Networking()
+{
+    if (this->b62NetworkingCount++ == 0)
+    {
+        this->SendB62Networking();
+    }
+    const HWND hMessageWnd = this->hMessageWnd;
+    return std::shared_ptr<void>(nullptr, [hMessageWnd](void*)
+    {
+        // 通信のスレッドから呼ばれることがある
+        if (hMessageWnd)
+        {
+            PostMessageW(hMessageWnd, WM_APP_B62_NETWORKING_DONE, 0, 0);
+        }
+    });
+}
+
+// 4Kデータ放送のアプリケーションが通信中かどうかをページに伝える (通信中...の表示)
+void CDataBroadcastingWV2::SendB62Networking()
+{
+    if (!this->webView || !this->webViewLoaded)
+    {
+        return;
+    }
+    nlohmann::json message{ { "type", "b62Networking" }, { "active", this->b62NetworkingCount > 0 } };
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+}
+
 // 4Kデータ放送のアプリケーションのgetCurrentEventInformationのために、次の番組の情報をページに渡す。
 // ページで解析しているEITは今の番組の分だけなので、TVTestが持っている情報を使う
 void CDataBroadcastingWV2::SendB62FollowingEvent()
@@ -2270,11 +2315,13 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     }
     wil::com_ptr<ICoreWebView2Deferral> deferral;
     args->GetDeferral(deferral.put());
-    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral]() -> void
+    // 4Kデータ放送のアプリケーションの通信なら通信中と表示する
+    auto networkingToken = allowOrigin ? this->BeginB62Networking() : nullptr;
+    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral, networkingToken]() -> void
     {
         // error
         deferral->Complete();
-    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, origin = std::wstring(allowOrigin ? allowOrigin : L"")](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
+    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
     {
         if (this->hMessageWnd)
         {
@@ -2287,6 +2334,7 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 std::wstring(headers),
                 std::vector<BYTE>(content, content + contentLength),
                 origin,
+                networkingToken,
             });
             if (PostMessageW(this->hMessageWnd, WM_APP_RESPONSE, 0, (LPARAM)response.get()))
             {

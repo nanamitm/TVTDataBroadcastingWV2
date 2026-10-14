@@ -36,6 +36,8 @@ export class StatusBarIndicator implements Indicator {
     eventName: string | null = "";
     loading = false;
     networkingPost = false;
+    // 4Kデータ放送のアプリケーションが通信中
+    b62Networking = false;
     private update() {
         postMessage({
             type: "status",
@@ -48,7 +50,7 @@ export class StatusBarIndicator implements Indicator {
         } else {
             this.receivingStatusElement.style.display = "none";
         }
-        if (this.networkingPost) {
+        if (this.networkingPost || this.b62Networking) {
             this.networkingStatusElement.style.display = "";
         } else {
             this.networkingStatusElement.style.display = "none";
@@ -61,6 +63,10 @@ export class StatusBarIndicator implements Indicator {
     }
     public setReceivingStatus(receiving: boolean): void {
         this.receiving = receiving;
+        this.update();
+    }
+    public setB62NetworkingStatus(networking: boolean): void {
+        this.b62Networking = networking;
         this.update();
     }
     public setB62ReceivingStatus(receiving: boolean): void {
@@ -574,9 +580,15 @@ type ToWebViewMessage = {
     version?: number,
     // アプリケーションのファイルを受信中
     loading?: boolean,
+} | {
+    // 4Kデータ放送のアプリケーションが通信中か
+    type: "b62Networking",
+    active: boolean,
 } | ({
     type: "b62FollowingEvent",
 } & B62FollowingEvent);
+
+let b62NetworkingTimeout: number | null = null;
 
 // 1分間無操作であればデータ取得中の表示を消す
 let remoteControlStatusTimeoutMillis = 60 * 1000;
@@ -727,6 +739,20 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
         remoteControl.setB62ReceivingStatus(data.loading ?? false);
+    } else if (data.type === "b62Networking") {
+        // 短い通信で表示がちらつかないよう、終わってから少しの間は出したままにする
+        if (b62NetworkingTimeout != null) {
+            window.clearTimeout(b62NetworkingTimeout);
+            b62NetworkingTimeout = null;
+        }
+        if (data.active) {
+            remoteControl.setB62NetworkingStatus(true);
+        } else {
+            b62NetworkingTimeout = window.setTimeout(() => {
+                b62NetworkingTimeout = null;
+                remoteControl.setB62NetworkingStatus(false);
+            }, 1000);
+        }
     } else if (data.type === "b62FollowingEvent") {
         b62Application.setFollowingEvent(data);
     }

@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "proxy.h"
 #include <ws2tcpip.h>
 #pragma comment(lib, "Ws2_32.lib")
@@ -73,22 +73,61 @@ bool ProxyRequest::IsPrivateAddress(LPCWSTR address)
         b[0] >= 224;                                     // マルチキャスト、予約、ブロードキャスト
 }
 
-void CALLBACK ProxyRequest::StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR dwContext, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength)
-{
-    auto self = (ProxyRequest*)dwContext;
-    if (self)
-    {
-        self->AsyncCallback(hInternet, dwInternetStatus, lpvStatusInformation, dwStatusInformationLength);
+namespace {
+// Also counts RequestAsync setup: shutdown cannot close the session while a
+// request is being opened but has not yet joined the registry.
+struct ProxyActivity {
+    std::shared_ptr<ProxySessionState> state;
+    explicit ProxyActivity(std::shared_ptr<ProxySessionState> state) : state(std::move(state)) {}
+    ~ProxyActivity() {
+        std::lock_guard lock(state->mutex);
+        --state->active;
+        state->idle.notify_all();
     }
+};
+}
+
+void CALLBACK ProxyRequest::StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR context,
+    DWORD status, LPVOID information, DWORD length)
+{
+    if (!context) return;
+    // The registry holds this object until HANDLE_CLOSING, which WinHTTP
+    // guarantees is the last notification and cannot overlap another one.
+    auto state = reinterpret_cast<ProxyRequest*>(context)->state;
+    {
+        std::lock_guard lock(state->mutex);
+        ++state->active;
+    }
+    ProxyActivity activity(state);
+    auto self = reinterpret_cast<ProxyRequest*>(context)->shared_from_this();
+    std::lock_guard lock(self->mutex);
+    if (status == WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) {
+        self->bound = false;
+        if (self->connect) WinHttpCloseHandle(std::exchange(self->connect, nullptr));
+        std::lock_guard sessionLock(self->state->mutex);
+        self->state->requests.erase(self.get());
+        return;
+    }
+    if (self->closing) return;
+    try { self->AsyncCallback(hInternet, status, information, length); }
+    catch (...) { self->Fail(); } // Never unwind through a Windows callback.
 }
 
 void ProxyRequest::Fail()
 {
-    if (errorCallback)
-    {
-        std::exchange(errorCallback, nullptr)();
-        Close();
+    if (!completed) {
+        completed = true;
+        callback = nullptr;
+        auto error = std::exchange(errorCallback, nullptr);
+        try { if (error) error(); } catch (...) {}
     }
+    Close();
+}
+
+void ProxyRequest::Cancel()
+{
+    std::lock_guard lock(mutex);
+    Fail();
 }
 
 void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength)
@@ -100,9 +139,6 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
         // 名前解決やリダイレクトの後に実際につながった先を調べる
         if (blockPrivateAddresses && IsPrivateAddress(static_cast<LPCWSTR>(lpvStatusInformation)))
         {
-            // 閉じた後の通知がこのオブジェクトに届かないようにしてから失敗させる
-            DWORD_PTR context = 0;
-            WinHttpSetOption(hInternet, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context));
             Fail();
             return;
         }
@@ -160,7 +196,10 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
                 }
             }
             // ステータス行やヘッダが取得できないことがある (HTTP/2など)
-            callback(statusCode, statusText ? statusText.get() : L"", headers ? headers.get() : L"", data.size(), data.data());
+            auto success = std::exchange(callback, nullptr);
+            if (success) success(statusCode, statusText ? statusText.get() : L"", headers ? headers.get() : L"", data.size(), data.data());
+            completed = true;
+            errorCallback = nullptr;
             Close();
             break;
         }
@@ -193,7 +232,15 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
 
 void ProxyRequest::Close()
 {
-    delete this;
+    if (closing) return;
+    closing = true;
+    if (request) WinHttpCloseHandle(std::exchange(request, nullptr));
+    if (!bound && state) {
+        if (connect) WinHttpCloseHandle(std::exchange(connect, nullptr));
+        std::lock_guard lock(state->mutex);
+        state->requests.erase(this);
+        state->idle.notify_all();
+    }
 }
 
 bool ProxyRequest::RequestAsync
@@ -208,6 +255,13 @@ bool ProxyRequest::RequestAsync
     bool blockPrivateAddresses
 )
 {
+    auto sharedState = session.state;
+    {
+        std::lock_guard lock(sharedState->mutex);
+        if (sharedState->stopping) return false;
+        ++sharedState->active;
+    }
+    ProxyActivity activity(sharedState);
     URL_COMPONENTSW components = { sizeof(URL_COMPONENTSW) };
     components.dwHostNameLength = 1;
     components.dwUrlPathLength = 1;
@@ -217,7 +271,7 @@ bool ProxyRequest::RequestAsync
     }
     std::wstring hostName(components.lpszHostName, components.lpszHostName + components.dwHostNameLength);
     std::wstring urlPath(components.lpszUrlPath, components.lpszUrlPath + components.dwUrlPathLength);
-    auto connect = WinHttpConnect(session.GetSession(), hostName.c_str(), components.nPort, 0);
+    auto connect = WinHttpConnect(session.GetSession(blockPrivateAddresses), hostName.c_str(), components.nPort, 0);
     if (!connect)
     {
         return false;
@@ -236,11 +290,7 @@ bool ProxyRequest::RequestAsync
         DWORD securityFlags = SECURITY_FLAG_IGNORE_ALL_CERT_ERRORS;
         WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
-    std::unique_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload), blockPrivateAddresses));
-    if (WinHttpSetStatusCallback(request, StaticAsyncCallback, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
-    {
-        return false;
-    }
+    std::shared_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload), blockPrivateAddresses));
     for (auto&& header : headers)
     {
         auto headers = std::wstring(header.first) + L": " + header.second;
@@ -266,37 +316,82 @@ bool ProxyRequest::RequestAsync
     {
         swprintf_s(additionalHeader, L"Content-Length: %zu", payloadSize);
     }
-    if (!WinHttpSendRequest(request, payloadSize == 0 ? WINHTTP_NO_ADDITIONAL_HEADERS : additionalHeader, -1, preq->payload.data(), static_cast<DWORD>(payloadSize), WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, (DWORD_PTR)preq.get()))
+    preq->state = sharedState;
+    std::lock_guard requestLock(preq->mutex);
     {
+        std::lock_guard lock(sharedState->mutex);
+        if (sharedState->stopping) return false;
+        sharedState->requests.emplace(preq.get(), preq);
+    }
+    if (WinHttpSetStatusCallback(request, StaticAsyncCallback,
+        WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER | WINHTTP_CALLBACK_FLAG_HANDLES,
+        0) == WINHTTP_INVALID_STATUS_CALLBACK) {
+        preq->Close();
         return false;
     }
-    // AsyncCallback中でdelete thisされる
-    preq.release();
+    DWORD_PTR context = reinterpret_cast<DWORD_PTR>(preq.get());
+    if (!WinHttpSetOption(request, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) {
+        preq->Close();
+        return false;
+    }
+    preq->bound = true;
+    if (blockPrivateAddresses) {
+        DWORD features = WINHTTP_DISABLE_KEEP_ALIVE;
+        if (!WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &features, sizeof(features))) {
+            preq->Close();
+            return false;
+        }
+    }
+    if (!WinHttpSendRequest(request, payloadSize == 0 ? WINHTTP_NO_ADDITIONAL_HEADERS : additionalHeader,
+        -1, preq->payload.data(), static_cast<DWORD>(payloadSize), WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, context)) {
+        const bool reported = preq->completed;
+        preq->Close();
+        return reported;
+    }
     return true;
 }
 
 ProxyRequest::~ProxyRequest()
 {
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
+    // An unbound startup failure has no context callbacks. Bound requests have
+    // already closed both handles in their final notification.
+    if (request) WinHttpCloseHandle(request);
+    if (connect) WinHttpCloseHandle(connect);
 }
 
-ProxySession::ProxySession(bool ignoreCertificateErrors) : ignoreCertificateErrors(ignoreCertificateErrors)
+ProxySession::ProxySession(bool ignoreCertificateErrors)
+    : state(std::make_shared<ProxySessionState>()), ignoreCertificateErrors(ignoreCertificateErrors)
 {
-    this->session = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+    state->session = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+    // Never share a pooled BML connection with address-restricted B62 traffic.
+    state->protectedSession = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
 }
 
-bool ProxySession::IgnoreCertificateErrors() const
+bool ProxySession::IgnoreCertificateErrors() const { return ignoreCertificateErrors; }
+HINTERNET ProxySession::GetSession(bool protectedRequest)
 {
-    return this->ignoreCertificateErrors;
+    return protectedRequest ? state->protectedSession : state->session;
 }
 
-ProxySession::~ProxySession()
+void ProxySession::Shutdown()
 {
-    WinHttpCloseHandle(this->session);
+    std::vector<std::shared_ptr<ProxyRequest>> pending;
+    {
+        std::lock_guard lock(state->mutex);
+        state->stopping = true;
+        for (const auto& [_, request] : state->requests) pending.push_back(request);
+    }
+    for (const auto& request : pending) request->Cancel();
+    pending.clear();
+    std::unique_lock lock(state->mutex);
+    state->idle.wait(lock, [&] { return state->requests.empty() && state->active == 0; });
+    auto session = std::exchange(state->session, nullptr);
+    auto protectedSession = std::exchange(state->protectedSession, nullptr);
+    lock.unlock();
+    if (session) WinHttpCloseHandle(session);
+    if (protectedSession) WinHttpCloseHandle(protectedSession);
 }
 
-HINTERNET ProxySession::GetSession()
-{
-    return this->session;
-}
+ProxySession::~ProxySession() { Shutdown(); }

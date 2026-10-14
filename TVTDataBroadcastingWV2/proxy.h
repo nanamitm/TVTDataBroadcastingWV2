@@ -1,61 +1,68 @@
-﻿#pragma once
+#pragma once
 #include <winhttp.h>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
-class ProxySession
-{
-    HINTERNET session;
+class ProxyRequest;
+struct ProxySessionState {
+    std::mutex mutex;
+    std::condition_variable idle;
+    std::unordered_map<ProxyRequest*, std::shared_ptr<ProxyRequest>> requests;
+    size_t active = 0;
+    bool stopping = false;
+    HINTERNET session = nullptr;
+    HINTERNET protectedSession = nullptr;
+};
+
+class ProxySession {
+    friend class ProxyRequest;
+    std::shared_ptr<ProxySessionState> state;
     bool ignoreCertificateErrors;
 public:
-    HINTERNET GetSession();
-    // trueならサーバ証明書の検証エラーを無視する (INIのIgnoreCertificateErrors)
+    HINTERNET GetSession(bool protectedRequest = false);
     bool IgnoreCertificateErrors() const;
     explicit ProxySession(bool ignoreCertificateErrors = false);
     ~ProxySession();
+    void Shutdown();
     ProxySession(const ProxySession&) = delete;
     ProxySession& operator=(const ProxySession&) = delete;
 };
 
-class ProxyRequest
-{
+class ProxyRequest : public std::enable_shared_from_this<ProxyRequest> {
+    friend class ProxySession;
+    std::shared_ptr<ProxySessionState> state;
+    std::recursive_mutex mutex;
     HINTERNET connect = nullptr;
     HINTERNET request = nullptr;
-    // ストリーミングさせるのは面倒かつ必要がないので一旦全て読み込んでから返す
+    bool bound = false;
+    bool closing = false;
+    bool completed = false;
     std::vector<BYTE> data;
     std::function<void()> errorCallback;
-    std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback;
+    std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> callback;
     std::vector<BYTE> payload;
-    // trueなら接続先がローカル・プライベートなアドレスのとき中止する
     bool blockPrivateAddresses = false;
-    ProxyRequest
-    (
-        HINTERNET connect,
-        HINTERNET request,
+    ProxyRequest(HINTERNET connect, HINTERNET request,
         std::function<void()> errorCallback,
-        std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
-        std::vector<BYTE> payload,
-        bool blockPrivateAddresses
-    );
-    static void CALLBACK StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR dwContext, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength);
+        std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> callback,
+        std::vector<BYTE> payload, bool blockPrivateAddresses);
+    static void CALLBACK StaticAsyncCallback(HINTERNET, DWORD_PTR, DWORD, LPVOID, DWORD);
     void Fail();
-    void AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength);
+    void AsyncCallback(HINTERNET, DWORD, LPVOID, DWORD);
     void Close();
+    void Cancel();
 public:
-    // 非同期HTTPリクエストを行う
-    // 完了すると別スレッドでcallbackが呼ばれる。
-    // blockPrivateAddressesがtrueなら、実際に接続した先 (名前解決やリダイレクトの後) が
-    // ループバックやプライベートなどのアドレスのときは失敗させる
-    static bool RequestAsync
-    (
-        ProxySession& session,
-        LPCWSTR url,
-        LPCWSTR verb,
-        std::vector<BYTE> payload,
-        std::vector<std::pair<LPCWSTR, LPCWSTR>>& headers,
+    // Completion runs on a WinHTTP callback thread. Shutdown waits for every
+    // request's final HANDLE_CLOSING notification and all callback bodies.
+    static bool RequestAsync(ProxySession& session, LPCWSTR url, LPCWSTR verb,
+        std::vector<BYTE> payload, std::vector<std::pair<LPCWSTR, LPCWSTR>>& headers,
         std::function<void()> errorCallback,
-        std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
-        bool blockPrivateAddresses = false
-    );
-    // インターネット上ではないアドレス (ループバック、プライベート、リンクローカルなど) か
+        std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> callback,
+        bool blockPrivateAddresses = false);
     static bool IsPrivateAddress(LPCWSTR address);
     ~ProxyRequest();
     ProxyRequest(const ProxyRequest&) = delete;

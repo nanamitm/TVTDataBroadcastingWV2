@@ -1140,6 +1140,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_APP_RESPONSE:
     {
         auto response = std::unique_ptr<DeferralResponse>((DeferralResponse*)lParam);
+        if (!pThis->webView) { response->deferral->Complete(); break; }
         wil::com_ptr<ICoreWebView2Environment> env;
         auto hr = pThis->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
         if (FAILED(hr))
@@ -1171,6 +1172,9 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
             response->deferral->Complete();
             break;
         }
+        ULARGE_INTEGER streamSize{};
+        streamSize.QuadPart = response->content.size();
+        if (FAILED(stm->SetSize(streamSize))) { response->deferral->Complete(); break; }
         std::wistringstream iss(response->headers);
         std::wostringstream replacedHeader;
         std::wstring header;
@@ -2408,11 +2412,9 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     args->GetDeferral(deferral.put());
     // 4Kデータ放送のアプリケーションの通信なら通信中と表示する
     auto networkingToken = allowOrigin ? this->BeginB62Networking() : nullptr;
-    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral, networkingToken]() -> void
-    {
-        // error
-        deferral->Complete();
-    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
+    auto postResponse = [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral,
+        origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken]
+        (DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
     {
         if (this->hMessageWnd)
         {
@@ -2423,7 +2425,7 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 statusCode,
                 std::wstring(statusCodeText),
                 std::wstring(headers),
-                std::vector<BYTE>(content, content + contentLength),
+                contentLength ? std::vector<BYTE>(content, content + contentLength) : std::vector<BYTE>{},
                 origin,
                 networkingToken,
             });
@@ -2441,8 +2443,10 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
             deferral->Complete();
         }
         return;
-    // 4Kデータ放送のアプリケーションの通信は、家庭内などインターネット上でない宛先には送らない
-    }, allowOrigin != nullptr))
+    };
+    // Both success and failure are completed on the WebView UI thread.
+    if (!ProxyRequest::RequestAsync(*this->proxySession, proxyUrl, method.get(), std::move(contentBuffer), headersPtr,
+        [postResponse] { postResponse(502, L"Bad Gateway", L"", 0, nullptr); }, postResponse, allowOrigin != nullptr))
     {
         deferral->Complete();
     }
@@ -2490,6 +2494,15 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
+    this->proxySession.reset();
+    if (this->hMessageWnd) {
+        MSG message;
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_RESPONSE, WM_APP_RESPONSE, PM_REMOVE)) {
+            std::unique_ptr<DeferralResponse> response(reinterpret_cast<DeferralResponse*>(message.lParam));
+            response->deferral->Complete();
+        }
+    }
     this->m_jkcnslReader.Stop();
     // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
     this->m_manualJkVideo.clear();

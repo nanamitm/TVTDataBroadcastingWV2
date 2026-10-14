@@ -34,6 +34,8 @@ type FrameMessage = {
     source: "b62Application",
     type: "videoRect",
     rect: VideoRect | null,
+    // 映像より手前に重なっている要素 (映像の範囲内に切り詰めたもの)
+    above?: VideoRect[],
 } | {
     source: "b62Application",
     type: "hello",
@@ -96,6 +98,31 @@ function firstBeginMillis(ttml: string): number {
     return first ?? 0;
 }
 
+// 重なり合う矩形を、同じ範囲を覆う重ならない矩形に分ける (座標圧縮して行ごとにまとめる)
+function disjointRects(rects: VideoRect[]): { left: number, top: number, right: number, bottom: number }[] {
+    const boxes = rects.map(r => ({ left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height }))
+        .filter(b => b.right > b.left && b.bottom > b.top);
+    if (boxes.length === 0) {
+        return [];
+    }
+    const xs = [...new Set(boxes.flatMap(b => [b.left, b.right]))].sort((a, b) => a - b);
+    const ys = [...new Set(boxes.flatMap(b => [b.top, b.bottom]))].sort((a, b) => a - b);
+    const result: { left: number, top: number, right: number, bottom: number }[] = [];
+    for (let j = 0; j + 1 < ys.length; j++) {
+        let start: number | null = null;
+        for (let i = 0; i < xs.length; i++) {
+            const covered = i + 1 < xs.length && boxes.some(b => b.left <= xs[i] && xs[i + 1] <= b.right && b.top <= ys[j] && ys[j + 1] <= b.bottom);
+            if (covered && start == null) {
+                start = xs[i];
+            } else if (!covered && start != null) {
+                result.push({ left: start, top: ys[j], right: xs[i], bottom: ys[j + 1] });
+                start = null;
+            }
+        }
+    }
+    return result;
+}
+
 function toBinary4(value: number): string {
     return (value & 0xf).toString(2).padStart(4, "0");
 }
@@ -122,6 +149,7 @@ export class B62ApplicationFrame {
     private destroyedKey: string | null = null;
     private programInfo: B62ProgramInfo | null = null;
     private videoRect: VideoRect | null = null;
+    private videoOverlays: VideoRect[] = [];
     private captionComponents: number[] = [];
     private currentTimeMillis: number | null = null;
     private captionQueue: { due: number, caption: B62Caption }[] = [];
@@ -283,8 +311,13 @@ export class B62ApplicationFrame {
         }
         const left = Math.max(0, r.left), top = Math.max(0, r.top);
         const right = Math.min(appWidth, r.left + r.width), bottom = Math.min(appHeight, r.top + r.height);
-        this.frame.style.clipPath = `polygon(evenodd, 0 0, ${appWidth}px 0, ${appWidth}px ${appHeight}px, 0 ${appHeight}px, 0 0, ` +
-            `${left}px ${top}px, ${right}px ${top}px, ${right}px ${bottom}px, ${left}px ${bottom}px, ${left}px ${top}px)`;
+        // evenodd: 全体、映像の穴、穴の中で手前に重なる要素 (重ならないように分割したもの) の順に重ねる。
+        // 各矩形は原点から行って戻るので、つなぎの線は面積を持たない
+        const rects = [{ left: 0, top: 0, right: appWidth, bottom: appHeight }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
+        const points = rects.flatMap(q => [
+            `${q.left}px ${q.top}px`, `${q.right}px ${q.top}px`, `${q.right}px ${q.bottom}px`, `${q.left}px ${q.bottom}px`, `${q.left}px ${q.top}px`, "0 0",
+        ]);
+        this.frame.style.clipPath = `polygon(evenodd, ${points.join(", ")})`;
     }
 
     private close() {
@@ -324,6 +357,7 @@ export class B62ApplicationFrame {
             this.postCaptionComponents();
         } else if (message.type === "videoRect") {
             this.videoRect = message.rect;
+            this.videoOverlays = message.above ?? [];
             this.updateVideoHole();
             this.onVideoChanged();
         } else if (message.type === "destroy") {

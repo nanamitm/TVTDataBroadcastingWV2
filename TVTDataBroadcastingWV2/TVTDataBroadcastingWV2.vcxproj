@@ -279,6 +279,7 @@
     <ClInclude Include="proxy.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="StartupPolicy.h" />
+    <ClInclude Include="AsyncLifetime.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />

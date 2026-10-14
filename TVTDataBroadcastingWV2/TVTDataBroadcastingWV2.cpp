@@ -4,6 +4,7 @@
 #include "thirdparty/TVTestPlugin.h"
 #include "resource.h"
 #include "StartupPolicy.h"
+#include "AsyncLifetime.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -447,6 +448,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // iniのEnableNetworkが1であればProxySessionが初期化されenableNetworkもtrueになる
     // ただしenableNetworkの方は実行時にボタンで切り替えられる
     std::unique_ptr<ProxySession> proxySession;
+    AsyncLifetime webViewLifetime;
     bool enableNetwork = true;
     std::unique_ptr<InputDialog> inputDialog;
     Audio mainAudio;
@@ -1483,7 +1485,8 @@ void CDataBroadcastingWV2::InitWebView2()
     );
     auto result = CreateCoreWebView2EnvironmentWithOptions(webView2Directory, this->webView2DataDirectory.c_str(), options.Get(),
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [this, resourceDirectory](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            [this, resourceDirectory, ticket = this->webViewLifetime.GetTicket()](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+        if (!AsyncLifetime::IsCurrent(ticket)) return S_OK;
         if (!env)
         {
             wchar_t buf[9]{};
@@ -1505,7 +1508,11 @@ void CDataBroadcastingWV2::InitWebView2()
             this->m_pApp->AddLog((std::wstring(L"WebView2 version: ") + ver.get()).c_str(), TVTest::LOG_TYPE_INFORMATION);
         }
         env->CreateCoreWebView2Controller(this->hMessageWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [env, this, resourceDirectory](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+            [env, this, resourceDirectory, ticket](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+            if (!AsyncLifetime::IsCurrent(ticket)) {
+                if (controller) controller->Close();
+                return S_OK;
+            }
             if (FAILED(result))
             {
                 wchar_t buf[9]{};
@@ -2500,6 +2507,7 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->webViewLifetime.Cancel();
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
     if (this->hMessageWnd) {
@@ -2624,6 +2632,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     this->status = {};
     if (fEnable)
     {
+        this->webViewLifetime.Begin();
         this->CreateMessageWindow();
         if (!this->GetIniItem(L"DisableRemoteControl", 0))
         {
@@ -4574,8 +4583,15 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
 {
     this->webViewEnv->CreateCoreWebView2Controller(hwnd,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [this, hwnd](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
-                if (FAILED(hr) || !IsWindow(hwnd)) return S_OK;
+            [this, hwnd, ticket = this->webViewLifetime.GetTicket()](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
+                if (!AsyncLifetime::IsCurrent(ticket)) {
+                    if (ctrl) ctrl->Close();
+                    return S_OK;
+                }
+                if (FAILED(hr) || !ctrl || !IsWindow(hwnd) || this->hMomentumPanel != hwnd) {
+                    if (ctrl) ctrl->Close();
+                    return S_OK;
+                }
 
                 this->momentumWebViewController = ctrl;
                 ctrl->get_CoreWebView2(this->momentumWebView.put());

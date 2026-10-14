@@ -727,13 +727,17 @@ std::optional<std::vector<uint8_t>> AppReceiver::AssembleSections(const uint8_t*
 
 void AppReceiver::OnCaption(const std::vector<uint8_t>& body)
 {
-    // component_tag, data_type, tmd, pts_flag, pts (40 bits), data_size
-    if (body.size() < 14)
+    // component_tag, data_type, tmd, pts_flag, pts (40 bits), data_size,
+    // then a length-prefixed extension: language, resolution, reference start
+    // time and the MFU header numbers.
+    if (body.size() < 15)
     {
         return;
     }
     const uint32_t dataSize = (body[10] << 24) | (body[11] << 16) | (body[12] << 8) | body[13];
-    if (dataSize != body.size() - 14)
+    const size_t extensionSize = body[14];
+    const size_t headerSize = 15 + extensionSize;
+    if (body.size() < headerSize || dataSize != body.size() - headerSize)
     {
         return;
     }
@@ -745,7 +749,18 @@ void AppReceiver::OnCaption(const std::vector<uint8_t>& body)
     {
         caption.pts = ((static_cast<uint64_t>(body[5]) << 32) | (body[6] << 24) | (body[7] << 16) | (body[8] << 8) | body[9]) & 0x1FFFFFFFFULL;
     }
-    caption.data.assign(body.begin() + 14, body.end());
+    if (extensionSize >= 15)
+    {
+        const uint8_t* extension = body.data() + 15;
+        caption.languageCode.assign(reinterpret_cast<const char*>(extension), 3);
+        caption.resolution = extension[3];
+        caption.referenceStartTimeSeconds = (extension[4] << 24) | (extension[5] << 16) | (extension[6] << 8) | extension[7];
+        caption.referenceStartTimeFraction = (extension[8] << 24) | (extension[9] << 16) | (extension[10] << 8) | extension[11];
+        caption.subtitleSequenceNumber = extension[12];
+        caption.subsampleNumber = extension[13];
+        caption.lastSubsampleNumber = extension[14];
+    }
+    caption.data.assign(body.begin() + headerSize, body.end());
     if (this->captions.size() >= kMaxQueuedCaptions)
     {
         this->captions.erase(this->captions.begin());

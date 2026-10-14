@@ -80,6 +80,8 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
+// 4Kデータ放送 (ARIB STD-B62) のアプリケーション
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized());
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -281,7 +283,8 @@ bmlBrowser.addEventListener("invisible", (evt) => {
     }
     postMessage({
         type: "invisible",
-        invisible: evt.detail || isFullScreenVideo(),
+        // 4Kデータ放送のアプリケーションが映像の位置を決めている間はそちらを優先する
+        invisible: b62Application.videoRectInViewport() != null ? false : evt.detail || isFullScreenVideo(),
     });
 });
 
@@ -700,7 +703,6 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     }
 }
 
-const b62Application = new B62ApplicationFrame(browserElement);
 
 let channelsClient: ChannelsClient | null = null;
 
@@ -730,14 +732,16 @@ function onResized() {
     document.body.style.transform = `translate(${Math.ceil((contentWidth * s + windowWidth) / 2 - contentWidth * s)}px, ${Math.ceil((contentHeight * s + windowHeight) / 2 - contentHeight * s)}px) scale(${s})`;
     document.body.style.transformOrigin = `0px 0px`;
     b62Application.resize();
-    const { left, top, right, bottom } = videoContainer.getBoundingClientRect();
+    // 4Kデータ放送のアプリケーションが映像を置いていればその位置に映像を出す
+    const b62VideoRect = b62Application.videoRectInViewport();
+    const { left, top, right, bottom } = b62VideoRect ?? videoContainer.getBoundingClientRect();
     postMessage({
         type: "videoChanged",
         left: left * window.devicePixelRatio,
         top: top * window.devicePixelRatio,
         right: right * window.devicePixelRatio,
         bottom: bottom * window.devicePixelRatio,
-        invisible: (bmlBrowser.content.invisible ?? true) || isFullScreenVideo(),
+        invisible: b62VideoRect != null ? false : (bmlBrowser.content.invisible ?? true) || isFullScreenVideo(),
     });
 }
 

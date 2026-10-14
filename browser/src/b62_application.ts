@@ -30,7 +30,14 @@ type FrameMessage = {
     source: "b62Application",
     type: "getEventInformation",
     id: number,
+} | {
+    source: "b62Application",
+    type: "videoRect",
+    rect: VideoRect | null,
 };
+
+// アプリケーションの文書 (3840x2160) 上の映像オブジェクトの位置
+type VideoRect = { left: number, top: number, width: number, height: number };
 
 // web-bmlのprogramInfoのうち使うもの
 export type B62ProgramInfo = {
@@ -50,9 +57,13 @@ export class B62ApplicationFrame {
     // destroyApplication()で終了したアプリケーション。AITが変わるまで起動し直さない
     private destroyedKey: string | null = null;
     private programInfo: B62ProgramInfo | null = null;
+    private videoRect: VideoRect | null = null;
+    private readonly onVideoChanged: () => void;
 
-    constructor(container: HTMLElement) {
+    // onVideoChangedは映像を出す位置が変わったときに呼ばれる
+    constructor(container: HTMLElement, onVideoChanged: () => void) {
         this.container = container;
+        this.onVideoChanged = onVideoChanged;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -115,10 +126,46 @@ export class B62ApplicationFrame {
         this.frame.style.transform = `scale(${width / appWidth}, ${height / appHeight})`;
     }
 
+    // 映像を出す位置 (このページのビューポート座標)。アプリケーションが映像を置いていなければnull
+    videoRectInViewport(): DOMRect | null {
+        if (this.frame == null || this.videoRect == null || this.frame.style.visibility === "hidden") {
+            return null;
+        }
+        const frameRect = this.frame.getBoundingClientRect();
+        const scaleX = frameRect.width / appWidth;
+        const scaleY = frameRect.height / appHeight;
+        return new DOMRect(
+            frameRect.left + this.videoRect.left * scaleX,
+            frameRect.top + this.videoRect.top * scaleY,
+            this.videoRect.width * scaleX,
+            this.videoRect.height * scaleY);
+    }
+
+    // 映像オブジェクトの部分をくり抜き、下にある映像ウィンドウを見せる
+    private updateVideoHole() {
+        if (this.frame == null) {
+            return;
+        }
+        const r = this.videoRect;
+        if (r == null) {
+            this.frame.style.clipPath = "";
+            return;
+        }
+        const left = Math.max(0, r.left), top = Math.max(0, r.top);
+        const right = Math.min(appWidth, r.left + r.width), bottom = Math.min(appHeight, r.top + r.height);
+        this.frame.style.clipPath = `polygon(evenodd, 0 0, ${appWidth}px 0, ${appWidth}px ${appHeight}px, 0 ${appHeight}px, 0 0, ` +
+            `${left}px ${top}px, ${right}px ${top}px, ${right}px ${bottom}px, ${left}px ${bottom}px, ${left}px ${top}px)`;
+    }
+
     private close() {
+        const hadVideo = this.videoRect != null;
         this.frame?.remove();
         this.frame = null;
         this.currentKey = null;
+        this.videoRect = null;
+        if (hadVideo) {
+            this.onVideoChanged();
+        }
     }
 
     private onFrameMessage(ev: MessageEvent) {
@@ -142,13 +189,19 @@ export class B62ApplicationFrame {
                 duration: info?.durationSeconds ?? null,
             };
             (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+        } else if (message.type === "videoRect") {
+            this.videoRect = message.rect;
+            this.updateVideoHole();
+            this.onVideoChanged();
         } else if (message.type === "destroy") {
             this.destroyedKey = this.currentKey;
             this.close();
         } else if (message.type === "hide") {
             this.frame.style.visibility = "hidden";
+            this.onVideoChanged();
         } else if (message.type === "show") {
             this.frame.style.visibility = "visible";
+            this.onVideoChanged();
         }
     }
 }

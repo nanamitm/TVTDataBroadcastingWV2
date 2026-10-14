@@ -169,6 +169,28 @@ constexpr wchar_t kShimScript[] = LR"JS(
     const sheet = new CSSStyleSheet();
     sheet.replaceSync('object[type="video/x-arib2-broadcast" i], object[type="audio/x-arib2-broadcast" i] { visibility: hidden !important; }');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+
+    // Tell the plugin page where the video object is (in this document's
+    // 3840x2160 coordinates), so it can cut a hole there and move the video
+    // window under it. Only the application's own document reports.
+    if (window.parent === window.top) {
+        let lastVideoRect = "";
+        setInterval(function () {
+            let rect = null;
+            const video = document.querySelector('object[type="video/x-arib2-broadcast" i]');
+            if (video && video.getClientRects().length > 0) {
+                const r = video.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    rect = { left: r.left, top: r.top, width: r.width, height: r.height };
+                }
+            }
+            const key = JSON.stringify(rect);
+            if (key !== lastVideoRect) {
+                lastVideoRect = key;
+                notifyParent({ type: "videoRect", rect: rect });
+            }
+        }, 100);
+    }
 })();
 )JS";
 

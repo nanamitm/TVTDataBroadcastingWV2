@@ -1576,6 +1576,21 @@ void CDataBroadcastingWV2::InitWebView2()
                 else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
                 {
                     const auto path = uri.get() + wcslen(B62::kAppOrigin) + 1;
+                    // アプリケーションのhttpへの通信 (Mixed Contentにならないよう、B62Shim.hが書き換えたもの)
+                    if (!_wcsnicmp(path, L"__http/", 7))
+                    {
+                        const std::wstring rest = path + 7;
+                        const auto hostEnd = rest.find(L'/');
+                        const auto host = rest.substr(0, hostEnd);
+                        // 認証情報やポート以外の区切りを含むホストは受け付けない
+                        if (!this->proxySession || !this->enableNetwork || host.empty() ||
+                            host.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:[]") != std::wstring::npos)
+                        {
+                            return S_OK;
+                        }
+                        const auto url = L"http://" + rest;
+                        return this->Proxy(args, url.c_str(), B62::kAppOrigin);
+                    }
                     // 通信で配信されるアプリケーションのファイルは、配信元のサーバーから代わりに取得する
                     auto app = this->b62Receiver.GetApplication();
                     if (app && !app->networkOrigin.empty())

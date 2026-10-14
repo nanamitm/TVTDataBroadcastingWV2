@@ -57,6 +57,29 @@ export type B62Caption = {
     data: string,
 };
 
+// ネイティブから届くイベントメッセージ (TVTDataBroadcastingWV2.cppのSendB62Captions)
+export type B62EventMessage = {
+    emtTag: number,
+    messageGroupId: number,
+    // 0: すぐ、1/5: UTC、2: NPT、3: 番組開始からの相対時刻 (ARIB STD-B60 表11-4)
+    timeMode: number,
+    // event_msg_UTC / NPT / relativeTimeのNTP形式 (秒と小数部)
+    timeSeconds: number,
+    timeFraction: number,
+    messageType: number,
+    messageId: number,
+    privateData: string,
+};
+
+// NTPの秒は1900年起点。最上位ビットが0なら2036年からの周回 (ARIB STD-B60 11.2.2.2)
+function ntpToUnixMillis(seconds: number, fraction: number): number {
+    const era = seconds < 0x80000000 ? 2 ** 32 : 0;
+    return (seconds + era - 2208988800) * 1000 + fraction / 2 ** 32 * 1000;
+}
+
+// これより先のイベントメッセージは時刻がおかしいとみなしてすぐに発火する
+const maxEventLeadMillis = 24 * 60 * 60 * 1000;
+
 // PTSとPCRは33ビットで一周する (ミリ秒)
 const clockPeriodMillis = 2 ** 33 / 90;
 // これより先の字幕は時刻がおかしいとみなしてすぐに渡す
@@ -157,6 +180,9 @@ export class B62ApplicationFrame {
     private captionComponents: number[] = [];
     private currentTimeMillis: number | null = null;
     private captionQueue: { due: number, caption: B62Caption }[] = [];
+    // 放送の時刻 (TOT) と、それを受け取ったときのPCR
+    private broadcastTime: { unixMillis: number, pcrMillis: number | null } | null = null;
+    private eventQueue: { due: number, message: B62EventMessage }[] = [];
     private readonly onVideoChanged: () => void;
     private readonly playRomSound: (id: number) => void;
 
@@ -247,6 +273,83 @@ export class B62ApplicationFrame {
     updateTime(pcrMillis: number) {
         this.currentTimeMillis = pcrMillis;
         this.flushCaptions();
+        this.flushEventMessages();
+    }
+
+    // TOTの時刻
+    setBroadcastTime(unixMillis: number) {
+        this.broadcastTime = { unixMillis, pcrMillis: this.currentTimeMillis };
+        this.flushEventMessages();
+    }
+
+    // 今の放送の時刻 (TOTにその後進んだPCRを足したもの)
+    private broadcastNow(): number | null {
+        const base = this.broadcastTime;
+        if (base == null) {
+            return null;
+        }
+        if (base.pcrMillis == null || this.currentTimeMillis == null) {
+            return base.unixMillis;
+        }
+        return base.unixMillis + wrapMillis(this.currentTimeMillis - base.pcrMillis);
+    }
+
+    // イベントメッセージを発火時刻まで待たせてからアプリケーションに渡す
+    pushEventMessage(message: B62EventMessage) {
+        if (this.frame == null) {
+            return;
+        }
+        let due: number | null = null;
+        if (message.timeMode === 1 || message.timeMode === 5) {
+            due = ntpToUnixMillis(message.timeSeconds, message.timeFraction);
+        } else if (message.timeMode === 3) {
+            const start = this.programInfo?.startTimeUnixMillis;
+            if (start != null) {
+                due = start + (message.timeSeconds + message.timeFraction / 2 ** 32) * 1000;
+            }
+        } else if (message.timeMode !== 0) {
+            // NPTはUTC-NPT参照記述子が必要なので未対応
+            console.warn("[TVTDataBroadcastingWV2] unsupported event message time_mode", message.timeMode);
+            return;
+        }
+        if (due == null || this.broadcastNow() == null) {
+            this.deliverEventMessage(message);
+            return;
+        }
+        this.eventQueue.push({ due, message });
+        this.flushEventMessages();
+    }
+
+    private flushEventMessages() {
+        const now = this.broadcastNow();
+        if (now == null || this.eventQueue.length === 0) {
+            return;
+        }
+        const ready = this.eventQueue.filter(entry => entry.due <= now || entry.due - now > maxEventLeadMillis);
+        if (ready.length === 0) {
+            return;
+        }
+        this.eventQueue = this.eventQueue.filter(entry => !ready.includes(entry));
+        ready.sort((a, b) => a.due - b.due);
+        for (const entry of ready) {
+            this.deliverEventMessage(entry.message);
+        }
+    }
+
+    // ARIB STD-B62のGeneralEventMessageの形にする。message_idはevent_msg_idの上位8ビット、
+    // message_versionは下位8ビット
+    private deliverEventMessage(message: B62EventMessage) {
+        this.frame?.contentWindow?.postMessage({
+            source: "b62Host",
+            type: "eventMessage",
+            message: {
+                source: { event_message_tag: message.emtTag },
+                message_group_id: message.messageGroupId,
+                message_id: message.messageId >> 8,
+                message_version: message.messageId & 0xff,
+                private_data_byte: message.privateData,
+            },
+        }, appOrigin);
     }
 
     private flushCaptions() {
@@ -329,6 +432,7 @@ export class B62ApplicationFrame {
 
     private close() {
         this.captionQueue = [];
+        this.eventQueue = [];
         const hadVideo = this.videoRect != null;
         this.frame?.remove();
         this.frame = null;

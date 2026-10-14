@@ -2327,7 +2327,7 @@ void CDataBroadcastingWV2::CreateMessageWindow()
             PostMessageW(this->hMessageWnd, WM_APP_B62_APPLICATION, 0, 0);
         }
     });
-    this->b62Receiver.SetCaptionCallback([this]() {
+    this->b62Receiver.SetMessageCallback([this]() {
         // TSスレッドから呼ばれる
         if (this->hMessageWnd)
         {
@@ -4734,7 +4734,29 @@ void CDataBroadcastingWV2::SendB62Application()
 void CDataBroadcastingWV2::SendB62Captions()
 {
     auto captions = this->b62Receiver.TakeCaptions();
-    if (!this->webView || !this->webViewLoaded || !this->b62Supported || captions.empty())
+    auto eventMessages = this->b62Receiver.TakeEventMessages();
+    if (!this->webView || !this->webViewLoaded || !this->b62Supported)
+    {
+        return;
+    }
+    // イベントメッセージ (addGeneralEventMessageListener)。発火時刻はページが決める
+    for (const auto& message : eventMessages)
+    {
+        nlohmann::json json{
+            { "type", "b62EventMessage" },
+            { "emtTag", message.emtTag },
+            { "messageGroupId", message.messageGroupId },
+            { "timeMode", message.timeMode },
+            // 64ビットのNTP形式はJSONの数値に収まらないので秒と小数部に分ける
+            { "timeSeconds", static_cast<uint32_t>(message.time >> 32) },
+            { "timeFraction", static_cast<uint32_t>(message.time) },
+            { "messageType", message.messageType },
+            { "messageId", message.messageId },
+            { "privateData", std::string(message.privateData.begin(), message.privateData.end()) },
+        };
+        this->webView->PostWebMessageAsJson(jsonToWString(json).c_str());
+    }
+    if (captions.empty())
     {
         return;
     }

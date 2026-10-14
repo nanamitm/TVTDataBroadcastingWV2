@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "thirdparty/TVTestPlugin.h"
@@ -551,6 +551,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin = nullptr);
     HRESULT ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri);
     static bool IsFromB62Application(ICoreWebView2WebResourceRequest* request);
+    static bool IsFromPluginPage(ICoreWebView2WebResourceRequest* request);
     void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
     void SetNetworkState(bool enable);
@@ -1584,6 +1585,15 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 if (this->proxySession && proxyUrl && this->enableNetwork)
                 {
+                    // This legacy bridge belongs to the host page, not to
+                    // broadcast iframes (including requests without Referer).
+                    if (!IsFromPluginPage(request.get())) {
+                        wil::com_ptr<ICoreWebView2Environment> env;
+                        RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+                        wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+                        RETURN_IF_FAILED(env->CreateWebResourceResponse(nullptr, 403, L"Blocked", L"", response.put()));
+                        return args->put_Response(response.get());
+                    }
                     return this->Proxy(args, proxyUrl);
                 }
                 else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
@@ -2238,6 +2248,22 @@ void CDataBroadcastingWV2::SendB62FollowingEvent()
 // cors無効コマンドライン引数を追加するなどでWebView2側に任せることも可能ではあるけど融通が利かないためWinHTTPを使う あとバージョン依存の問題があるらしい?
 // 4Kデータ放送のアプリケーション (別オリジンのiframe) からのリクエストか。
 // fetch/XHRならOriginに、画像やスクリプトの読み込みならRefererにアプリケーションのオリジンが入る
+bool CDataBroadcastingWV2::IsFromPluginPage(ICoreWebView2WebResourceRequest* request)
+{
+    wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
+    if (FAILED(request->get_Headers(headers.put()))) return false;
+    constexpr wchar_t origin[] = L"https://TVTDataBroadcastingWV2.invalid";
+    wil::unique_cotaskmem_string value;
+    if (SUCCEEDED(headers->GetHeader(L"Origin", value.put())) && value && *value.get())
+        return _wcsicmp(value.get(), origin) == 0;
+    value.reset();
+    if (FAILED(headers->GetHeader(L"Referer", value.put())) || !value) return false;
+    const std::wstring referrer(value.get());
+    constexpr size_t length = _countof(origin) - 1;
+    return referrer.size() >= length && _wcsnicmp(referrer.c_str(), origin, length) == 0 &&
+        (referrer.size() == length || referrer[length] == L'/');
+}
+
 bool CDataBroadcastingWV2::IsFromB62Application(ICoreWebView2WebResourceRequest* request)
 {
     wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;

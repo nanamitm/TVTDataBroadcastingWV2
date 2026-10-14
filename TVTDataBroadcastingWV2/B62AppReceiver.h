@@ -33,6 +33,11 @@ public:
     {
         // Path of the first page, relative to the application root.
         std::string entryPath;
+        // For an application delivered over the network (transport protocol
+        // HTTP), the server's origin, e.g. "http://example.jp". The application
+        // root then stands for the server root, so entryPath includes the URL
+        // base's path. Empty for an application delivered by broadcast.
+        std::string networkOrigin;
         uint32_t organizationId = 0;
         uint16_t applicationId = 0;
         uint8_t controlCode = 0;

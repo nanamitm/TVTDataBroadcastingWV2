@@ -545,6 +545,37 @@ void AppReceiver::OnAppSection(const uint8_t* section, size_t size)
     }
 }
 
+// "http://host[:port]/path/" -> ("http://host[:port]", "path/"). Only http and
+// https URLs whose host is made of URL-safe characters are accepted.
+static std::optional<std::pair<std::string, std::string>> SplitHttpUrl(const std::string& url)
+{
+    size_t schemeEnd;
+    if (url.rfind("http://", 0) == 0)
+    {
+        schemeEnd = 7;
+    }
+    else if (url.rfind("https://", 0) == 0)
+    {
+        schemeEnd = 8;
+    }
+    else
+    {
+        return std::nullopt;
+    }
+    const size_t pathStart = std::min(url.find('/', schemeEnd), url.size());
+    const std::string authority = url.substr(schemeEnd, pathStart - schemeEnd);
+    if (authority.empty() || authority.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:") != std::string::npos)
+    {
+        return std::nullopt;
+    }
+    std::string path = pathStart < url.size() ? url.substr(pathStart + 1) : std::string();
+    if (path.find_first_of("?#") != std::string::npos)
+    {
+        return std::nullopt;
+    }
+    return std::make_pair(url.substr(0, pathStart), path);
+}
+
 void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
 {
     Reader r(section + 3, size - 7);
@@ -566,12 +597,14 @@ void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
         Reader descriptors = loop.Sub(loop.U16() & 0x0FFF);
 
         std::string base;
+        std::string networkOrigin;
+        bool hasTransport = false;
         std::string initialPath;
         while (descriptors.Left() >= 3)
         {
             const uint16_t tag = descriptors.U16();
             Reader body = descriptors.Sub(descriptors.U8());
-            if (tag == kDescriptorTransportProtocol)
+            if (tag == kDescriptorTransportProtocol && !hasTransport)
             {
                 const uint16_t protocolId = body.U16();
                 body.U8(); // transport_protocol_label
@@ -579,6 +612,18 @@ void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
                 {
                     // Broadcast: URL_base length and bytes, e.g. "sh4/40/001/".
                     base = body.String(body.U8());
+                    hasTransport = true;
+                }
+                else if (protocolId == 0x0003)
+                {
+                    // HTTP: URL_base length and bytes, e.g. "http://example.jp/app/"
+                    // (URL extensions follow and are not used).
+                    if (auto url = SplitHttpUrl(body.String(body.U8())))
+                    {
+                        networkOrigin = url->first;
+                        base = url->second;
+                        hasTransport = true;
+                    }
                 }
             }
             else if (tag == kDescriptorSimpleApplicationLocation)
@@ -591,6 +636,7 @@ void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
             continue;
         }
         app.entryPath = JoinPath({ base, initialPath });
+        app.networkOrigin = networkOrigin;
         if (app.controlCode == kControlCodeAutostart && !selected)
         {
             selected = app;
@@ -993,6 +1039,12 @@ void AppReceiver::UpdatePublishedApplicationLocked()
     if (!this->application)
     {
         this->publishedApplication.reset();
+        return;
+    }
+    // Files of a network application are fetched when the page asks for them.
+    if (!this->application->networkOrigin.empty())
+    {
+        this->publishedApplication = this->application;
         return;
     }
     // Only checked while something is pending, and the path index is rebuilt

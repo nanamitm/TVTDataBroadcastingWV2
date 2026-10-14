@@ -210,7 +210,10 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
             Fail();
             return;
         }
+        readStart = prevSize;
+        readCapacity = size;
         data.resize(prevSize + size);
+        reading = true;
         if (!WinHttpReadData(hInternet, data.data() + prevSize, size, nullptr))
         {
             Fail();
@@ -218,8 +221,17 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
         }
         break;
     }
-    case WINHTTP_CALLBACK_FLAG_READ_COMPLETE:
+    case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
     {
+        if (!reading || dwStatusInformationLength > readCapacity ||
+            lpvStatusInformation != data.data() + readStart) {
+            Fail();
+            return;
+        }
+        // DATA_AVAILABLE reserves capacity, not the number actually read.
+        data.resize(readStart + dwStatusInformationLength);
+        reading = false;
+        readCapacity = 0;
         if (!WinHttpQueryDataAvailable(hInternet, nullptr))
         {
             Fail();

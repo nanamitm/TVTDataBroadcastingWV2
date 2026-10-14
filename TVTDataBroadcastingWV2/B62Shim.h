@@ -151,6 +151,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
         if (typeof data.keyCode !== "number") {
             return;
         }
+        const keyName = Object.keys(keyCodes).find(function (name) { return keyCodes[name] === data.keyCode; });
+        console.debug("[TVTDataBroadcastingWV2] key " + (keyName || data.keyCode) + " -> " + location.pathname);
         dispatchKey("keydown", data.keyCode);
         dispatchKey("keyup", data.keyCode);
     });

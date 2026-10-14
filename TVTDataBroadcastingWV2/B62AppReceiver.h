@@ -41,6 +41,18 @@ public:
         bool operator==(const Application&) const = default;
     };
 
+    // A caption document (ARIB-TTML) or resource for applications that show
+    // captions themselves (addCaptionListener).
+    struct Caption
+    {
+        uint16_t componentTag = 0;
+        uint8_t dataType = 0;
+        uint8_t tmd = 0;
+        // When the document's time zero is presented (90 kHz, TS timeline).
+        std::optional<uint64_t> pts;
+        std::vector<uint8_t> data;
+    };
+
     static constexpr uint32_t kFormatIdentifier = 0x44344B41; // 'D4KA'
 
     // Called on the TS thread when the application to run changes.
@@ -48,6 +60,9 @@ public:
     // Forgets everything and follows the given service (-1: the first one).
     void Reset(int serviceId);
     void FeedPacket(const uint8_t* packet);
+    // Called on the TS thread when captions are waiting in TakeCaptions().
+    void SetCaptionCallback(std::function<void()> callback);
+    std::vector<Caption> TakeCaptions();
 
     std::optional<Application> GetApplication() const;
     // path is relative to the application root, e.g. "sh4/40/001/startup/html/index.html".
@@ -120,13 +135,16 @@ private:
     void OnMhAit(const uint8_t* section, size_t size);
     void OnDdmt(const SectionKey& key, const uint8_t* section, size_t size);
     void OnDamt(const SectionKey& key, const uint8_t* section, size_t size);
-    void OnItemSection(const uint8_t* section, size_t size);
+    std::optional<std::vector<uint8_t>> AssembleSections(const uint8_t* section, size_t size);
+    void OnItem(const std::vector<uint8_t>& body);
+    void OnCaption(const std::vector<uint8_t>& body);
     void RebuildPathIndexLocked();
     bool IsServableLocked(const std::string& path);
     void UpdatePublishedApplicationLocked();
 
     mutable std::mutex mutex;
     std::function<void()> applicationChangedCallback;
+    std::function<void()> captionCallback;
     int serviceId = -1;
 
     int pmtPid = -1;
@@ -137,7 +155,9 @@ private:
     std::map<SectionKey, uint32_t> sectionCrcs;
     std::map<SectionKey, std::map<std::pair<uint16_t, uint32_t>, DamtMpu>> damtSections;
     std::map<SectionKey, DdmtSection> ddmtSections;
-    std::map<uint16_t, PendingItem> pendingItems;
+    // (table_id << 16) | table_id_extension
+    std::map<uint32_t, PendingItem> pendingItems;
+    std::vector<Caption> captions;
     std::map<ItemKey, std::vector<uint8_t>> items;
     size_t itemBytes = 0;
 

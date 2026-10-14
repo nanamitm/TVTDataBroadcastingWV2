@@ -164,14 +164,75 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
 
-    // Methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
-    // Captions are not handed to applications yet, so none are reported; pages
-    // such as NHK's caption page stop initialising if these are missing.
+    // Caption methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
+    // The plugin page sends which caption components the service has and the
+    // caption documents themselves, at the time they are presented.
+    let captionComponents = [];
+    const captionListeners = [];
+    // "arib2://-1.-1.-1/0030" -> 0x30; null when the URL names no component.
+    function captionTag(url) {
+        const match = /\/([0-9a-fA-F]{4})$/.exec(String(url || ""));
+        return match ? parseInt(match[1], 16) : null;
+    }
+    function defaultCaptionTag(object) {
+        if (object.b62CaptionSrc != null) {
+            return captionTag(object.b62CaptionSrc);
+        }
+        const param = object.querySelector('param[name="caption_src" i]');
+        const tag = param ? captionTag(param.getAttribute("value")) : null;
+        return tag != null ? tag : 0x30;
+    }
     Object.assign(HTMLObjectElement.prototype, {
-        isCaptionExistent: function () { return false; },
-        addCaptionListener: function () { return true; },
-        removeCaptionListener: function () { return true; },
+        isCaptionExistent: function (url) {
+            const tag = url != null ? captionTag(url) : defaultCaptionTag(this);
+            return tag != null && captionComponents.indexOf(tag) >= 0;
+        },
+        addCaptionListener: function (listener, url) {
+            if (typeof listener !== "function") {
+                return;
+            }
+            const tag = url != null ? captionTag(url) : defaultCaptionTag(this);
+            captionListeners.push({ object: this, listener: listener, tag: tag });
+        },
+        removeCaptionListener: function (listener) {
+            for (let i = captionListeners.length - 1; i >= 0; i--) {
+                const entry = captionListeners[i];
+                if (entry.object === this && (listener == null || entry.listener === listener)) {
+                    captionListeners.splice(i, 1);
+                }
+            }
+        },
+        setCaptionSrc: function (url) { this.b62CaptionSrc = String(url); return true; },
+        getCaptionComponentURL: function () {
+            const tag = defaultCaptionTag(this);
+            return tag != null && captionComponents.indexOf(tag) >= 0
+                ? "arib2://-1.-1.-1/" + tag.toString(16).padStart(4, "0") : null;
+        },
+        // The receiver's own caption display is TVTest's; only remembered here.
+        setCaptionVisibility: function (flag) { this.b62CaptionVisible = !!flag; return true; },
+        isCaptionVisible: function () { return this.b62CaptionVisible !== false; },
     });
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host") {
+            return;
+        }
+        if (data.type === "captionComponents" && Array.isArray(data.tags)) {
+            captionComponents = data.tags.filter(function (tag) { return typeof tag === "number"; });
+        } else if (data.type === "caption" && typeof data.payload === "string") {
+            captionListeners.slice().forEach(function (entry) {
+                if (entry.tag != null && entry.tag !== data.componentTag) {
+                    return;
+                }
+                try {
+                    entry.listener(data.payload);
+                } catch (e) {
+                    console.error(e);
+                }
+            });
+        }
+    });
+    notifyParent({ type: "hello" });
 
     // <object type="video/x-arib2-broadcast"> marks where the broadcast video
     // goes. The plugin draws the video behind the page, so the object must be

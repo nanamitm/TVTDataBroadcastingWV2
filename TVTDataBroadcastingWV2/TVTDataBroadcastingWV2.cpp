@@ -45,6 +45,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_AUTH (WM_APP + 7)
 #define WM_APP_CONN (WM_APP + 8)
 #define WM_APP_B62_APPLICATION (WM_APP + 9)
+#define WM_APP_B62_CAPTION (WM_APP + 10)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -378,6 +379,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // WebView2がアプリケーションのiframe内のリクエストを横取りできるか
     bool b62Supported = false;
     void SendB62Application();
+    void SendB62Captions();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
@@ -1045,6 +1047,11 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_APP_B62_APPLICATION:
     {
         pThis->SendB62Application();
+        break;
+    }
+    case WM_APP_B62_CAPTION:
+    {
+        pThis->SendB62Captions();
         break;
     }
     case WM_APP_PACKET:
@@ -2318,6 +2325,13 @@ void CDataBroadcastingWV2::CreateMessageWindow()
         if (this->hMessageWnd)
         {
             PostMessageW(this->hMessageWnd, WM_APP_B62_APPLICATION, 0, 0);
+        }
+    });
+    this->b62Receiver.SetCaptionCallback([this]() {
+        // TSスレッドから呼ばれる
+        if (this->hMessageWnd)
+        {
+            PostMessageW(this->hMessageWnd, WM_APP_B62_CAPTION, 0, 0);
         }
     });
 }
@@ -4714,6 +4728,32 @@ void CDataBroadcastingWV2::SendB62Application()
         message["version"] = app->aitVersion;
     }
     this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+}
+
+// 4Kデータ放送のアプリケーションが自分で表示する字幕 (addCaptionListener) をページに渡す
+void CDataBroadcastingWV2::SendB62Captions()
+{
+    auto captions = this->b62Receiver.TakeCaptions();
+    if (!this->webView || !this->webViewLoaded || !this->b62Supported || captions.empty())
+    {
+        return;
+    }
+    // 字幕プラグインと同じ遅延で渡す
+    const auto settings = this->LoadCaptionSettings();
+    for (const auto& caption : captions)
+    {
+        const bool superimpose = caption.componentTag >= 0x38;
+        nlohmann::json message{
+            { "type", "b62Caption" },
+            { "componentTag", caption.componentTag },
+            { "dataType", caption.dataType },
+            { "tmd", caption.tmd },
+            { "pts", caption.pts ? nlohmann::json(*caption.pts) : nlohmann::json(nullptr) },
+            { "delay", superimpose ? settings.delayTimeSuper : settings.delayTime },
+            { "data", std::string(caption.data.begin(), caption.data.end()) },
+        };
+        this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+    }
 }
 
 // 4Kデータ放送のアプリケーションのファイルを返す。pathはオリジン直後の"/"より後ろ

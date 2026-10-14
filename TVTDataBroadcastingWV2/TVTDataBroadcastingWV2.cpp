@@ -1143,10 +1143,6 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         std::wistringstream iss(response->headers);
         std::wostringstream replacedHeader;
-        if (!response->allowOrigin.empty())
-        {
-            replacedHeader << L"Access-Control-Allow-Origin: " << response->allowOrigin << L"\n";
-        }
         std::wstring header;
         while (std::getline(iss, header))
         {
@@ -1172,7 +1168,10 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
             response->deferral->Complete();
             break;
         }
-        responseHeaders->AppendHeader(L"Access-Control-Allow-Origin", L"https://tvtdatabroadcastingwv2.invalid");
+        // 取得元のAccess-Control-Allow-Originは除いてあるので、呼び出し元のオリジンだけを許可する
+        // (4Kデータ放送のアプリケーションならそのオリジン、それ以外はプラグインの画面)
+        responseHeaders->AppendHeader(L"Access-Control-Allow-Origin",
+            response->allowOrigin.empty() ? L"https://tvtdatabroadcastingwv2.invalid" : response->allowOrigin.c_str());
         response->args->put_Response(webResponse.get());
         response->deferral->Complete();
         break;

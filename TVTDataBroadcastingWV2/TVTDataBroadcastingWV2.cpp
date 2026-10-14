@@ -2415,7 +2415,8 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
             deferral->Complete();
         }
         return;
-    }))
+    // 4Kデータ放送のアプリケーションの通信は、家庭内などインターネット上でない宛先には送らない
+    }, allowOrigin != nullptr))
     {
         deferral->Complete();
     }

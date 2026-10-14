@@ -17,6 +17,14 @@ constexpr wchar_t kShimScript[] = LR"JS(
         return;
     }
     const storagePrefix = "b62:";
+    // Receivers for advanced BS put "A-PAB/1.0" in the user agent, and some
+    // applications (BS TV Tokyo 4K) run as on a PC, with their own emulators
+    // in place of the receiver APIs, when it is missing.
+    try {
+        const userAgent = navigator.userAgent + " A-PAB/1.0";
+        Object.defineProperty(Navigator.prototype, "userAgent", { get: function () { return userAgent; }, configurable: true });
+    } catch (e) {
+    }
     function notifyParent(message) {
         try {
             window.top.postMessage(Object.assign({ source: "b62Application" }, message), "*");
@@ -208,6 +216,67 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
 
+    // Viewer's residence information area (ARIB TR-B39 10.1.1, 10.1.5): the
+    // receiver answers localStorage "_prefecture", "_regioncode" and "_zipcode"
+    // with its settings, "" when not set. The plugin page sends them; the last
+    // ones are kept so they are there when the next application starts.
+    const residenceKeys = ["_prefecture", "_regioncode", "_zipcode"];
+    const storageGetItem = Storage.prototype.getItem;
+    const storageSetItem = Storage.prototype.setItem;
+    const storageRemoveItem = Storage.prototype.removeItem;
+    let residence = {};
+    try {
+        residence = JSON.parse(storageGetItem.call(localStorage, storagePrefix + "residence")) || {};
+    } catch (e) {
+    }
+    function isResidenceKey(storage, key) {
+        try {
+            return storage === window.localStorage && residenceKeys.indexOf(String(key)) >= 0;
+        } catch (e) {
+            return false;
+        }
+    }
+    Storage.prototype.getItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            const value = residence[String(key)];
+            return typeof value === "string" ? value : "";
+        }
+        return storageGetItem.apply(this, arguments);
+    };
+    // Applications cannot change the receiver's settings.
+    Storage.prototype.setItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            return;
+        }
+        return storageSetItem.apply(this, arguments);
+    };
+    Storage.prototype.removeItem = function (key) {
+        if (isResidenceKey(this, key)) {
+            return;
+        }
+        return storageRemoveItem.apply(this, arguments);
+    };
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "residence" || !data.residence) {
+            return;
+        }
+        const next = {};
+        residenceKeys.forEach(function (key) {
+            const value = data.residence[key];
+            next[key] = typeof value === "string" ? value : "";
+        });
+        residence = next;
+        try {
+            storageSetItem.call(localStorage, storagePrefix + "residence", JSON.stringify(residence));
+        } catch (e) {
+        }
+    });
+    // ARIB STD-B62 Volume 2 3.3.10. The queries are defined by the operational
+    // rules; none of the optional functions they ask about (BS/terrestrial
+    // shared NVRAM, sourceIs, ...) is provided.
+    define("capabilities", { hasCapability: function () { return false; } });
+
     // Built-in receiver sounds: <audio src="romsound://7"> (or a <source> child)
     // cannot load, so play() asks the plugin page to play the sound instead.
     const originalPlay = HTMLMediaElement.prototype.play;
@@ -303,8 +372,25 @@ constexpr wchar_t kShimScript[] = LR"JS(
     sheet.replaceSync('object[type="video/x-arib2-broadcast" i], object[type="audio/x-arib2-broadcast" i] { visibility: hidden !important; }');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
 
+    // The document's resolution from its viewport meta element: 1920x1080,
+    // 3840x2160 or 7680x4320, 3840x2160 when not given (ARIB TR-B39 10.8.1.2).
+    // The plugin page sizes the frame to it and scales it to the screen.
+    function documentViewport() {
+        const sizes = { 1920: 1080, 3840: 2160, 7680: 4320 };
+        const meta = document.querySelector('meta[name="viewport" i]');
+        const content = meta ? String(meta.getAttribute("content") || "") : "";
+        const width = /(?:^|[,;\s])width\s*=\s*(\d+)/i.exec(content);
+        const height = /(?:^|[,;\s])height\s*=\s*(\d+)/i.exec(content);
+        let w = width ? parseInt(width[1], 10) : 0;
+        if (!sizes[w] && height) {
+            const h = parseInt(height[1], 10);
+            w = Number(Object.keys(sizes).find(function (key) { return sizes[key] === h; })) || 0;
+        }
+        return sizes[w] ? { width: w, height: sizes[w] } : { width: 3840, height: 2160 };
+    }
+
     // Tell the plugin page where the video object is (in this document's
-    // 3840x2160 coordinates), so it can cut a hole there and move the video
+    // coordinates), so it can cut a hole there and move the video
     // window under it. Only the application's own document reports.
     // Elements stacked above the video (a popup over it, say) are reported too,
     // so the hole leaves them visible.
@@ -403,10 +489,11 @@ constexpr wchar_t kShimScript[] = LR"JS(
                     above = rectsAboveVideo(video, rect);
                 }
             }
-            const key = JSON.stringify([rect, above]);
+            const viewport = documentViewport();
+            const key = JSON.stringify([rect, above, viewport]);
             if (key !== lastVideoRect) {
                 lastVideoRect = key;
-                notifyParent({ type: "videoRect", rect: rect, above: above });
+                notifyParent({ type: "videoRect", rect: rect, above: above, viewport: viewport });
             }
         }, 100);
     }

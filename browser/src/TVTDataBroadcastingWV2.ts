@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame, type B62Caption, type B62EventMessage } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence } from "./b62_application";
 
 declare global {
     interface Window {
@@ -31,9 +31,13 @@ export class StatusBarIndicator implements Indicator {
     }
     url = "";
     receiving = false;
+    // 4Kデータ放送のアプリケーションのファイルを受信中
+    b62Receiving = false;
     eventName: string | null = "";
     loading = false;
     networkingPost = false;
+    // 4Kデータ放送のアプリケーションが通信中
+    b62Networking = false;
     private update() {
         postMessage({
             type: "status",
@@ -41,12 +45,12 @@ export class StatusBarIndicator implements Indicator {
             url: this.url,
             receiving: this.receiving,
         });
-        if (this.receiving) {
+        if (this.receiving || this.b62Receiving) {
             this.receivingStatusElement.style.display = "";
         } else {
             this.receivingStatusElement.style.display = "none";
         }
-        if (this.networkingPost) {
+        if (this.networkingPost || this.b62Networking) {
             this.networkingStatusElement.style.display = "";
         } else {
             this.networkingStatusElement.style.display = "none";
@@ -59,6 +63,14 @@ export class StatusBarIndicator implements Indicator {
     }
     public setReceivingStatus(receiving: boolean): void {
         this.receiving = receiving;
+        this.update();
+    }
+    public setB62NetworkingStatus(networking: boolean): void {
+        this.b62Networking = networking;
+        this.update();
+    }
+    public setB62ReceivingStatus(receiving: boolean): void {
+        this.b62Receiving = receiving;
         this.update();
     }
     public setNetworkingGetStatus(get: boolean): void {
@@ -81,7 +93,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode));
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence());
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -321,6 +333,9 @@ type FromWebViewMessage = {
 } | {
     type: "invisible",
     invisible: boolean,
+} | {
+    // 次の番組の情報を求める (b62FollowingEventで返る)
+    type: "b62GetFollowingEvent",
 } | {
     type: "tune",
     originalNetworkId: number,
@@ -563,7 +578,40 @@ type ToWebViewMessage = {
     organizationId?: number,
     applicationId?: number,
     version?: number,
-};
+    // アプリケーションのファイルを受信中
+    loading?: boolean,
+} | {
+    // 4Kデータ放送のアプリケーションが通信中か
+    type: "b62Networking",
+    active: boolean,
+} | ({
+    type: "b62FollowingEvent",
+} & B62FollowingEvent);
+
+let b62NetworkingTimeout: number | null = null;
+
+// 4Kデータ放送のアプリケーションに渡す視聴者の居住地域 (ARIB TR-B39 10.1.5)。
+// BMLの受信機設定 (nvram://receiverinfo/) と同じものを使う
+function getB62Residence(): B62Residence {
+    const read = (filename: string, structure: string): unknown => {
+        try {
+            return bmlBrowser.nvram.readPersistentArray(filename, structure)?.[0];
+        } catch {
+            return undefined;
+        }
+    };
+    const toHex = (bits: string) => bits.match(/.{4}/g)!.map(x => parseInt(x, 2).toString(16)).join("");
+    // 県域指定ビットマップ (56ビット) の左からprefecture番目のビット
+    const prefecture = read("nvram://receiverinfo/prefecture", "U:1B");
+    const prefectureCode = typeof prefecture === "number" && prefecture >= 1 && prefecture <= 56
+        ? toHex("0".repeat(prefecture - 1) + "1" + "0".repeat(56 - prefecture)) : "";
+    // 緊急警報信号の地域符号 (12ビット)
+    const region = read("nvram://receiverinfo/regioncode", "U:2B");
+    const regionCode = typeof region === "number" && region > 0 && region < 0x1000 ? toHex(region.toString(2).padStart(12, "0")) : "";
+    const zip = read("nvram://receiverinfo/zipcode", "S:7B");
+    const zipCode = typeof zip === "string" ? zip.replace(/[^0-9]/g, "").slice(0, 7) : "";
+    return { _prefecture: prefectureCode, _regioncode: regionCode, _zipcode: zipCode };
+}
 
 // 1分間無操作であればデータ取得中の表示を消す
 let remoteControlStatusTimeoutMillis = 60 * 1000;
@@ -713,6 +761,23 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         b62Application.pushEventMessage(data);
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
+        remoteControl.setB62ReceivingStatus(data.loading ?? false);
+    } else if (data.type === "b62Networking") {
+        // 短い通信で表示がちらつかないよう、終わってから少しの間は出したままにする
+        if (b62NetworkingTimeout != null) {
+            window.clearTimeout(b62NetworkingTimeout);
+            b62NetworkingTimeout = null;
+        }
+        if (data.active) {
+            remoteControl.setB62NetworkingStatus(true);
+        } else {
+            b62NetworkingTimeout = window.setTimeout(() => {
+                b62NetworkingTimeout = null;
+                remoteControl.setB62NetworkingStatus(false);
+            }, 1000);
+        }
+    } else if (data.type === "b62FollowingEvent") {
+        b62Application.setFollowingEvent(data);
     }
 }
 

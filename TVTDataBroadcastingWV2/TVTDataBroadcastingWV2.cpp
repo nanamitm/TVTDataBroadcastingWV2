@@ -46,6 +46,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_CONN (WM_APP + 8)
 #define WM_APP_B62_APPLICATION (WM_APP + 9)
 #define WM_APP_B62_CAPTION (WM_APP + 10)
+#define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -59,6 +60,10 @@ struct DeferralResponse
     std::wstring statusCodeText;
     std::wstring headers;
     std::vector<BYTE> content;
+    // 空でなければAccess-Control-Allow-Originとして付ける (4Kデータ放送のアプリケーション向け)
+    std::wstring allowOrigin;
+    // 4Kデータ放送のアプリケーションの通信中であることを表す。最後の参照が無くなると通信が終わったことになる
+    std::shared_ptr<void> networkingToken;
 };
 
 #define IDT_SHOW_EVR_WINDOW 1
@@ -380,6 +385,11 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool b62Supported = false;
     void SendB62Application();
     void SendB62Captions();
+    void SendB62FollowingEvent();
+    // 通信中の4Kデータ放送のアプリケーションのリクエストの数 (メッセージウィンドウのスレッドでのみ触る)
+    int b62NetworkingCount = 0;
+    void SendB62Networking();
+    std::shared_ptr<void> BeginB62Networking();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
 
     HWND hRemoteWnd = nullptr;
@@ -532,7 +542,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void EnablePanelButtons(bool enable);
     // パネルのタブ自体("データ放送"/"実況勢い")の表示を切り替える。
     void EnablePanelItems(bool enable);
-    HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl);
+    HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin = nullptr);
+    HRESULT ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri);
+    static bool IsFromB62Application(ICoreWebView2WebResourceRequest* request);
     void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
     void SetNetworkState(bool enable);
@@ -1054,6 +1066,14 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         pThis->SendB62Captions();
         break;
     }
+    case WM_APP_B62_NETWORKING_DONE:
+    {
+        if (pThis->b62NetworkingCount > 0 && --pThis->b62NetworkingCount == 0)
+        {
+            pThis->SendB62Networking();
+        }
+        break;
+    }
     case WM_APP_PACKET:
     {
         if (!pThis->webView || !pThis->webViewLoaded)
@@ -1164,7 +1184,10 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
             response->deferral->Complete();
             break;
         }
-        responseHeaders->AppendHeader(L"Access-Control-Allow-Origin", L"https://tvtdatabroadcastingwv2.invalid");
+        // 取得元のAccess-Control-Allow-Originは除いてあるので、呼び出し元のオリジンだけを許可する
+        // (4Kデータ放送のアプリケーションならそのオリジン、それ以外はプラグインの画面)
+        responseHeaders->AppendHeader(L"Access-Control-Allow-Origin",
+            response->allowOrigin.empty() ? L"https://tvtdatabroadcastingwv2.invalid" : response->allowOrigin.c_str());
         response->args->put_Response(webResponse.get());
         response->deferral->Complete();
         break;
@@ -1552,7 +1575,26 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
                 {
-                    return this->ServeB62File(args, uri.get() + wcslen(B62::kAppOrigin) + 1);
+                    const auto path = uri.get() + wcslen(B62::kAppOrigin) + 1;
+                    // 通信で配信されるアプリケーションのファイルは、配信元のサーバーから代わりに取得する
+                    auto app = this->b62Receiver.GetApplication();
+                    if (app && !app->networkOrigin.empty())
+                    {
+                        if (!this->proxySession || !this->enableNetwork)
+                        {
+                            return S_OK;
+                        }
+                        const auto url = utf8StrToWString(app->networkOrigin.c_str()) + L"/" + path;
+                        return this->Proxy(args, url.c_str(), B62::kAppOrigin);
+                    }
+                    return this->ServeB62File(args, path);
+                }
+                // 通信が有効なら、4Kデータ放送のアプリケーションからのhttp/https通信を代わりに行う
+                else if (this->proxySession && this->enableNetwork && this->b62Supported &&
+                    (!_wcsnicmp(uri.get(), L"https://", 8) || !_wcsnicmp(uri.get(), L"http://", 7)) &&
+                    IsFromB62Application(request.get()))
+                {
+                    return this->ProxyB62(args, request.get(), uri.get());
                 }
                 else if (_wcsnicmp(L"https://TVTDataBroadcastingWV2.invalid/", uri.get(), wcslen(L"https://TVTDataBroadcastingWV2.invalid/")))
                 {
@@ -2073,10 +2115,148 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         this->m_commentNg.Load(this->iniFile);
         this->ReportReplaceErrors();
     }
+    else if (type == "b62GetFollowingEvent")
+    {
+        this->SendB62FollowingEvent();
+    }
+}
+
+// 4Kデータ放送のアプリケーションの通信が始まったことを記録する。
+// 戻り値の最後の参照が無くなったとき (応答を返したときや失敗したとき) に終わったことになる
+std::shared_ptr<void> CDataBroadcastingWV2::BeginB62Networking()
+{
+    if (this->b62NetworkingCount++ == 0)
+    {
+        this->SendB62Networking();
+    }
+    const HWND hMessageWnd = this->hMessageWnd;
+    return std::shared_ptr<void>(nullptr, [hMessageWnd](void*)
+    {
+        // 通信のスレッドから呼ばれることがある
+        if (hMessageWnd)
+        {
+            PostMessageW(hMessageWnd, WM_APP_B62_NETWORKING_DONE, 0, 0);
+        }
+    });
+}
+
+// 4Kデータ放送のアプリケーションが通信中かどうかをページに伝える (通信中...の表示)
+void CDataBroadcastingWV2::SendB62Networking()
+{
+    if (!this->webView || !this->webViewLoaded)
+    {
+        return;
+    }
+    nlohmann::json message{ { "type", "b62Networking" }, { "active", this->b62NetworkingCount > 0 } };
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+}
+
+// 4Kデータ放送のアプリケーションのgetCurrentEventInformationのために、次の番組の情報をページに渡す。
+// ページで解析しているEITは今の番組の分だけなので、TVTestが持っている情報を使う
+void CDataBroadcastingWV2::SendB62FollowingEvent()
+{
+    if (!this->webView)
+    {
+        return;
+    }
+    nlohmann::json message{
+        { "type", "b62FollowingEvent" },
+        { "serviceId", nullptr },
+        { "eventId", nullptr },
+        { "startTimeUnixMillis", nullptr },
+    };
+    TVTest::ProgramInfo info = {};
+    if (this->m_pApp->GetCurrentProgramInfo(&info, true))
+    {
+        message["serviceId"] = info.ServiceID;
+        message["eventId"] = info.EventID;
+        // StartTimeは日本時間
+        FILETIME fileTime;
+        if (info.StartTime.wYear != 0 && SystemTimeToFileTime(&info.StartTime, &fileTime))
+        {
+            const auto ticks = (static_cast<uint64_t>(fileTime.dwHighDateTime) << 32) | fileTime.dwLowDateTime;
+            const int64_t unixMillis = static_cast<int64_t>(ticks / 10000) - 11644473600000LL - 9LL * 60 * 60 * 1000;
+            message["startTimeUnixMillis"] = unixMillis;
+        }
+    }
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
 }
 
 // cors無効コマンドライン引数を追加するなどでWebView2側に任せることも可能ではあるけど融通が利かないためWinHTTPを使う あとバージョン依存の問題があるらしい?
-HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl)
+// 4Kデータ放送のアプリケーション (別オリジンのiframe) からのリクエストか。
+// fetch/XHRならOriginに、画像やスクリプトの読み込みならRefererにアプリケーションのオリジンが入る
+bool CDataBroadcastingWV2::IsFromB62Application(ICoreWebView2WebResourceRequest* request)
+{
+    wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
+    if (FAILED(request->get_Headers(headers.put())))
+    {
+        return false;
+    }
+    const auto origin = std::wstring(B62::kAppOrigin);
+    for (auto name : { L"Origin", L"Referer" })
+    {
+        wil::unique_cotaskmem_string value;
+        if (SUCCEEDED(headers->GetHeader(name, value.put())) && value)
+        {
+            std::wstring v(value.get());
+            if (_wcsnicmp(v.c_str(), origin.c_str(), origin.size()) == 0 && (v.size() == origin.size() || v[origin.size()] == L'/'))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 4Kデータ放送のアプリケーションの外部への通信を代わりに行う。
+// アプリケーションのオリジンから見て別オリジンなので、CORSのヘッダーを付けて返す
+HRESULT CDataBroadcastingWV2::ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri)
+{
+    wil::unique_cotaskmem_string method;
+    HRESULT hr = request->get_Method(method.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    if (_wcsicmp(method.get(), L"OPTIONS"))
+    {
+        return this->Proxy(args, uri, B62::kAppOrigin);
+    }
+    // プリフライトはここで許可して答える
+    wil::com_ptr<ICoreWebView2HttpRequestHeaders> requestHeaders;
+    std::wstring allowHeaders;
+    if (SUCCEEDED(request->get_Headers(requestHeaders.put())))
+    {
+        wil::unique_cotaskmem_string value;
+        if (SUCCEEDED(requestHeaders->GetHeader(L"Access-Control-Request-Headers", value.put())) && value)
+        {
+            allowHeaders = value.get();
+        }
+    }
+    // ヘッダーの区切りを壊す文字は入れない
+    std::erase_if(allowHeaders, [](wchar_t c) { return c == L'\r' || c == L'\n'; });
+    std::wstring headers = std::wstring(L"Access-Control-Allow-Origin: ") + B62::kAppOrigin +
+        L"\r\nAccess-Control-Allow-Methods: GET, POST, HEAD\r\nAccess-Control-Max-Age: 600";
+    if (!allowHeaders.empty())
+    {
+        headers += L"\r\nAccess-Control-Allow-Headers: " + allowHeaders;
+    }
+    wil::com_ptr<ICoreWebView2Environment> env;
+    hr = this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+    hr = env->CreateWebResourceResponse(nullptr, 204, L"No Content", headers.c_str(), response.put());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    return args->put_Response(response.get());
+}
+
+HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin)
 {
     wil::com_ptr<ICoreWebView2WebResourceRequest> request;
     HRESULT hr = args->get_Request(request.put());
@@ -2147,11 +2327,13 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     }
     wil::com_ptr<ICoreWebView2Deferral> deferral;
     args->GetDeferral(deferral.put());
-    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral]() -> void
+    // 4Kデータ放送のアプリケーションの通信なら通信中と表示する
+    auto networkingToken = allowOrigin ? this->BeginB62Networking() : nullptr;
+    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral, networkingToken]() -> void
     {
         // error
         deferral->Complete();
-    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
+    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
     {
         if (this->hMessageWnd)
         {
@@ -2163,6 +2345,8 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 std::wstring(statusCodeText),
                 std::wstring(headers),
                 std::vector<BYTE>(content, content + contentLength),
+                origin,
+                networkingToken,
             });
             if (PostMessageW(this->hMessageWnd, WM_APP_RESPONSE, 0, (LPARAM)response.get()))
             {
@@ -4718,9 +4902,17 @@ void CDataBroadcastingWV2::SendB62Application()
     {
         return;
     }
-    nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr } };
+    // loadingはアプリケーションのファイルを受信中 (dボタンでデータ取得中と出す)
+    nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr },
+        { "loading", this->b62Supported && this->b62Receiver.IsApplicationLoading() } };
     // iframe内の通信を遮断できない古いランタイムではアプリケーションを動かさない
-    if (auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt)
+    auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt;
+    // 通信で配信されるアプリケーションは通信が有効なときだけ動かす
+    if (app && !app->networkOrigin.empty() && (!this->proxySession || !this->enableNetwork))
+    {
+        app.reset();
+    }
+    if (app)
     {
         message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
         message["organizationId"] = app->organizationId;

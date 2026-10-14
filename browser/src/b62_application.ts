@@ -3,9 +3,8 @@
 // このページとは別オリジンなので、アプリケーションからこのページには触れない。
 
 const appOrigin = "https://tvtdatabroadcastingwv2-b62.invalid";
-// ARIB STD-B62のアプリケーションは3840x2160で描画される
-const appWidth = 3840;
-const appHeight = 2160;
+// アプリケーションの文書の解像度。viewportで1920x1080や7680x4320も指定できる (ARIB TR-B39 10.8.1.2)
+const defaultAppSize = { width: 3840, height: 2160 };
 
 // web-bmlのAribKeyCodeからアプリケーションに渡すkeyCodeへ (B62Shim.hのVK_*と合わせる)
 const keyCodeMap = new Map<number, number>([
@@ -36,6 +35,8 @@ type FrameMessage = {
     rect: VideoRect | null,
     // 映像より手前に重なっている要素 (映像の範囲内に切り詰めたもの)
     above?: VideoRect[],
+    // 文書の解像度
+    viewport?: { width: number, height: number },
 } | {
     source: "b62Application",
     type: "hello",
@@ -176,6 +177,20 @@ export type B62ProgramInfo = {
     durationSeconds: number | null,
 };
 
+// TVTestから得た次の番組の情報
+export type B62FollowingEvent = {
+    serviceId: number | null,
+    eventId: number | null,
+    startTimeUnixMillis: number | null,
+};
+
+// 視聴者居住地域情報 (ARIB TR-B39 10.1.5)。未設定は空文字列
+export type B62Residence = {
+    _prefecture: string,
+    _regioncode: string,
+    _zipcode: string,
+};
+
 export class B62ApplicationFrame {
     private readonly container: HTMLElement;
     private frame: HTMLIFrameElement | null = null;
@@ -184,6 +199,8 @@ export class B62ApplicationFrame {
     private destroyedKey: string | null = null;
     private programInfo: B62ProgramInfo | null = null;
     private videoRect: VideoRect | null = null;
+    // 表示中の文書の解像度 (videoRectなどの座標はこの上のもの)
+    private appSize = defaultAppSize;
     private videoOverlays: VideoRect[] = [];
     private captionComponents: number[] = [];
     private currentTimeMillis: number | null = null;
@@ -193,13 +210,22 @@ export class B62ApplicationFrame {
     private eventQueue: { due: number, message: B62EventMessage }[] = [];
     private readonly onVideoChanged: () => void;
     private readonly playRomSound: (id: number) => void;
+    private readonly requestFollowingEvent: () => void;
+    private readonly getResidence: () => B62Residence;
+    // 次の番組の情報を待っているgetCurrentEventInformation
+    private eventInformationRequests: { source: Window, id: number }[] = [];
+    private eventInformationTimeout: number | null = null;
 
     // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
-    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす
-    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void) {
+    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす。
+    // requestFollowingEventは次の番組の情報を求め、setFollowingEvent()で答えてもらう
+    // getResidenceは受信機に設定された視聴者の居住地域を返す
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void, getResidence: () => B62Residence) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
         this.playRomSound = playRomSound;
+        this.requestFollowingEvent = requestFollowingEvent;
+        this.getResidence = getResidence;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -221,8 +247,9 @@ export class B62ApplicationFrame {
         frame.style.position = "absolute";
         frame.style.left = "0px";
         frame.style.top = "0px";
-        frame.style.width = `${appWidth}px`;
-        frame.style.height = `${appHeight}px`;
+        this.appSize = defaultAppSize;
+        frame.style.width = `${this.appSize.width}px`;
+        frame.style.height = `${this.appSize.height}px`;
         frame.style.border = "none";
         frame.style.background = "transparent";
         frame.style.colorScheme = "normal";
@@ -398,6 +425,46 @@ export class B62ApplicationFrame {
         this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "caption", componentTag: caption.componentTag, payload }, appOrigin);
     }
 
+    // getCurrentEventInformationに答える。followingは次の番組 (分からなければnull)
+    setFollowingEvent(following: B62FollowingEvent | null) {
+        if (this.eventInformationTimeout != null) {
+            window.clearTimeout(this.eventInformationTimeout);
+            this.eventInformationTimeout = null;
+        }
+        const requests = this.eventInformationRequests;
+        this.eventInformationRequests = [];
+        if (requests.length === 0) {
+            return;
+        }
+        // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
+        // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)
+        const info = this.programInfo;
+        const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
+        // 別のサービスや、今の番組より前の情報は使わない
+        const next = following != null && following.eventId != null && following.startTimeUnixMillis != null &&
+            following.serviceId === info?.serviceId && following.eventId !== info?.eventId &&
+            (start == null || following.startTimeUnixMillis > start.getTime()) ? following : null;
+        const data = {
+            service_id: info?.serviceId ?? null,
+            original_network_id: info?.originalNetworkId ?? null,
+            transport_stream_id: info?.transportStreamId ?? null,
+            event_id: info?.eventId ?? null,
+            event_name: info?.eventName ?? null,
+            start_time: start,
+            duration: info?.durationSeconds ?? null,
+            f_event_id: next?.eventId ?? null,
+            // 次の番組が分からなければ今の番組と同じ開始時刻にして、次の番組は無いものとして扱わせる
+            f_start_time: next?.startTimeUnixMillis != null ? new Date(next.startTimeUnixMillis) : start,
+        };
+        for (const request of requests) {
+            try {
+                request.source.postMessage({ source: "b62Host", id: request.id, data }, appOrigin);
+            } catch {
+                // アプリケーションが既に終了している
+            }
+        }
+    }
+
     setProgramInfo(programInfo: B62ProgramInfo) {
         this.programInfo = programInfo;
     }
@@ -408,7 +475,7 @@ export class B62ApplicationFrame {
         }
         const width = this.container.clientWidth || 960;
         const height = this.container.clientHeight || 540;
-        this.frame.style.transform = `scale(${width / appWidth}, ${height / appHeight})`;
+        this.frame.style.transform = `scale(${width / this.appSize.width}, ${height / this.appSize.height})`;
     }
 
     // 映像を出す位置 (このページのビューポート座標)。アプリケーションが映像を置いていなければnull
@@ -417,8 +484,8 @@ export class B62ApplicationFrame {
             return null;
         }
         const frameRect = this.frame.getBoundingClientRect();
-        const scaleX = frameRect.width / appWidth;
-        const scaleY = frameRect.height / appHeight;
+        const scaleX = frameRect.width / this.appSize.width;
+        const scaleY = frameRect.height / this.appSize.height;
         return new DOMRect(
             frameRect.left + this.videoRect.left * scaleX,
             frameRect.top + this.videoRect.top * scaleY,
@@ -437,10 +504,10 @@ export class B62ApplicationFrame {
             return;
         }
         const left = Math.max(0, r.left), top = Math.max(0, r.top);
-        const right = Math.min(appWidth, r.left + r.width), bottom = Math.min(appHeight, r.top + r.height);
+        const right = Math.min(this.appSize.width, r.left + r.width), bottom = Math.min(this.appSize.height, r.top + r.height);
         // evenodd: 全体、映像の穴、穴の中で手前に重なる要素 (重ならないように分割したもの) の順に重ねる。
         // 各矩形は原点から行って戻るので、つなぎの線は面積を持たない
-        const rects = [{ left: 0, top: 0, right: appWidth, bottom: appHeight }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
+        const rects = [{ left: 0, top: 0, right: this.appSize.width, bottom: this.appSize.height }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
         const points = rects.flatMap(q => [
             `${q.left}px ${q.top}px`, `${q.right}px ${q.top}px`, `${q.right}px ${q.bottom}px`, `${q.left}px ${q.bottom}px`, `${q.left}px ${q.top}px`, "0 0",
         ]);
@@ -469,31 +536,29 @@ export class B62ApplicationFrame {
             return;
         }
         if (message.type === "getEventInformation") {
-            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
-            // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)。
-            // 次の番組 (f_*) は分からないので、開始時刻だけ今の番組の終了時刻で埋める
-            const info = this.programInfo;
-            const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
-            const end = start != null && info?.durationSeconds != null ? new Date(start.getTime() + info.durationSeconds * 1000) : null;
-            const data = {
-                service_id: info?.serviceId ?? null,
-                original_network_id: info?.originalNetworkId ?? null,
-                transport_stream_id: info?.transportStreamId ?? null,
-                event_id: info?.eventId ?? null,
-                event_name: info?.eventName ?? null,
-                start_time: start,
-                duration: info?.durationSeconds ?? null,
-                f_event_id: null,
-                f_start_time: end ?? start,
-            };
-            (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+            // 次の番組の情報が届いてから答える
+            this.eventInformationRequests.push({ source: ev.source as Window, id: message.id });
+            if (this.eventInformationTimeout == null) {
+                this.eventInformationTimeout = window.setTimeout(() => this.setFollowingEvent(null), 1000);
+                this.requestFollowingEvent();
+            }
         } else if (message.type === "romsound") {
             if (Number.isInteger(message.id)) {
                 this.playRomSound(message.id);
             }
         } else if (message.type === "hello") {
             this.postCaptionComponents();
+            this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {
+            const viewport = message.viewport;
+            if (viewport != null && Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0 &&
+                (viewport.width !== this.appSize.width || viewport.height !== this.appSize.height)) {
+                this.appSize = { width: viewport.width, height: viewport.height };
+                this.frame.style.width = `${this.appSize.width}px`;
+                this.frame.style.height = `${this.appSize.height}px`;
+                this.resize();
+            }
             this.videoRect = message.rect;
             this.videoOverlays = message.above ?? [];
             this.updateVideoHole();

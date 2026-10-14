@@ -44,7 +44,13 @@ constexpr wchar_t kShimScript[] = LR"JS(
         RED: 0x1, GREEN: 0x2, YELLOW: 0x4, BLUE: 0x8, NAVIGATION: 0x10, VCR: 0x20,
         SCROLL: 0x40, INFO: 0x80, NUMERIC: 0x100, ALPHA: 0x200, OTHER: 0x400, DBUTTON: 0x800,
         value: 0,
-        setValue: function (value) { this.value = value; return value; },
+        // The plugin page lets the keys through to the application (the
+        // number keys select channels otherwise).
+        setValue: function (value) {
+            this.value = Number(value) >>> 0;
+            notifyParent({ type: "keySet", value: this.value });
+            return this.value;
+        },
     };
     const ownerApplication = {
         keySet: keySet,
@@ -276,6 +282,47 @@ constexpr wchar_t kShimScript[] = LR"JS(
     // rules; none of the optional functions they ask about (BS/terrestrial
     // shared NVRAM, sourceIs, ...) is provided.
     define("capabilities", { hasCapability: function () { return false; } });
+
+    // Requests to http URLs. The application's origin is https, so the browser
+    // blocks them as mixed content, while on a receiver an application
+    // delivered over http may make them. They are sent to
+    // "/__http/<host>/<path>" of the application's origin instead, which the
+    // plugin forwards to the http URL when networking is enabled.
+    const httpProxyPrefix = location.origin + "/__http/";
+    function toHttpProxyUrl(url) {
+        try {
+            const u = new URL(String(url), location.href);
+            if (u.protocol === "http:" && u.origin !== location.origin) {
+                return httpProxyPrefix + u.host + u.pathname + u.search;
+            }
+        } catch (e) {
+        }
+        return url;
+    }
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+        const args = Array.prototype.slice.call(arguments);
+        args[1] = toHttpProxyUrl(url);
+        return originalOpen.apply(this, args);
+    };
+    const originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+        if (input instanceof Request) {
+            const proxied = toHttpProxyUrl(input.url);
+            if (proxied !== input.url) {
+                input = new Request(proxied, input);
+            }
+        } else {
+            input = toHttpProxyUrl(input);
+        }
+        return originalFetch.call(this, input, init);
+    };
+    if (typeof navigator.sendBeacon === "function") {
+        const originalSendBeacon = navigator.sendBeacon;
+        navigator.sendBeacon = function (url, data) {
+            return originalSendBeacon.call(navigator, toHttpProxyUrl(url), data);
+        };
+    }
 
     // Built-in receiver sounds: <audio src="romsound://7"> (or a <source> child)
     // cannot load, so play() asks the plugin page to play the sound instead.

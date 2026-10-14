@@ -42,6 +42,10 @@ type FrameMessage = {
     type: "hello",
 } | {
     source: "b62Application",
+    type: "keySet",
+    value: number,
+} | {
+    source: "b62Application",
     type: "romsound",
     id: number,
 };
@@ -212,6 +216,9 @@ export class B62ApplicationFrame {
     private readonly playRomSound: (id: number) => void;
     private readonly requestFollowingEvent: () => void;
     private readonly getResidence: () => B62Residence;
+    private readonly onKeySetChanged: (keySet: number | null) => void;
+    // 表示中の文書のkeySet (OIPFのビット)。アプリケーションが無ければnull
+    private keySet: number | null = null;
     // 次の番組の情報を待っているgetCurrentEventInformation
     private eventInformationRequests: { source: Window, id: number }[] = [];
     private eventInformationTimeout: number | null = null;
@@ -219,13 +226,16 @@ export class B62ApplicationFrame {
     // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
     // playRomSoundは受信機内蔵音 (romsound://) を鳴らす。
     // requestFollowingEventは次の番組の情報を求め、setFollowingEvent()で答えてもらう
-    // getResidenceは受信機に設定された視聴者の居住地域を返す
-    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void, getResidence: () => B62Residence) {
+    // getResidenceは受信機に設定された視聴者の居住地域を返す。
+    // onKeySetChangedはアプリケーションが受け取るキーの集合 (keySet) が変わったときに呼ばれる (終了したらnull)
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void, requestFollowingEvent: () => void, getResidence: () => B62Residence,
+        onKeySetChanged: (keySet: number | null) => void) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
         this.playRomSound = playRomSound;
         this.requestFollowingEvent = requestFollowingEvent;
         this.getResidence = getResidence;
+        this.onKeySetChanged = onKeySetChanged;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -525,6 +535,14 @@ export class B62ApplicationFrame {
         if (hadVideo) {
             this.onVideoChanged();
         }
+        this.setKeySet(null);
+    }
+
+    private setKeySet(keySet: number | null) {
+        if (keySet !== this.keySet) {
+            this.keySet = keySet;
+            this.onKeySetChanged(keySet);
+        }
     }
 
     private onFrameMessage(ev: MessageEvent) {
@@ -546,7 +564,13 @@ export class B62ApplicationFrame {
             if (Number.isInteger(message.id)) {
                 this.playRomSound(message.id);
             }
+        } else if (message.type === "keySet") {
+            if (Number.isInteger(message.value)) {
+                this.setKeySet(message.value >>> 0);
+            }
         } else if (message.type === "hello") {
+            // 新しい文書はまだkeySetを設定していない
+            this.setKeySet(0);
             this.postCaptionComponents();
             this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {

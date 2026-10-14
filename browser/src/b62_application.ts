@@ -348,16 +348,22 @@ export class B62ApplicationFrame {
             return;
         }
         if (message.type === "getEventInformation") {
-            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)
+            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
+            // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)。
+            // 次の番組 (f_*) は分からないので、開始時刻だけ今の番組の終了時刻で埋める
             const info = this.programInfo;
+            const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
+            const end = start != null && info?.durationSeconds != null ? new Date(start.getTime() + info.durationSeconds * 1000) : null;
             const data = {
                 service_id: info?.serviceId ?? null,
                 original_network_id: info?.originalNetworkId ?? null,
                 transport_stream_id: info?.transportStreamId ?? null,
                 event_id: info?.eventId ?? null,
                 event_name: info?.eventName ?? null,
-                start_time: info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis).toISOString() : null,
+                start_time: start,
                 duration: info?.durationSeconds ?? null,
+                f_event_id: null,
+                f_start_time: end ?? start,
             };
             (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
         } else if (message.type === "romsound") {

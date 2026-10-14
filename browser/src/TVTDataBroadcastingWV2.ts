@@ -598,8 +598,10 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         }
     } else if (data.type === "key") {
         remoteControlStatusContainer.style.visibility = "visible";
-        bmlBrowser.content.processKeyDown(data.keyCode);
-        bmlBrowser.content.processKeyUp(data.keyCode);
+        if (!b62Application.processKey(data.keyCode)) {
+            bmlBrowser.content.processKeyDown(data.keyCode);
+            bmlBrowser.content.processKeyUp(data.keyCode);
+        }
         remoteControlStatusTimeout = performance.now() + remoteControlStatusTimeoutMillis;
     } else if (data.type === "captionImage") {
         player.draw(data.track, data.frameWidth, data.frameHeight, data.images);

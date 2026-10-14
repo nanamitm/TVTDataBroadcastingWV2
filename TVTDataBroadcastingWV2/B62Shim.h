@@ -123,6 +123,38 @@ constexpr wchar_t kShimScript[] = LR"JS(
             }
         },
     };
+    // Key codes. The apps compare KeyboardEvent.keyCode with these globals, so
+    // the values only have to match what the plugin page sends. They follow
+    // OIPF where it defines the key; VK_DBUTTON is a placeholder.
+    const keyCodes = {
+        VK_LEFT: 37, VK_UP: 38, VK_RIGHT: 39, VK_DOWN: 40, VK_ENTER: 13, VK_BACK: 461,
+        VK_RED: 403, VK_GREEN: 404, VK_YELLOW: 405, VK_BLUE: 406, VK_DBUTTON: 0x1F5,
+    };
+    for (let i = 0; i <= 9; i++) {
+        keyCodes["VK_" + i] = 48 + i;
+    }
+    for (const name in keyCodes) {
+        window[name] = keyCodes[name];
+    }
+    function dispatchKey(type, keyCode) {
+        const event = new KeyboardEvent(type, { bubbles: true, cancelable: true });
+        // KeyboardEventInit cannot set keyCode in Chromium.
+        Object.defineProperty(event, "keyCode", { get: function () { return keyCode; } });
+        Object.defineProperty(event, "which", { get: function () { return keyCode; } });
+        (document.activeElement || document.body || document.documentElement || document).dispatchEvent(event);
+    }
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "key") {
+            return;
+        }
+        if (typeof data.keyCode !== "number") {
+            return;
+        }
+        dispatchKey("keydown", data.keyCode);
+        dispatchKey("keyup", data.keyCode);
+    });
+
     function define(name, value) {
         Object.defineProperty(navigator, name, { value: value, configurable: true });
     }

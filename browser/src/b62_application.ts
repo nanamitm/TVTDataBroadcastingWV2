@@ -7,6 +7,22 @@ const appOrigin = "https://tvtdatabroadcastingwv2-b62.invalid";
 const appWidth = 3840;
 const appHeight = 2160;
 
+// web-bmlのAribKeyCodeからアプリケーションに渡すkeyCodeへ (B62Shim.hのVK_*と合わせる)
+const keyCodeMap = new Map<number, number>([
+    [1, 38], // Up
+    [2, 40], // Down
+    [3, 37], // Left
+    [4, 39], // Right
+    [5, 48], [6, 49], [7, 50], [8, 51], [9, 52], [10, 53], [11, 54], [12, 55], [13, 56], [14, 57], // 0-9
+    [18, 13], // Enter
+    [19, 461], // Back
+    [20, 0x1F5], // dボタン
+    [21, 406], // 青
+    [22, 403], // 赤
+    [23, 404], // 緑
+    [24, 405], // 黄
+]);
+
 type FrameMessage = {
     source: "b62Application",
     type: "destroy" | "show" | "hide",
@@ -70,6 +86,20 @@ export class B62ApplicationFrame {
         this.frame = frame;
         this.currentKey = key;
         this.resize();
+    }
+
+    // アプリケーションが動いていればキーを渡してtrueを返す
+    processKey(aribKeyCode: number): boolean {
+        const frame = this.frame;
+        if (frame?.contentWindow == null) {
+            return false;
+        }
+        const keyCode = keyCodeMap.get(aribKeyCode);
+        if (keyCode != null) {
+            frame.contentWindow.postMessage({ source: "b62Host", type: "key", keyCode }, appOrigin);
+        }
+        // 対応するキーがなくてもBMLには渡さない (4KではBMLは動かない)
+        return true;
     }
 
     setProgramInfo(programInfo: B62ProgramInfo) {

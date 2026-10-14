@@ -192,7 +192,7 @@ void AppReceiver::Reset(int newServiceId)
     std::function<void()> callback;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
-        hadApplication = this->publishedApplication.has_value();
+        hadApplication = this->publishedApplication.has_value() || this->IsApplicationLoadingLocked();
         this->serviceId = newServiceId;
         this->ResetLocked();
         callback = this->applicationChangedCallback;
@@ -238,6 +238,7 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
     const uint16_t pid = ((packet[1] & 0x1F) << 8) | packet[2];
 
     std::optional<Application> before;
+    bool loadingBefore;
     std::function<void()> callback;
     std::function<void()> captionNotify;
     {
@@ -247,11 +248,12 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
             return;
         }
         before = this->publishedApplication;
+        loadingBefore = this->IsApplicationLoadingLocked();
         const size_t captionCount = this->captions.size();
         const size_t eventMessageCount = this->eventMessages.size();
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
         this->UpdatePublishedApplicationLocked();
-        if (before != this->publishedApplication)
+        if (before != this->publishedApplication || loadingBefore != this->IsApplicationLoadingLocked())
         {
             callback = this->applicationChangedCallback;
         }
@@ -1014,6 +1016,17 @@ std::optional<AppReceiver::Application> AppReceiver::GetApplication() const
 {
     std::lock_guard<std::mutex> lock(this->mutex);
     return this->publishedApplication;
+}
+
+bool AppReceiver::IsApplicationLoadingLocked() const
+{
+    return this->application.has_value() && this->publishedApplication != this->application;
+}
+
+bool AppReceiver::IsApplicationLoading() const
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return this->IsApplicationLoadingLocked();
 }
 
 std::optional<AppReceiver::File> AppReceiver::GetFile(const std::string& path)

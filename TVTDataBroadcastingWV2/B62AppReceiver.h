@@ -89,6 +89,9 @@ public:
     std::vector<EventMessage> TakeEventMessages();
 
     std::optional<Application> GetApplication() const;
+    // True while the MH-AIT names an application whose files are still being
+    // received. The application changed callback is called when this changes too.
+    bool IsApplicationLoading() const;
     // path is relative to the application root, e.g. "sh4/40/001/startup/html/index.html".
     std::optional<File> GetFile(const std::string& path);
     std::vector<std::string> ListFiles();
@@ -166,6 +169,7 @@ private:
     void RebuildPathIndexLocked();
     bool IsServableLocked(const std::string& path);
     void UpdatePublishedApplicationLocked();
+    bool IsApplicationLoadingLocked() const;
 
     mutable std::mutex mutex;
     std::function<void()> applicationChangedCallback;

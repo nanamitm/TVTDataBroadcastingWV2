@@ -4842,7 +4842,9 @@ void CDataBroadcastingWV2::SendB62Application()
     {
         return;
     }
-    nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr } };
+    // loadingはアプリケーションのファイルを受信中 (dボタンでデータ取得中と出す)
+    nlohmann::json message{ { "type", "b62Application" }, { "url", nullptr },
+        { "loading", this->b62Supported && this->b62Receiver.IsApplicationLoading() } };
     // iframe内の通信を遮断できない古いランタイムではアプリケーションを動かさない
     if (auto app = this->b62Supported ? this->b62Receiver.GetApplication() : std::nullopt)
     {

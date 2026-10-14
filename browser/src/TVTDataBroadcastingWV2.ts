@@ -31,6 +31,8 @@ export class StatusBarIndicator implements Indicator {
     }
     url = "";
     receiving = false;
+    // 4Kデータ放送のアプリケーションのファイルを受信中
+    b62Receiving = false;
     eventName: string | null = "";
     loading = false;
     networkingPost = false;
@@ -41,7 +43,7 @@ export class StatusBarIndicator implements Indicator {
             url: this.url,
             receiving: this.receiving,
         });
-        if (this.receiving) {
+        if (this.receiving || this.b62Receiving) {
             this.receivingStatusElement.style.display = "";
         } else {
             this.receivingStatusElement.style.display = "none";
@@ -59,6 +61,10 @@ export class StatusBarIndicator implements Indicator {
     }
     public setReceivingStatus(receiving: boolean): void {
         this.receiving = receiving;
+        this.update();
+    }
+    public setB62ReceivingStatus(receiving: boolean): void {
+        this.b62Receiving = receiving;
         this.update();
     }
     public setNetworkingGetStatus(get: boolean): void {
@@ -566,6 +572,8 @@ type ToWebViewMessage = {
     organizationId?: number,
     applicationId?: number,
     version?: number,
+    // アプリケーションのファイルを受信中
+    loading?: boolean,
 } | ({
     type: "b62FollowingEvent",
 } & B62FollowingEvent);
@@ -718,6 +726,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         b62Application.pushEventMessage(data);
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
+        remoteControl.setB62ReceivingStatus(data.loading ?? false);
     } else if (data.type === "b62FollowingEvent") {
         b62Application.setFollowingEvent(data);
     }

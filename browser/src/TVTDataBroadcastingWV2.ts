@@ -93,7 +93,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence());
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence(), (keySet) => onB62KeySetChanged(keySet));
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -411,12 +411,35 @@ bmlBrowser.addEventListener("videochanged", (evt) => {
     });
 });
 
+// BML文書が使うキーと、4Kデータ放送のアプリケーションのkeySet (アプリケーションが無ければnull)
+let bmlUsedKeyList: { [key: string]: boolean } | null = null;
+let b62KeySet: number | null = null;
+
+// ホストにキーを横取りさせる範囲を伝える。4Kデータ放送のアプリケーションがあればそのkeySetに従う
+function postUsedKeyList() {
+    if (b62KeySet == null) {
+        if (bmlUsedKeyList != null) {
+            postMessage({ type: "usedKeyList", usedKeyList: bmlUsedKeyList });
+        }
+        return;
+    }
+    // 方向・決定・戻る・色・dボタンは今までどおり渡し、数字キーはNUMERIC (0x100) を設定したときだけ渡す
+    const usedKeyList: { [key: string]: boolean } = { "basic": true, "data-button": true };
+    if (b62KeySet & 0x100) {
+        usedKeyList["numeric-tuning"] = true;
+    }
+    postMessage({ type: "usedKeyList", usedKeyList });
+}
+
+function onB62KeySetChanged(keySet: number | null) {
+    b62KeySet = keySet;
+    postUsedKeyList();
+}
+
 bmlBrowser.addEventListener("usedkeylistchanged", (evt) => {
     const { usedKeyList } = evt.detail;
-    postMessage({
-        type: "usedKeyList",
-        usedKeyList: Object.fromEntries([...usedKeyList.values()].map(x => [x, true])),
-    });
+    bmlUsedKeyList = Object.fromEntries([...usedKeyList.values()].map(x => [x, true]));
+    postUsedKeyList();
 });
 
 bmlBrowser.addEventListener("audiostreamchanged", (evt) => {

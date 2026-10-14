@@ -44,7 +44,13 @@ constexpr wchar_t kShimScript[] = LR"JS(
         RED: 0x1, GREEN: 0x2, YELLOW: 0x4, BLUE: 0x8, NAVIGATION: 0x10, VCR: 0x20,
         SCROLL: 0x40, INFO: 0x80, NUMERIC: 0x100, ALPHA: 0x200, OTHER: 0x400, DBUTTON: 0x800,
         value: 0,
-        setValue: function (value) { this.value = value; return value; },
+        // The plugin page lets the keys through to the application (the
+        // number keys select channels otherwise).
+        setValue: function (value) {
+            this.value = Number(value) >>> 0;
+            notifyParent({ type: "keySet", value: this.value });
+            return this.value;
+        },
     };
     const ownerApplication = {
         keySet: keySet,

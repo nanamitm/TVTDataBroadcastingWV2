@@ -272,6 +272,9 @@
     <ClInclude Include="CaptionSettingsDialog.h" />
     <ClInclude Include="NativeCaptionRenderer.h" />
     <ClInclude Include="OneSeg.h" />
+    <ClInclude Include="B62AppReceiver.h" />
+    <ClInclude Include="B62Shim.h" />
+    <ClInclude Include="ZlibInflate.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="proxy.h" />
     <ClInclude Include="resource.h" />
@@ -291,6 +294,8 @@
     <ClCompile Include="CaptionSettingsDialog.cpp" />
     <ClCompile Include="NativeCaptionRenderer.cpp" />
     <ClCompile Include="OneSeg.cpp" />
+    <ClCompile Include="B62AppReceiver.cpp" />
+    <ClCompile Include="ZlibInflate.cpp" />
     <ClCompile Include="proxy.cpp" />
     <ClCompile Include="TVTDataBroadcastingWV2.cpp" />
     <ClCompile Include="pch.cpp">
@@ -318,14 +323,14 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="..\packages\Microsoft.Web.WebView2.1.0.1150.38\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.1150.38\build\native\Microsoft.Web.WebView2.targets')" />
+    <Import Project="..\packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\Microsoft.Web.WebView2.targets')" />
     <Import Project="..\packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\build\native\Microsoft.Windows.ImplementationLibrary.targets" Condition="Exists('..\packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\build\native\Microsoft.Windows.ImplementationLibrary.targets')" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>このプロジェクトは、このコンピューター上にない NuGet パッケージを参照しています。それらのパッケージをダウンロードするには、[NuGet パッケージの復元] を使用します。詳細については、http://go.microsoft.com/fwlink/?LinkID=322105 を参照してください。見つからないファイルは {0} です。</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('..\packages\Microsoft.Web.WebView2.1.0.1150.38\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Web.WebView2.1.0.1150.38\build\native\Microsoft.Web.WebView2.targets'))" />
+    <Error Condition="!Exists('..\packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\Microsoft.Web.WebView2.targets'))" />
     <Error Condition="!Exists('..\packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\build\native\Microsoft.Windows.ImplementationLibrary.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\build\native\Microsoft.Windows.ImplementationLibrary.targets'))" />
   </Target>
   <PropertyGroup>

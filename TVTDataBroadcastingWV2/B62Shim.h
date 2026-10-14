@@ -51,6 +51,38 @@ constexpr wchar_t kShimScript[] = LR"JS(
             setTimeout(function () { callback(value); }, 0);
         }
     }
+    // General event messages (ARIB STD-B62 Volume 2 3.3.12.1). The plugin page
+    // sends each one when its time comes; a listener gets those that match
+    // every field its param names.
+    const eventMessageListeners = [];
+    function eventParamKey(param) {
+        const source = param.source || {};
+        return JSON.stringify([source.event_message_tag, param.message_group_id, param.message_id, param.message_version]);
+    }
+    function eventMatches(param, message) {
+        const source = param.source || {};
+        return (source.event_message_tag == null || Number(source.event_message_tag) === message.source.event_message_tag) &&
+            (param.message_group_id == null || Number(param.message_group_id) === message.message_group_id) &&
+            (param.message_id == null || Number(param.message_id) === message.message_id) &&
+            (param.message_version == null || Number(param.message_version) === message.message_version);
+    }
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host" || data.type !== "eventMessage" || !data.message) {
+            return;
+        }
+        eventMessageListeners.slice().forEach(function (entry) {
+            if (!eventMatches(entry.param, data.message)) {
+                return;
+            }
+            try {
+                entry.listener(Object.assign({}, data.message, { source: Object.assign({}, data.message.source) }));
+            } catch (e) {
+                console.error(e);
+            }
+        });
+    });
+
     // The plugin page answers with what it knows of the current programme.
     // Without an answer the callback still gets an object, as apps read
     // fields like service_id from it unconditionally.
@@ -93,8 +125,20 @@ constexpr wchar_t kShimScript[] = LR"JS(
         getCurrentEventInformation: function (callback) { askParent("getEventInformation", callback); },
         getDeviceIdentifier: function (type, callback) { later(callback, null); return null; },
         streamEvent: {
-            addGeneralEventMessageListener: function () { return true; },
-            removeGeneralEventMessageListener: function () { return true; },
+            addGeneralEventMessageListener: function (param, listener) {
+                if (typeof listener === "function") {
+                    eventMessageListeners.push({ param: param || {}, listener: listener });
+                }
+            },
+            removeGeneralEventMessageListener: function (param, listener) {
+                const key = eventParamKey(param || {});
+                for (let i = eventMessageListeners.length - 1; i >= 0; i--) {
+                    const entry = eventMessageListeners[i];
+                    if (eventParamKey(entry.param) === key && (listener == null || entry.listener === listener)) {
+                        eventMessageListeners.splice(i, 1);
+                    }
+                }
+            },
             addEventIDUpdateListener: function () { return true; },
             removeEventIDUpdateListener: function () { return true; },
         },

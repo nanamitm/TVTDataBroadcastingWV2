@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame, type B62Caption } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption, type B62EventMessage } from "./b62_application";
 
 declare global {
     interface Window {
@@ -469,6 +469,7 @@ function onMessage(msg: ResponseMessage) {
         pmtRetrieved = true;
     } else if (msg.type === "currentTime") {
         isRecord = new Date().getTime() - msg.timeUnixMillis >= 5 * 60 * 1000;
+        b62Application.setBroadcastTime(msg.timeUnixMillis);
     } else if (msg.type === "programInfo") {
         b62Application.setProgramInfo(msg);
     }
@@ -553,7 +554,9 @@ type ToWebViewMessage = {
     ws_uri: string,
 } | ({
     type: "b62Caption",
-} & B62Caption) | {
+} & B62Caption) | ({
+    type: "b62EventMessage",
+} & B62EventMessage) | {
     // 4Kデータ放送 (ARIB STD-B62) のアプリケーション。urlがnullなら終了
     type: "b62Application",
     url: string | null,
@@ -706,6 +709,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         });
     } else if (data.type === "b62Caption") {
         b62Application.pushCaption(data);
+    } else if (data.type === "b62EventMessage") {
+        b62Application.pushEventMessage(data);
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
     }

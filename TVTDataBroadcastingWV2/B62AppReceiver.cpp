@@ -13,6 +13,9 @@ constexpr uint8_t kTableDdmt = 0xA3;
 constexpr uint8_t kTableDamt = 0xA4;
 constexpr uint8_t kTableItem = 0xC0;
 constexpr uint8_t kTableCaption = 0xC1;
+constexpr uint8_t kTableTaggedEmt = 0xC2;
+constexpr uint8_t kTableEmt = 0xA6;
+constexpr uint16_t kDescriptorEventMessage = 0xF003;
 constexpr size_t kMaxQueuedCaptions = 64;
 constexpr uint16_t kDescriptorTransportProtocol = 0x802A;
 constexpr uint16_t kDescriptorSimpleApplicationLocation = 0x802B;
@@ -215,6 +218,8 @@ void AppReceiver::ResetApplicationLocked()
     this->ddmtSections.clear();
     this->pendingItems.clear();
     this->captions.clear();
+    this->eventMessages.clear();
+    this->lastEventMessages.clear();
     this->items.clear();
     this->itemBytes = 0;
     this->application.reset();
@@ -243,15 +248,17 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
         }
         before = this->publishedApplication;
         const size_t captionCount = this->captions.size();
+        const size_t eventMessageCount = this->eventMessages.size();
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
         this->UpdatePublishedApplicationLocked();
         if (before != this->publishedApplication)
         {
             callback = this->applicationChangedCallback;
         }
-        if (this->captions.size() != captionCount && !this->captions.empty())
+        if ((this->captions.size() != captionCount && !this->captions.empty()) ||
+            (this->eventMessages.size() != eventMessageCount && !this->eventMessages.empty()))
         {
-            captionNotify = this->captionCallback;
+            captionNotify = this->messageCallback;
         }
     }
     if (callback)
@@ -264,10 +271,16 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
     }
 }
 
-void AppReceiver::SetCaptionCallback(std::function<void()> callback)
+void AppReceiver::SetMessageCallback(std::function<void()> callback)
 {
     std::lock_guard<std::mutex> lock(this->mutex);
-    this->captionCallback = std::move(callback);
+    this->messageCallback = std::move(callback);
+}
+
+std::vector<AppReceiver::EventMessage> AppReceiver::TakeEventMessages()
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return std::exchange(this->eventMessages, {});
 }
 
 std::vector<AppReceiver::Caption> AppReceiver::TakeCaptions()
@@ -486,16 +499,20 @@ void AppReceiver::OnPmt(const uint8_t* section, size_t size)
 void AppReceiver::OnAppSection(const uint8_t* section, size_t size)
 {
     const uint8_t tableId = section[0];
-    if (tableId == kTableItem || tableId == kTableCaption)
+    if (tableId == kTableItem || tableId == kTableCaption || tableId == kTableTaggedEmt)
     {
         auto body = this->AssembleSections(section, size);
         if (body && tableId == kTableItem)
         {
             this->OnItem(*body);
         }
-        else if (body)
+        else if (body && tableId == kTableCaption)
         {
             this->OnCaption(*body);
+        }
+        else if (body)
+        {
+            this->OnTaggedEmt(*body);
         }
         return;
     }
@@ -734,6 +751,67 @@ void AppReceiver::OnCaption(const std::vector<uint8_t>& body)
         this->captions.erase(this->captions.begin());
     }
     this->captions.push_back(std::move(caption));
+}
+
+void AppReceiver::OnTaggedEmt(const std::vector<uint8_t>& body)
+{
+    // EMT_tag, then the EMT section (ARIB STD-B60 11.2.1.1)
+    if (body.size() < 1 + 12)
+    {
+        return;
+    }
+    const uint8_t emtTag = body[0];
+    const uint8_t* emt = body.data() + 1;
+    const size_t emtSize = body.size() - 1;
+    if (emt[0] != kTableEmt || 3 + (((emt[1] & 0x0F) << 8) | emt[2]) != emtSize || Crc32Mpeg2(emt, emtSize) != 0)
+    {
+        return;
+    }
+    Reader descriptors(emt + 8, emtSize - 12);
+    while (descriptors.Left() >= 3 && !descriptors.Failed())
+    {
+        const uint16_t tag = descriptors.U16();
+        // Descriptors from 0xF000 have a 16-bit length.
+        const size_t length = tag >= 0xF000 ? descriptors.U16() : descriptors.U8();
+        Reader body2 = descriptors.Sub(length);
+        if (tag != kDescriptorEventMessage)
+        {
+            continue;
+        }
+        EventMessage message;
+        message.emtTag = emtTag;
+        message.messageGroupId = body2.U16() >> 4;
+        message.timeMode = body2.U8();
+        // Every defined time_mode carries a 64-bit time (reserved for 0x00).
+        if (message.timeMode > 0x05 || message.timeMode == 0x04)
+        {
+            continue;
+        }
+        message.time = (static_cast<uint64_t>(body2.U32()) << 32) | body2.U32();
+        message.messageType = body2.U8();
+        message.messageId = body2.U16();
+        if (body2.Failed())
+        {
+            continue;
+        }
+        message.privateData.assign(body2.Current(), body2.Current() + body2.Left());
+
+        // A listener runs again only for a new message_version (ARIB STD-B62 Volume 2 3.3.12.1);
+        // EMTs repeat the same message every second.
+        const auto key = std::make_tuple(emtTag, message.messageGroupId, static_cast<uint8_t>(message.messageId >> 8));
+        const uint8_t version = message.messageId & 0xFF;
+        auto last = this->lastEventMessages.find(key);
+        if (last != this->lastEventMessages.end() && last->second.first == version && last->second.second == message.privateData)
+        {
+            continue;
+        }
+        this->lastEventMessages[key] = { version, message.privateData };
+        if (this->eventMessages.size() >= kMaxQueuedCaptions)
+        {
+            this->eventMessages.erase(this->eventMessages.begin());
+        }
+        this->eventMessages.push_back(std::move(message));
+    }
 }
 
 void AppReceiver::OnItem(const std::vector<uint8_t>& body)

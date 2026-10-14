@@ -53,6 +53,20 @@ public:
         std::vector<uint8_t> data;
     };
 
+    // An event message (ARIB STD-B60 11.2.2.2) from an EMT. Only new messages
+    // and new versions of a message are reported.
+    struct EventMessage
+    {
+        uint8_t emtTag = 0;
+        uint16_t messageGroupId = 0;
+        uint8_t timeMode = 0;
+        // event_msg_UTC / NPT / relativeTime as transmitted (NTP format for UTC and relative)
+        uint64_t time = 0;
+        uint8_t messageType = 0;
+        uint16_t messageId = 0;
+        std::vector<uint8_t> privateData;
+    };
+
     static constexpr uint32_t kFormatIdentifier = 0x44344B41; // 'D4KA'
 
     // Called on the TS thread when the application to run changes.
@@ -60,9 +74,11 @@ public:
     // Forgets everything and follows the given service (-1: the first one).
     void Reset(int serviceId);
     void FeedPacket(const uint8_t* packet);
-    // Called on the TS thread when captions are waiting in TakeCaptions().
-    void SetCaptionCallback(std::function<void()> callback);
+    // Called on the TS thread when captions or event messages are waiting in
+    // TakeCaptions() / TakeEventMessages().
+    void SetMessageCallback(std::function<void()> callback);
     std::vector<Caption> TakeCaptions();
+    std::vector<EventMessage> TakeEventMessages();
 
     std::optional<Application> GetApplication() const;
     // path is relative to the application root, e.g. "sh4/40/001/startup/html/index.html".
@@ -138,13 +154,14 @@ private:
     std::optional<std::vector<uint8_t>> AssembleSections(const uint8_t* section, size_t size);
     void OnItem(const std::vector<uint8_t>& body);
     void OnCaption(const std::vector<uint8_t>& body);
+    void OnTaggedEmt(const std::vector<uint8_t>& body);
     void RebuildPathIndexLocked();
     bool IsServableLocked(const std::string& path);
     void UpdatePublishedApplicationLocked();
 
     mutable std::mutex mutex;
     std::function<void()> applicationChangedCallback;
-    std::function<void()> captionCallback;
+    std::function<void()> messageCallback;
     int serviceId = -1;
 
     int pmtPid = -1;
@@ -158,6 +175,9 @@ private:
     // (table_id << 16) | table_id_extension
     std::map<uint32_t, PendingItem> pendingItems;
     std::vector<Caption> captions;
+    std::vector<EventMessage> eventMessages;
+    // (EMT_tag, message_group_id, message_id upper 8 bits) -> last message_version and private data
+    std::map<std::tuple<uint8_t, uint16_t, uint8_t>, std::pair<uint8_t, std::vector<uint8_t>>> lastEventMessages;
     std::map<ItemKey, std::vector<uint8_t>> items;
     size_t itemBytes = 0;
 

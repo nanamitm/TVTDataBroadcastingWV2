@@ -3,9 +3,8 @@
 // このページとは別オリジンなので、アプリケーションからこのページには触れない。
 
 const appOrigin = "https://tvtdatabroadcastingwv2-b62.invalid";
-// ARIB STD-B62のアプリケーションは3840x2160で描画される
-const appWidth = 3840;
-const appHeight = 2160;
+// アプリケーションの文書の解像度。viewportで1920x1080や7680x4320も指定できる (ARIB TR-B39 10.8.1.2)
+const defaultAppSize = { width: 3840, height: 2160 };
 
 // web-bmlのAribKeyCodeからアプリケーションに渡すkeyCodeへ (B62Shim.hのVK_*と合わせる)
 const keyCodeMap = new Map<number, number>([
@@ -36,6 +35,8 @@ type FrameMessage = {
     rect: VideoRect | null,
     // 映像より手前に重なっている要素 (映像の範囲内に切り詰めたもの)
     above?: VideoRect[],
+    // 文書の解像度
+    viewport?: { width: number, height: number },
 } | {
     source: "b62Application",
     type: "hello",
@@ -198,6 +199,8 @@ export class B62ApplicationFrame {
     private destroyedKey: string | null = null;
     private programInfo: B62ProgramInfo | null = null;
     private videoRect: VideoRect | null = null;
+    // 表示中の文書の解像度 (videoRectなどの座標はこの上のもの)
+    private appSize = defaultAppSize;
     private videoOverlays: VideoRect[] = [];
     private captionComponents: number[] = [];
     private currentTimeMillis: number | null = null;
@@ -244,8 +247,9 @@ export class B62ApplicationFrame {
         frame.style.position = "absolute";
         frame.style.left = "0px";
         frame.style.top = "0px";
-        frame.style.width = `${appWidth}px`;
-        frame.style.height = `${appHeight}px`;
+        this.appSize = defaultAppSize;
+        frame.style.width = `${this.appSize.width}px`;
+        frame.style.height = `${this.appSize.height}px`;
         frame.style.border = "none";
         frame.style.background = "transparent";
         frame.style.colorScheme = "normal";
@@ -471,7 +475,7 @@ export class B62ApplicationFrame {
         }
         const width = this.container.clientWidth || 960;
         const height = this.container.clientHeight || 540;
-        this.frame.style.transform = `scale(${width / appWidth}, ${height / appHeight})`;
+        this.frame.style.transform = `scale(${width / this.appSize.width}, ${height / this.appSize.height})`;
     }
 
     // 映像を出す位置 (このページのビューポート座標)。アプリケーションが映像を置いていなければnull
@@ -480,8 +484,8 @@ export class B62ApplicationFrame {
             return null;
         }
         const frameRect = this.frame.getBoundingClientRect();
-        const scaleX = frameRect.width / appWidth;
-        const scaleY = frameRect.height / appHeight;
+        const scaleX = frameRect.width / this.appSize.width;
+        const scaleY = frameRect.height / this.appSize.height;
         return new DOMRect(
             frameRect.left + this.videoRect.left * scaleX,
             frameRect.top + this.videoRect.top * scaleY,
@@ -500,10 +504,10 @@ export class B62ApplicationFrame {
             return;
         }
         const left = Math.max(0, r.left), top = Math.max(0, r.top);
-        const right = Math.min(appWidth, r.left + r.width), bottom = Math.min(appHeight, r.top + r.height);
+        const right = Math.min(this.appSize.width, r.left + r.width), bottom = Math.min(this.appSize.height, r.top + r.height);
         // evenodd: 全体、映像の穴、穴の中で手前に重なる要素 (重ならないように分割したもの) の順に重ねる。
         // 各矩形は原点から行って戻るので、つなぎの線は面積を持たない
-        const rects = [{ left: 0, top: 0, right: appWidth, bottom: appHeight }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
+        const rects = [{ left: 0, top: 0, right: this.appSize.width, bottom: this.appSize.height }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
         const points = rects.flatMap(q => [
             `${q.left}px ${q.top}px`, `${q.right}px ${q.top}px`, `${q.right}px ${q.bottom}px`, `${q.left}px ${q.bottom}px`, `${q.left}px ${q.top}px`, "0 0",
         ]);
@@ -546,6 +550,15 @@ export class B62ApplicationFrame {
             this.postCaptionComponents();
             this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "residence", residence: this.getResidence() }, appOrigin);
         } else if (message.type === "videoRect") {
+            const viewport = message.viewport;
+            if (viewport != null && Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0 &&
+                (viewport.width !== this.appSize.width || viewport.height !== this.appSize.height)) {
+                this.appSize = { width: viewport.width, height: viewport.height };
+                this.frame.style.width = `${this.appSize.width}px`;
+                this.frame.style.height = `${this.appSize.height}px`;
+                this.resize();
+            }
             this.videoRect = message.rect;
             this.videoOverlays = message.above ?? [];
             this.updateVideoHole();

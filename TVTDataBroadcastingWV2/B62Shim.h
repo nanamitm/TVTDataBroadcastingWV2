@@ -372,8 +372,25 @@ constexpr wchar_t kShimScript[] = LR"JS(
     sheet.replaceSync('object[type="video/x-arib2-broadcast" i], object[type="audio/x-arib2-broadcast" i] { visibility: hidden !important; }');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
 
+    // The document's resolution from its viewport meta element: 1920x1080,
+    // 3840x2160 or 7680x4320, 3840x2160 when not given (ARIB TR-B39 10.8.1.2).
+    // The plugin page sizes the frame to it and scales it to the screen.
+    function documentViewport() {
+        const sizes = { 1920: 1080, 3840: 2160, 7680: 4320 };
+        const meta = document.querySelector('meta[name="viewport" i]');
+        const content = meta ? String(meta.getAttribute("content") || "") : "";
+        const width = /(?:^|[,;\s])width\s*=\s*(\d+)/i.exec(content);
+        const height = /(?:^|[,;\s])height\s*=\s*(\d+)/i.exec(content);
+        let w = width ? parseInt(width[1], 10) : 0;
+        if (!sizes[w] && height) {
+            const h = parseInt(height[1], 10);
+            w = Number(Object.keys(sizes).find(function (key) { return sizes[key] === h; })) || 0;
+        }
+        return sizes[w] ? { width: w, height: sizes[w] } : { width: 3840, height: 2160 };
+    }
+
     // Tell the plugin page where the video object is (in this document's
-    // 3840x2160 coordinates), so it can cut a hole there and move the video
+    // coordinates), so it can cut a hole there and move the video
     // window under it. Only the application's own document reports.
     // Elements stacked above the video (a popup over it, say) are reported too,
     // so the hole leaves them visible.
@@ -472,10 +489,11 @@ constexpr wchar_t kShimScript[] = LR"JS(
                     above = rectsAboveVideo(video, rect);
                 }
             }
-            const key = JSON.stringify([rect, above]);
+            const viewport = documentViewport();
+            const key = JSON.stringify([rect, above, viewport]);
             if (key !== lastVideoRect) {
                 lastVideoRect = key;
-                notifyParent({ type: "videoRect", rect: rect, above: above });
+                notifyParent({ type: "videoRect", rect: rect, above: above, viewport: viewport });
             }
         }, 100);
     }

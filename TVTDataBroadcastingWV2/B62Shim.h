@@ -164,6 +164,15 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
 
+    // Methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
+    // Captions are not handed to applications yet, so none are reported; pages
+    // such as NHK's caption page stop initialising if these are missing.
+    Object.assign(HTMLObjectElement.prototype, {
+        isCaptionExistent: function () { return false; },
+        addCaptionListener: function () { return true; },
+        removeCaptionListener: function () { return true; },
+    });
+
     // <object type="video/x-arib2-broadcast"> marks where the broadcast video
     // goes. The plugin draws the video behind the page, so the object must be
     // see-through instead of Chromium's white "plugin not supported" box.

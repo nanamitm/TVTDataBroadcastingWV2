@@ -1,7 +1,7 @@
 import { CommentData, CommentRenderer } from "./comment";
 import { ChannelInfo, ChannelsClient } from "./channels";
 import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
-import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "web-bml";
+import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
 import { B62ApplicationFrame, type B62Caption } from "./b62_application";
@@ -81,7 +81,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized());
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode));
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素

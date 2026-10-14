@@ -39,6 +39,10 @@ type FrameMessage = {
 } | {
     source: "b62Application",
     type: "hello",
+} | {
+    source: "b62Application",
+    type: "romsound",
+    id: number,
 };
 
 // ネイティブから届く字幕 (TVTDataBroadcastingWV2.cppのSendB62Captions)
@@ -154,11 +158,14 @@ export class B62ApplicationFrame {
     private currentTimeMillis: number | null = null;
     private captionQueue: { due: number, caption: B62Caption }[] = [];
     private readonly onVideoChanged: () => void;
+    private readonly playRomSound: (id: number) => void;
 
-    // onVideoChangedは映像を出す位置が変わったときに呼ばれる
-    constructor(container: HTMLElement, onVideoChanged: () => void) {
+    // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
+    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
+        this.playRomSound = playRomSound;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -341,18 +348,28 @@ export class B62ApplicationFrame {
             return;
         }
         if (message.type === "getEventInformation") {
-            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)
+            // ARIB STD-B62のgetCurrentEventInformationの形にする (分かる項目のみ)。
+            // アプリケーションはstart_timeなどをDateとして扱う (postMessageはDateをそのまま渡せる)。
+            // 次の番組 (f_*) は分からないので、開始時刻だけ今の番組の終了時刻で埋める
             const info = this.programInfo;
+            const start = info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis) : null;
+            const end = start != null && info?.durationSeconds != null ? new Date(start.getTime() + info.durationSeconds * 1000) : null;
             const data = {
                 service_id: info?.serviceId ?? null,
                 original_network_id: info?.originalNetworkId ?? null,
                 transport_stream_id: info?.transportStreamId ?? null,
                 event_id: info?.eventId ?? null,
                 event_name: info?.eventName ?? null,
-                start_time: info?.startTimeUnixMillis != null ? new Date(info.startTimeUnixMillis).toISOString() : null,
+                start_time: start,
                 duration: info?.durationSeconds ?? null,
+                f_event_id: null,
+                f_start_time: end ?? start,
             };
             (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+        } else if (message.type === "romsound") {
+            if (Number.isInteger(message.id)) {
+                this.playRomSound(message.id);
+            }
         } else if (message.type === "hello") {
             this.postCaptionComponents();
         } else if (message.type === "videoRect") {

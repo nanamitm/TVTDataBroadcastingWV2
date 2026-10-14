@@ -24,6 +24,12 @@
     <ClInclude Include="NVRAMSettingsDialog.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="AsyncLifetime.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="ProxyPolicy.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="proxy.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

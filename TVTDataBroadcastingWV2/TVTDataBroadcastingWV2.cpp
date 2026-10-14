@@ -1,9 +1,11 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "thirdparty/TVTestPlugin.h"
 #include "resource.h"
 #include "StartupPolicy.h"
+#include "AsyncLifetime.h"
+#include "ProxyPolicy.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -447,6 +449,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // iniのEnableNetworkが1であればProxySessionが初期化されenableNetworkもtrueになる
     // ただしenableNetworkの方は実行時にボタンで切り替えられる
     std::unique_ptr<ProxySession> proxySession;
+    AsyncLifetime webViewLifetime;
     bool enableNetwork = true;
     std::unique_ptr<InputDialog> inputDialog;
     Audio mainAudio;
@@ -551,6 +554,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin = nullptr);
     HRESULT ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri);
     static bool IsFromB62Application(ICoreWebView2WebResourceRequest* request);
+    static bool IsFromPluginPage(ICoreWebView2WebResourceRequest* request);
     void UpdateCommentToggle();
     void UpdateNetworkToggleButton(HWND hWnd);
     void SetNetworkState(bool enable);
@@ -1139,6 +1143,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_APP_RESPONSE:
     {
         auto response = std::unique_ptr<DeferralResponse>((DeferralResponse*)lParam);
+        if (!pThis->webView) { response->deferral->Complete(); break; }
         wil::com_ptr<ICoreWebView2Environment> env;
         auto hr = pThis->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
         if (FAILED(hr))
@@ -1170,6 +1175,9 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
             response->deferral->Complete();
             break;
         }
+        ULARGE_INTEGER streamSize{};
+        streamSize.QuadPart = response->content.size();
+        if (FAILED(stm->SetSize(streamSize))) { response->deferral->Complete(); break; }
         std::wistringstream iss(response->headers);
         std::wostringstream replacedHeader;
         std::wstring header;
@@ -1478,7 +1486,8 @@ void CDataBroadcastingWV2::InitWebView2()
     );
     auto result = CreateCoreWebView2EnvironmentWithOptions(webView2Directory, this->webView2DataDirectory.c_str(), options.Get(),
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [this, resourceDirectory](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            [this, resourceDirectory, ticket = this->webViewLifetime.GetTicket()](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+        if (!AsyncLifetime::IsCurrent(ticket)) return S_OK;
         if (!env)
         {
             wchar_t buf[9]{};
@@ -1500,7 +1509,11 @@ void CDataBroadcastingWV2::InitWebView2()
             this->m_pApp->AddLog((std::wstring(L"WebView2 version: ") + ver.get()).c_str(), TVTest::LOG_TYPE_INFORMATION);
         }
         env->CreateCoreWebView2Controller(this->hMessageWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [env, this, resourceDirectory](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+            [env, this, resourceDirectory, ticket](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+            if (!AsyncLifetime::IsCurrent(ticket)) {
+                if (controller) controller->Close();
+                return S_OK;
+            }
             if (FAILED(result))
             {
                 wchar_t buf[9]{};
@@ -1584,6 +1597,15 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 if (this->proxySession && proxyUrl && this->enableNetwork)
                 {
+                    // This legacy bridge belongs to the host page, not to
+                    // broadcast iframes (including requests without Referer).
+                    if (!IsFromPluginPage(request.get())) {
+                        wil::com_ptr<ICoreWebView2Environment> env;
+                        RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+                        wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+                        RETURN_IF_FAILED(env->CreateWebResourceResponse(nullptr, 403, L"Blocked", L"", response.put()));
+                        return args->put_Response(response.get());
+                    }
                     return this->Proxy(args, proxyUrl);
                 }
                 else if (!_wcsnicmp(B62::kAppOrigin, uri.get(), wcslen(B62::kAppOrigin)) && uri.get()[wcslen(B62::kAppOrigin)] == L'/')
@@ -2238,6 +2260,17 @@ void CDataBroadcastingWV2::SendB62FollowingEvent()
 // cors無効コマンドライン引数を追加するなどでWebView2側に任せることも可能ではあるけど融通が利かないためWinHTTPを使う あとバージョン依存の問題があるらしい?
 // 4Kデータ放送のアプリケーション (別オリジンのiframe) からのリクエストか。
 // fetch/XHRならOriginに、画像やスクリプトの読み込みならRefererにアプリケーションのオリジンが入る
+bool CDataBroadcastingWV2::IsFromPluginPage(ICoreWebView2WebResourceRequest* request)
+{
+    wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
+    if (FAILED(request->get_Headers(headers.put()))) return false;
+    wil::unique_cotaskmem_string origin;
+    wil::unique_cotaskmem_string referrer;
+    headers->GetHeader(L"Origin", origin.put());
+    headers->GetHeader(L"Referer", referrer.put());
+    return ProxyPolicy::LegacyBridgeAllowed(origin ? origin.get() : L"", referrer ? referrer.get() : L"");
+}
+
 bool CDataBroadcastingWV2::IsFromB62Application(ICoreWebView2WebResourceRequest* request)
 {
     wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
@@ -2333,12 +2366,18 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
         STATSTG statstg = {};
         hr = content->Stat(&statstg, STATFLAG_NONAME);
         auto size = statstg.cbSize.QuadPart;
-        if (SUCCEEDED(hr) && size <= std::numeric_limits<ULONG>::max())
-        {
-            contentBuffer.resize((ULONG)size);
-            content->Read(contentBuffer.data(), (ULONG)size, &contentSize);
-            contentBuffer.resize(contentSize);
+        if (FAILED(hr)) return hr;
+        if (size > ProxyLimits{}.payloadBytes) {
+            wil::com_ptr<ICoreWebView2Environment> env;
+            RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+            wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+            RETURN_IF_FAILED(env->CreateWebResourceResponse(nullptr, 413, L"Payload Too Large", L"", response.put()));
+            return args->put_Response(response.get());
         }
+        contentBuffer.resize(static_cast<ULONG>(size));
+        contentSize = 0;
+        RETURN_IF_FAILED(content->Read(contentBuffer.data(), static_cast<ULONG>(size), &contentSize));
+        contentBuffer.resize(contentSize);
     }
     wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
     hr = request->get_Headers(headers.put());
@@ -2382,11 +2421,9 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     args->GetDeferral(deferral.put());
     // 4Kデータ放送のアプリケーションの通信なら通信中と表示する
     auto networkingToken = allowOrigin ? this->BeginB62Networking() : nullptr;
-    if (!ProxyRequest::RequestAsync(*this->proxySession.get(), proxyUrl, method.get(), std::move(contentBuffer), headersPtr, [deferral, networkingToken]() -> void
-    {
-        // error
-        deferral->Complete();
-    }, [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken](DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
+    auto postResponse = [this, args = wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral,
+        origin = std::wstring(allowOrigin ? allowOrigin : L""), networkingToken]
+        (DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content) -> void
     {
         if (this->hMessageWnd)
         {
@@ -2397,7 +2434,7 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
                 statusCode,
                 std::wstring(statusCodeText),
                 std::wstring(headers),
-                std::vector<BYTE>(content, content + contentLength),
+                contentLength ? std::vector<BYTE>(content, content + contentLength) : std::vector<BYTE>{},
                 origin,
                 networkingToken,
             });
@@ -2415,8 +2452,10 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
             deferral->Complete();
         }
         return;
-    // 4Kデータ放送のアプリケーションの通信は、家庭内などインターネット上でない宛先には送らない
-    }, allowOrigin != nullptr))
+    };
+    // Both success and failure are completed on the WebView UI thread.
+    if (!ProxyRequest::RequestAsync(*this->proxySession, proxyUrl, method.get(), std::move(contentBuffer), headersPtr,
+        [postResponse] { postResponse(502, L"Bad Gateway", L"", 0, nullptr); }, postResponse, allowOrigin != nullptr))
     {
         deferral->Complete();
     }
@@ -2464,6 +2503,17 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->webViewLifetime.Cancel();
+    // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
+    this->proxySession.reset();
+    if (this->hMessageWnd) {
+        MSG message;
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_RESPONSE, WM_APP_RESPONSE, PM_REMOVE)) {
+            std::unique_ptr<DeferralResponse> response(reinterpret_cast<DeferralResponse*>(message.lParam));
+            response->deferral->Complete();
+        }
+    }
+    this->b62NetworkingCount = 0;
     this->m_jkcnslReader.Stop();
     // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
     this->m_manualJkVideo.clear();
@@ -2579,6 +2629,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
     this->status = {};
     if (fEnable)
     {
+        this->webViewLifetime.Begin();
         this->CreateMessageWindow();
         if (!this->GetIniItem(L"DisableRemoteControl", 0))
         {
@@ -4529,8 +4580,15 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
 {
     this->webViewEnv->CreateCoreWebView2Controller(hwnd,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [this, hwnd](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
-                if (FAILED(hr) || !IsWindow(hwnd)) return S_OK;
+            [this, hwnd, ticket = this->webViewLifetime.GetTicket()](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
+                if (!AsyncLifetime::IsCurrent(ticket)) {
+                    if (ctrl) ctrl->Close();
+                    return S_OK;
+                }
+                if (FAILED(hr) || !ctrl || !IsWindow(hwnd) || this->hMomentumPanel != hwnd) {
+                    if (ctrl) ctrl->Close();
+                    return S_OK;
+                }
 
                 this->momentumWebViewController = ctrl;
                 ctrl->get_CoreWebView2(this->momentumWebView.put());

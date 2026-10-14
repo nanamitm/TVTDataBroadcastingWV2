@@ -180,6 +180,22 @@ Release x64ビルド後、起動時のパネル復元スモークテストは以
 .\x64\Release\StartupSmokeTests.exe
 ```
 
+### 回帰テスト
+
+NuGetパッケージを復元し、`browser`のnpm依存を準備した後、リポジトリのルートで実行します。
+
+```powershell
+./tests/run-safety-tests.ps1
+node tests/b62_application.test.cjs
+node browser/node_modules/typescript/bin/tsc --noEmit -p browser/tsconfig.json
+```
+
+ネイティブテストはVisual Studioのx64 C++ツールで単独ビルドします。WinHTTPとループバックサーバーを使い、完了・キャンセル時の寿命管理、受信サイズ・同時要求数の上限、プライベート宛先の拒否を確認します。部分読み取りはAPI呼び出しを置き換えた決定的な通知で確認し、WebView2初期化の世代管理とプロキシの要求元判定も検証します。生成物は`work/safety-tests`に保存します。
+
+ブラウザー側のテストは本番のTypeScript実装を簡易DOMで実行し、アプリURL・バージョン変更や終了時に旧NPTイベントが残らないことを確認します。これらはTVTest内のWebView2実動作や実放送データの受信試験を置き換えるものではありません。
+
+通信プロキシの上限は応答16 MiB、アップロード4 MiB、同時要求8件です。応答の上限超過や通信失敗はHTTP 502、アップロードの上限超過はHTTP 413で通知します。無効化・終了時は保留要求をキャンセルし、WinHTTPの最終通知まで待機します。
+
 ### web-bmlのビルド
 
 以下のコマンドでビルド

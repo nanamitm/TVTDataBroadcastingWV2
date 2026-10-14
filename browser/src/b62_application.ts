@@ -660,6 +660,9 @@ export class B62ApplicationFrame {
     private close() {
         this.captionQueue = [];
         this.eventQueue = [];
+        // Keep service-level references, but never replay the old application's
+        // events into an iframe created after this one has closed.
+        this.nptPending = [];
         const hadVideo = this.videoRect != null;
         this.frame?.remove();
         this.frame = null;

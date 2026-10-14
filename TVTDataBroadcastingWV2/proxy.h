@@ -24,13 +24,16 @@ class ProxyRequest
     std::function<void()> errorCallback;
     std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback;
     std::vector<BYTE> payload;
+    // trueなら接続先がローカル・プライベートなアドレスのとき中止する
+    bool blockPrivateAddresses = false;
     ProxyRequest
     (
         HINTERNET connect,
         HINTERNET request,
         std::function<void()> errorCallback,
         std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
-        std::vector<BYTE> payload
+        std::vector<BYTE> payload,
+        bool blockPrivateAddresses
     );
     static void CALLBACK StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR dwContext, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength);
     void Fail();
@@ -38,7 +41,9 @@ class ProxyRequest
     void Close();
 public:
     // 非同期HTTPリクエストを行う
-    // 完了すると別スレッドでcallbackが呼ばれる
+    // 完了すると別スレッドでcallbackが呼ばれる。
+    // blockPrivateAddressesがtrueなら、実際に接続した先 (名前解決やリダイレクトの後) が
+    // ループバックやプライベートなどのアドレスのときは失敗させる
     static bool RequestAsync
     (
         ProxySession& session,
@@ -47,8 +52,11 @@ public:
         std::vector<BYTE> payload,
         std::vector<std::pair<LPCWSTR, LPCWSTR>>& headers,
         std::function<void()> errorCallback,
-        std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback
+        std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
+        bool blockPrivateAddresses = false
     );
+    // インターネット上ではないアドレス (ループバック、プライベート、リンクローカルなど) か
+    static bool IsPrivateAddress(LPCWSTR address);
     ~ProxyRequest();
     ProxyRequest(const ProxyRequest&) = delete;
     ProxyRequest& operator=(const ProxyRequest&) = delete;

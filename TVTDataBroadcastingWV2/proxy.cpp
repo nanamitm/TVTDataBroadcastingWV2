@@ -1,5 +1,7 @@
 ﻿#include "pch.h"
 #include "proxy.h"
+#include <ws2tcpip.h>
+#pragma comment(lib, "Ws2_32.lib")
 
 ProxyRequest::ProxyRequest
 (
@@ -7,10 +9,68 @@ ProxyRequest::ProxyRequest
     HINTERNET request,
     std::function<void()> errorCallback,
     std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
-    std::vector<BYTE> payload
-) : connect(connect), request(request), errorCallback(std::move(errorCallback)), callback(std::move(callback)), payload(std::move(payload))
+    std::vector<BYTE> payload,
+    bool blockPrivateAddresses
+) : connect(connect), request(request), errorCallback(std::move(errorCallback)), callback(std::move(callback)), payload(std::move(payload)),
+    blockPrivateAddresses(blockPrivateAddresses)
 {
 
+}
+
+bool ProxyRequest::IsPrivateAddress(LPCWSTR address)
+{
+    if (!address)
+    {
+        return true;
+    }
+    // IPv6はスコープ (%n) を除いて読む
+    std::wstring text(address);
+    if (const auto scope = text.find(L'%'); scope != std::wstring::npos)
+    {
+        text.resize(scope);
+    }
+    IN_ADDR v4{};
+    IN6_ADDR v6{};
+    const uint8_t* b;
+    if (InetPtonW(AF_INET, text.c_str(), &v4) == 1)
+    {
+        b = reinterpret_cast<const uint8_t*>(&v4);
+    }
+    else if (InetPtonW(AF_INET6, text.c_str(), &v6) == 1)
+    {
+        const auto* a = v6.u.Byte;
+        // ::ffff:a.b.c.d はIPv4として調べる
+        static const uint8_t mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF };
+        if (std::equal(a, a + 12, mapped))
+        {
+            b = a + 12;
+        }
+        else
+        {
+            static const uint8_t zero[16] = {};
+            const bool unspecifiedOrLoopback = std::equal(a, a + 15, zero) && (a[15] == 0 || a[15] == 1);
+            return unspecifiedOrLoopback ||
+                (a[0] & 0xFE) == 0xFC ||                 // fc00::/7 ユニークローカル
+                (a[0] == 0xFE && (a[1] & 0xC0) == 0x80) || // fe80::/10 リンクローカル
+                (a[0] == 0xFE && (a[1] & 0xC0) == 0xC0) || // fec0::/10 サイトローカル
+                a[0] == 0xFF;                            // マルチキャスト
+        }
+    }
+    else
+    {
+        // 読めないものは通さない
+        return true;
+    }
+    return b[0] == 0 ||                                  // 0.0.0.0/8
+        b[0] == 10 ||                                    // 10.0.0.0/8
+        b[0] == 127 ||                                   // ループバック
+        (b[0] == 100 && (b[1] & 0xC0) == 64) ||          // 100.64.0.0/10 (CGN)
+        (b[0] == 169 && b[1] == 254) ||                  // リンクローカル
+        (b[0] == 172 && (b[1] & 0xF0) == 16) ||          // 172.16.0.0/12
+        (b[0] == 192 && b[1] == 168) ||                  // 192.168.0.0/16
+        (b[0] == 192 && b[1] == 0 && b[2] == 0) ||       // 192.0.0.0/24
+        (b[0] == 198 && (b[1] & 0xFE) == 18) ||          // 198.18.0.0/15
+        b[0] >= 224;                                     // マルチキャスト、予約、ブロードキャスト
 }
 
 void CALLBACK ProxyRequest::StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR dwContext, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength)
@@ -35,6 +95,19 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
 {
     switch (dwInternetStatus)
     {
+    case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
+    {
+        // 名前解決やリダイレクトの後に実際につながった先を調べる
+        if (blockPrivateAddresses && IsPrivateAddress(static_cast<LPCWSTR>(lpvStatusInformation)))
+        {
+            // 閉じた後の通知がこのオブジェクトに届かないようにしてから失敗させる
+            DWORD_PTR context = 0;
+            WinHttpSetOption(hInternet, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context));
+            Fail();
+            return;
+        }
+        break;
+    }
     case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
     {
         if (!WinHttpReceiveResponse(hInternet, nullptr))
@@ -131,7 +204,8 @@ bool ProxyRequest::RequestAsync
     std::vector<BYTE> payload,
     std::vector<std::pair<LPCWSTR, LPCWSTR>>& headers,
     std::function<void()> errorCallback,
-    std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback
+    std::function<void(DWORD statusCode, LPCWSTR statusCodeText, LPCWSTR headers, size_t contentLength, BYTE* content)> callback,
+    bool blockPrivateAddresses
 )
 {
     URL_COMPONENTSW components = { sizeof(URL_COMPONENTSW) };
@@ -162,8 +236,8 @@ bool ProxyRequest::RequestAsync
         DWORD securityFlags = SECURITY_FLAG_IGNORE_ALL_CERT_ERRORS;
         WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
-    std::unique_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload)));
-    if (WinHttpSetStatusCallback(request, StaticAsyncCallback, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
+    std::unique_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload), blockPrivateAddresses));
+    if (WinHttpSetStatusCallback(request, StaticAsyncCallback, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
     {
         return false;
     }

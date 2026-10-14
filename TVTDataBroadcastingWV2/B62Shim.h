@@ -164,6 +164,23 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
 
+    // Built-in receiver sounds: <audio src="romsound://7"> (or a <source> child)
+    // cannot load, so play() asks the plugin page to play the sound instead.
+    const originalPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+        let src = this.getAttribute("src");
+        if (!src) {
+            const source = this.querySelector("source[src]");
+            src = source ? source.getAttribute("src") : "";
+        }
+        const match = /^romsound:\/\/(\d+)$/i.exec(String(src || "").trim());
+        if (match) {
+            notifyParent({ type: "romsound", id: parseInt(match[1], 10) });
+            return Promise.resolve();
+        }
+        return originalPlay.apply(this, arguments);
+    };
+
     // Caption methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
     // The plugin page sends which caption components the service has and the
     // caption documents themselves, at the time they are presented.

@@ -39,6 +39,10 @@ type FrameMessage = {
 } | {
     source: "b62Application",
     type: "hello",
+} | {
+    source: "b62Application",
+    type: "romsound",
+    id: number,
 };
 
 // ネイティブから届く字幕 (TVTDataBroadcastingWV2.cppのSendB62Captions)
@@ -154,11 +158,14 @@ export class B62ApplicationFrame {
     private currentTimeMillis: number | null = null;
     private captionQueue: { due: number, caption: B62Caption }[] = [];
     private readonly onVideoChanged: () => void;
+    private readonly playRomSound: (id: number) => void;
 
-    // onVideoChangedは映像を出す位置が変わったときに呼ばれる
-    constructor(container: HTMLElement, onVideoChanged: () => void) {
+    // onVideoChangedは映像を出す位置が変わったときに呼ばれる。
+    // playRomSoundは受信機内蔵音 (romsound://) を鳴らす
+    constructor(container: HTMLElement, onVideoChanged: () => void, playRomSound: (id: number) => void) {
         this.container = container;
         this.onVideoChanged = onVideoChanged;
+        this.playRomSound = playRomSound;
         window.addEventListener("message", (ev) => this.onFrameMessage(ev));
     }
 
@@ -353,6 +360,10 @@ export class B62ApplicationFrame {
                 duration: info?.durationSeconds ?? null,
             };
             (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+        } else if (message.type === "romsound") {
+            if (Number.isInteger(message.id)) {
+                this.playRomSound(message.id);
+            }
         } else if (message.type === "hello") {
             this.postCaptionComponents();
         } else if (message.type === "videoRect") {

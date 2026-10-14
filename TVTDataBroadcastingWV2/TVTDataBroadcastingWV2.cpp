@@ -5,6 +5,7 @@
 #include "resource.h"
 #include "StartupPolicy.h"
 #include "AsyncLifetime.h"
+#include "ProxyPolicy.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -2263,16 +2264,11 @@ bool CDataBroadcastingWV2::IsFromPluginPage(ICoreWebView2WebResourceRequest* req
 {
     wil::com_ptr<ICoreWebView2HttpRequestHeaders> headers;
     if (FAILED(request->get_Headers(headers.put()))) return false;
-    constexpr wchar_t origin[] = L"https://TVTDataBroadcastingWV2.invalid";
-    wil::unique_cotaskmem_string value;
-    if (SUCCEEDED(headers->GetHeader(L"Origin", value.put())) && value && *value.get())
-        return _wcsicmp(value.get(), origin) == 0;
-    value.reset();
-    if (FAILED(headers->GetHeader(L"Referer", value.put())) || !value) return false;
-    const std::wstring referrer(value.get());
-    constexpr size_t length = _countof(origin) - 1;
-    return referrer.size() >= length && _wcsnicmp(referrer.c_str(), origin, length) == 0 &&
-        (referrer.size() == length || referrer[length] == L'/');
+    wil::unique_cotaskmem_string origin;
+    wil::unique_cotaskmem_string referrer;
+    headers->GetHeader(L"Origin", origin.put());
+    headers->GetHeader(L"Referer", referrer.put());
+    return ProxyPolicy::LegacyBridgeAllowed(origin ? origin.get() : L"", referrer ? referrer.get() : L"");
 }
 
 bool CDataBroadcastingWV2::IsFromB62Application(ICoreWebView2WebResourceRequest* request)
@@ -2517,6 +2513,7 @@ void CDataBroadcastingWV2::Disable(bool finalize)
             response->deferral->Complete();
         }
     }
+    this->b62NetworkingCount = 0;
     this->m_jkcnslReader.Stop();
     // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
     this->m_manualJkVideo.clear();

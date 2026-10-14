@@ -47,6 +47,7 @@ class ProxyRequest : public std::enable_shared_from_this<ProxyRequest> {
     bool bound = false;
     bool closing = false;
     bool completed = false;
+    bool headerOnly = false;
     std::vector<BYTE> data;
     size_t readStart = 0;
     size_t readCapacity = 0;

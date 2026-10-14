@@ -2,6 +2,7 @@
 #include <atomic>
 #include <memory>
 
+// Callbacks and owner teardown run on the same UI apartment.
 // A ticket never owns the plugin. Invalidate it before teardown so delayed
 // callbacks can reject a destroyed owner without dereferencing it.
 class AsyncLifetime {

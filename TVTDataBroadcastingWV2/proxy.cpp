@@ -155,8 +155,11 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
     }
     case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
     {
+        DWORD statusCode = 0, statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            nullptr, &statusCode, &statusSize, nullptr);
         DWORD length = 0, lengthSize = sizeof(length);
-        if (WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+        if (!headerOnly && statusCode != 204 && statusCode != 304 && WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
             nullptr, &length, &lengthSize, nullptr) && length > state->limits.responseBytes) {
             Fail();
             return;
@@ -175,7 +178,7 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
                 Fail();
                 return;
             }
-            DWORD statusTextSize;
+            DWORD statusTextSize = 0;
             std::unique_ptr<WCHAR[]> statusText;
             if (!WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_STATUS_TEXT, nullptr, WINHTTP_NO_OUTPUT_BUFFER, &statusTextSize, nullptr) && GetLastError() == ERROR_INSUFFICIENT_BUFFER)
             {
@@ -186,7 +189,7 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
                     return;
                 }
             }
-            DWORD headersSize;
+            DWORD headersSize = 0;
             std::unique_ptr<WCHAR[]> headers;
             if (!WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, WINHTTP_NO_OUTPUT_BUFFER, &headersSize, WINHTTP_NO_HEADER_INDEX) && GetLastError() == ERROR_INSUFFICIENT_BUFFER)
             {
@@ -335,6 +338,7 @@ bool ProxyRequest::RequestAsync
         swprintf_s(additionalHeader, L"Content-Length: %zu", payloadSize);
     }
     preq->state = sharedState;
+    preq->headerOnly = verb && _wcsicmp(verb, L"HEAD") == 0;
     std::lock_guard requestLock(preq->mutex);
     {
         std::lock_guard lock(sharedState->mutex);

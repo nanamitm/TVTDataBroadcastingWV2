@@ -280,6 +280,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="StartupPolicy.h" />
     <ClInclude Include="AsyncLifetime.h" />
+    <ClInclude Include="ProxyPolicy.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />

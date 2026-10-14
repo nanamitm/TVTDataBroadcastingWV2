@@ -12,6 +12,8 @@ constexpr uint8_t kTableMhAit = 0x9C;
 constexpr uint8_t kTableDdmt = 0xA3;
 constexpr uint8_t kTableDamt = 0xA4;
 constexpr uint8_t kTableItem = 0xC0;
+constexpr uint8_t kTableCaption = 0xC1;
+constexpr size_t kMaxQueuedCaptions = 64;
 constexpr uint16_t kDescriptorTransportProtocol = 0x802A;
 constexpr uint16_t kDescriptorSimpleApplicationLocation = 0x802B;
 constexpr uint8_t kControlCodeAutostart = 0x01;
@@ -212,6 +214,7 @@ void AppReceiver::ResetApplicationLocked()
     this->damtSections.clear();
     this->ddmtSections.clear();
     this->pendingItems.clear();
+    this->captions.clear();
     this->items.clear();
     this->itemBytes = 0;
     this->application.reset();
@@ -231,6 +234,7 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
 
     std::optional<Application> before;
     std::function<void()> callback;
+    std::function<void()> captionNotify;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
         if (pid != 0 && pid != this->pmtPid && pid != this->appPid)
@@ -238,18 +242,38 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
             return;
         }
         before = this->publishedApplication;
+        const size_t captionCount = this->captions.size();
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
         this->UpdatePublishedApplicationLocked();
-        if (before == this->publishedApplication)
+        if (before != this->publishedApplication)
         {
-            return;
+            callback = this->applicationChangedCallback;
         }
-        callback = this->applicationChangedCallback;
+        if (this->captions.size() != captionCount && !this->captions.empty())
+        {
+            captionNotify = this->captionCallback;
+        }
     }
     if (callback)
     {
         callback();
     }
+    if (captionNotify)
+    {
+        captionNotify();
+    }
+}
+
+void AppReceiver::SetCaptionCallback(std::function<void()> callback)
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    this->captionCallback = std::move(callback);
+}
+
+std::vector<AppReceiver::Caption> AppReceiver::TakeCaptions()
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return std::exchange(this->captions, {});
 }
 
 void AppReceiver::FeedSectionData(uint16_t pid, const uint8_t* packet, SectionBuffer& buffer)
@@ -462,9 +486,17 @@ void AppReceiver::OnPmt(const uint8_t* section, size_t size)
 void AppReceiver::OnAppSection(const uint8_t* section, size_t size)
 {
     const uint8_t tableId = section[0];
-    if (tableId == kTableItem)
+    if (tableId == kTableItem || tableId == kTableCaption)
     {
-        this->OnItemSection(section, size);
+        auto body = this->AssembleSections(section, size);
+        if (body && tableId == kTableItem)
+        {
+            this->OnItem(*body);
+        }
+        else if (body)
+        {
+            this->OnCaption(*body);
+        }
         return;
     }
 
@@ -641,14 +673,15 @@ void AppReceiver::OnDamt(const SectionKey& key, const uint8_t* section, size_t s
     this->pathIndexDirty = true;
 }
 
-void AppReceiver::OnItemSection(const uint8_t* section, size_t size)
+std::optional<std::vector<uint8_t>> AppReceiver::AssembleSections(const uint8_t* section, size_t size)
 {
-    const uint16_t sequence = (section[3] << 8) | section[4];
+    // Items and captions number their sends separately.
+    const uint32_t sequence = (section[0] << 16) | (section[3] << 8) | section[4];
     const uint8_t number = section[6];
     const uint8_t last = section[7];
     if (number > last)
     {
-        return;
+        return std::nullopt;
     }
 
     auto it = this->pendingItems.find(sequence);
@@ -663,7 +696,7 @@ void AppReceiver::OnItemSection(const uint8_t* section, size_t size)
     it->second.parts[number].assign(section + 8, section + size - 4);
     if (it->second.parts.size() != static_cast<size_t>(last) + 1)
     {
-        return;
+        return std::nullopt;
     }
 
     std::vector<uint8_t> body;
@@ -672,6 +705,39 @@ void AppReceiver::OnItemSection(const uint8_t* section, size_t size)
         body.insert(body.end(), part.begin(), part.end());
     }
     this->pendingItems.erase(it);
+    return body;
+}
+
+void AppReceiver::OnCaption(const std::vector<uint8_t>& body)
+{
+    // component_tag, data_type, tmd, pts_flag, pts (40 bits), data_size
+    if (body.size() < 14)
+    {
+        return;
+    }
+    const uint32_t dataSize = (body[10] << 24) | (body[11] << 16) | (body[12] << 8) | body[13];
+    if (dataSize != body.size() - 14)
+    {
+        return;
+    }
+    Caption caption;
+    caption.componentTag = (body[0] << 8) | body[1];
+    caption.dataType = body[2];
+    caption.tmd = body[3];
+    if (body[4] & 0x80)
+    {
+        caption.pts = ((static_cast<uint64_t>(body[5]) << 32) | (body[6] << 24) | (body[7] << 16) | (body[8] << 8) | body[9]) & 0x1FFFFFFFFULL;
+    }
+    caption.data.assign(body.begin() + 14, body.end());
+    if (this->captions.size() >= kMaxQueuedCaptions)
+    {
+        this->captions.erase(this->captions.begin());
+    }
+    this->captions.push_back(std::move(caption));
+}
+
+void AppReceiver::OnItem(const std::vector<uint8_t>& body)
+{
     if (body.size() < 14)
     {
         return;

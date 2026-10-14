@@ -164,14 +164,75 @@ constexpr wchar_t kShimScript[] = LR"JS(
     define("applicationManager", { getOwnerApplication: function () { return ownerApplication; } });
     define("bmlCompat", { browserPseudo: browserPseudo });
 
-    // Methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
-    // Captions are not handed to applications yet, so none are reported; pages
-    // such as NHK's caption page stop initialising if these are missing.
+    // Caption methods of the broadcast video object (<object type="video/x-arib2-broadcast">).
+    // The plugin page sends which caption components the service has and the
+    // caption documents themselves, at the time they are presented.
+    let captionComponents = [];
+    const captionListeners = [];
+    // "arib2://-1.-1.-1/0030" -> 0x30; null when the URL names no component.
+    function captionTag(url) {
+        const match = /\/([0-9a-fA-F]{4})$/.exec(String(url || ""));
+        return match ? parseInt(match[1], 16) : null;
+    }
+    function defaultCaptionTag(object) {
+        if (object.b62CaptionSrc != null) {
+            return captionTag(object.b62CaptionSrc);
+        }
+        const param = object.querySelector('param[name="caption_src" i]');
+        const tag = param ? captionTag(param.getAttribute("value")) : null;
+        return tag != null ? tag : 0x30;
+    }
     Object.assign(HTMLObjectElement.prototype, {
-        isCaptionExistent: function () { return false; },
-        addCaptionListener: function () { return true; },
-        removeCaptionListener: function () { return true; },
+        isCaptionExistent: function (url) {
+            const tag = url != null ? captionTag(url) : defaultCaptionTag(this);
+            return tag != null && captionComponents.indexOf(tag) >= 0;
+        },
+        addCaptionListener: function (listener, url) {
+            if (typeof listener !== "function") {
+                return;
+            }
+            const tag = url != null ? captionTag(url) : defaultCaptionTag(this);
+            captionListeners.push({ object: this, listener: listener, tag: tag });
+        },
+        removeCaptionListener: function (listener) {
+            for (let i = captionListeners.length - 1; i >= 0; i--) {
+                const entry = captionListeners[i];
+                if (entry.object === this && (listener == null || entry.listener === listener)) {
+                    captionListeners.splice(i, 1);
+                }
+            }
+        },
+        setCaptionSrc: function (url) { this.b62CaptionSrc = String(url); return true; },
+        getCaptionComponentURL: function () {
+            const tag = defaultCaptionTag(this);
+            return tag != null && captionComponents.indexOf(tag) >= 0
+                ? "arib2://-1.-1.-1/" + tag.toString(16).padStart(4, "0") : null;
+        },
+        // The receiver's own caption display is TVTest's; only remembered here.
+        setCaptionVisibility: function (flag) { this.b62CaptionVisible = !!flag; return true; },
+        isCaptionVisible: function () { return this.b62CaptionVisible !== false; },
     });
+    window.addEventListener("message", function (ev) {
+        const data = ev.data;
+        if (ev.source !== window.top || !data || data.source !== "b62Host") {
+            return;
+        }
+        if (data.type === "captionComponents" && Array.isArray(data.tags)) {
+            captionComponents = data.tags.filter(function (tag) { return typeof tag === "number"; });
+        } else if (data.type === "caption" && typeof data.payload === "string") {
+            captionListeners.slice().forEach(function (entry) {
+                if (entry.tag != null && entry.tag !== data.componentTag) {
+                    return;
+                }
+                try {
+                    entry.listener(data.payload);
+                } catch (e) {
+                    console.error(e);
+                }
+            });
+        }
+    });
+    notifyParent({ type: "hello" });
 
     // <object type="video/x-arib2-broadcast"> marks where the broadcast video
     // goes. The plugin draws the video behind the page, so the object must be
@@ -184,21 +245,107 @@ constexpr wchar_t kShimScript[] = LR"JS(
     // Tell the plugin page where the video object is (in this document's
     // 3840x2160 coordinates), so it can cut a hole there and move the video
     // window under it. Only the application's own document reports.
+    // Elements stacked above the video (a popup over it, say) are reported too,
+    // so the hole leaves them visible.
+    function createsStackingContext(style) {
+        return (style.position !== "static" && style.zIndex !== "auto") ||
+            style.position === "fixed" || style.position === "sticky" ||
+            Number(style.opacity) < 1 || style.transform !== "none" || style.filter !== "none" ||
+            style.isolation === "isolate" || style.mixBlendMode !== "normal";
+    }
+    // The outermost stacking context the element belongs to, and its z-index:
+    // the document's own stacking context orders by these.
+    function rootStackingOf(element) {
+        let root = null;
+        for (let e = element; e && e !== document.documentElement; e = e.parentElement) {
+            if (createsStackingContext(getComputedStyle(e))) {
+                root = e;
+            }
+        }
+        if (!root) {
+            return { element: null, z: 0 };
+        }
+        const z = parseInt(getComputedStyle(root).zIndex, 10);
+        return { element: root, z: isNaN(z) ? 0 : z };
+    }
+    function rectsAboveVideo(video, videoRect) {
+        const videoRoot = rootStackingOf(video);
+        const seen = new Set();
+        const rects = [];
+        const elements = document.body ? document.body.querySelectorAll("*") : [];
+        for (const element of elements) {
+            const root = rootStackingOf(element);
+            if (!root.element || root.element === videoRoot.element || seen.has(root.element) || root.element.contains(video)) {
+                continue;
+            }
+            seen.add(root.element);
+            const style = getComputedStyle(root.element);
+            if (root.z <= videoRoot.z || style.visibility === "hidden" || Number(style.opacity) === 0 || root.element.getClientRects().length === 0) {
+                continue;
+            }
+            for (const painted of paintedElements(root.element)) {
+                const r = painted.getBoundingClientRect();
+                const left = Math.max(r.left, videoRect.left);
+                const top = Math.max(r.top, videoRect.top);
+                const right = Math.min(r.right, videoRect.left + videoRect.width);
+                const bottom = Math.min(r.bottom, videoRect.top + videoRect.height);
+                // Something covering nearly the whole video is a full-screen layer,
+                // not an overlay; keeping it would hide the video entirely.
+                if (right <= left || bottom <= top || (right - left) * (bottom - top) >= videoRect.width * videoRect.height * 0.9) {
+                    continue;
+                }
+                rects.push({ left: left, top: top, width: right - left, height: bottom - top });
+            }
+        }
+        return rects;
+    }
+    // The element and descendants that draw something: an empty positioned box
+    // over the video must not keep the page background below it visible.
+    function paintedElements(root) {
+        const result = [];
+        const walk = function (element) {
+            const style = getComputedStyle(element);
+            if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
+                return;
+            }
+            const background = style.backgroundColor;
+            const hasBackground = style.backgroundImage !== "none" ||
+                !(background === "transparent" || /rgba\(.*,\s*0\)$/.test(background));
+            const hasBorder = parseFloat(style.borderTopWidth) > 0 || parseFloat(style.borderLeftWidth) > 0;
+            const isMedia = /^(IMG|SVG|CANVAS|VIDEO|IFRAME|OBJECT)$/i.test(element.tagName);
+            const hasText = Array.prototype.some.call(element.childNodes, function (node) {
+                return node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== "";
+            });
+            if (hasBackground || hasBorder || isMedia || hasText) {
+                result.push(element);
+                if (hasBackground || isMedia) {
+                    return; // its box already covers the children
+                }
+            }
+            for (const child of element.children) {
+                walk(child);
+            }
+        };
+        walk(root);
+        return result;
+    }
     if (window.parent === window.top) {
         let lastVideoRect = "";
         setInterval(function () {
             let rect = null;
+            let above = [];
             const video = document.querySelector('object[type="video/x-arib2-broadcast" i]');
             if (video && video.getClientRects().length > 0) {
                 const r = video.getBoundingClientRect();
                 if (r.width > 0 && r.height > 0) {
                     rect = { left: r.left, top: r.top, width: r.width, height: r.height };
+                    above = rectsAboveVideo(video, rect);
                 }
             }
-            const key = JSON.stringify(rect);
+            const key = JSON.stringify([rect, above]);
             if (key !== lastVideoRect) {
                 lastVideoRect = key;
-                notifyParent({ type: "videoRect", rect: rect });
+                notifyParent({ type: "videoRect", rect: rect, above: above });
             }
         }, 100);
     }

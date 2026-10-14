@@ -34,7 +34,98 @@ type FrameMessage = {
     source: "b62Application",
     type: "videoRect",
     rect: VideoRect | null,
+    // 映像より手前に重なっている要素 (映像の範囲内に切り詰めたもの)
+    above?: VideoRect[],
+} | {
+    source: "b62Application",
+    type: "hello",
 };
+
+// ネイティブから届く字幕 (TVTDataBroadcastingWV2.cppのSendB62Captions)
+export type B62Caption = {
+    componentTag: number,
+    dataType: number,
+    tmd: number,
+    // 文書の時刻0を提示するPTS (90kHz)。nullならすぐに渡す
+    pts: number | null,
+    // 字幕プラグインの表示遅延 (ミリ秒)
+    delay: number,
+    data: string,
+};
+
+// PTSとPCRは33ビットで一周する (ミリ秒)
+const clockPeriodMillis = 2 ** 33 / 90;
+// これより先の字幕は時刻がおかしいとみなしてすぐに渡す
+const maxCaptionLeadMillis = 60 * 1000;
+
+function wrapMillis(diff: number): number {
+    diff %= clockPeriodMillis;
+    if (diff > clockPeriodMillis / 2) {
+        diff -= clockPeriodMillis;
+    } else if (diff <= -clockPeriodMillis / 2) {
+        diff += clockPeriodMillis;
+    }
+    return diff;
+}
+
+// TTMLの時刻 ("00:00:01.500"、"1.5s"、"1500ms" など) をミリ秒に
+function parseTtmlTime(value: string): number | null {
+    const clock = /^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/.exec(value);
+    if (clock) {
+        return (Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3])) * 1000;
+    }
+    const offset = /^(\d+(?:\.\d+)?)(h|m|s|ms)$/.exec(value);
+    if (offset) {
+        const unit = { h: 3600000, m: 60000, s: 1000, ms: 1 }[offset[2] as "h" | "m" | "s" | "ms"];
+        return Number(offset[1]) * unit;
+    }
+    return null;
+}
+
+// TTML文書で最初に表示される時刻 (ミリ秒)
+function firstBeginMillis(ttml: string): number {
+    let first: number | null = null;
+    try {
+        const doc = new DOMParser().parseFromString(ttml, "application/xml");
+        for (const element of Array.from(doc.querySelectorAll("[begin]"))) {
+            const begin = parseTtmlTime(element.getAttribute("begin") ?? "");
+            if (begin != null && (first == null || begin < first)) {
+                first = begin;
+            }
+        }
+    } catch (e) {
+    }
+    return first ?? 0;
+}
+
+// 重なり合う矩形を、同じ範囲を覆う重ならない矩形に分ける (座標圧縮して行ごとにまとめる)
+function disjointRects(rects: VideoRect[]): { left: number, top: number, right: number, bottom: number }[] {
+    const boxes = rects.map(r => ({ left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height }))
+        .filter(b => b.right > b.left && b.bottom > b.top);
+    if (boxes.length === 0) {
+        return [];
+    }
+    const xs = [...new Set(boxes.flatMap(b => [b.left, b.right]))].sort((a, b) => a - b);
+    const ys = [...new Set(boxes.flatMap(b => [b.top, b.bottom]))].sort((a, b) => a - b);
+    const result: { left: number, top: number, right: number, bottom: number }[] = [];
+    for (let j = 0; j + 1 < ys.length; j++) {
+        let start: number | null = null;
+        for (let i = 0; i < xs.length; i++) {
+            const covered = i + 1 < xs.length && boxes.some(b => b.left <= xs[i] && xs[i + 1] <= b.right && b.top <= ys[j] && ys[j + 1] <= b.bottom);
+            if (covered && start == null) {
+                start = xs[i];
+            } else if (!covered && start != null) {
+                result.push({ left: start, top: ys[j], right: xs[i], bottom: ys[j + 1] });
+                start = null;
+            }
+        }
+    }
+    return result;
+}
+
+function toBinary4(value: number): string {
+    return (value & 0xf).toString(2).padStart(4, "0");
+}
 
 // アプリケーションの文書 (3840x2160) 上の映像オブジェクトの位置
 type VideoRect = { left: number, top: number, width: number, height: number };
@@ -58,6 +149,10 @@ export class B62ApplicationFrame {
     private destroyedKey: string | null = null;
     private programInfo: B62ProgramInfo | null = null;
     private videoRect: VideoRect | null = null;
+    private videoOverlays: VideoRect[] = [];
+    private captionComponents: number[] = [];
+    private currentTimeMillis: number | null = null;
+    private captionQueue: { due: number, caption: B62Caption }[] = [];
     private readonly onVideoChanged: () => void;
 
     // onVideoChangedは映像を出す位置が変わったときに呼ばれる
@@ -113,6 +208,69 @@ export class B62ApplicationFrame {
         return true;
     }
 
+    // サービスの字幕・文字スーパーのcomponent_tag (PMTから)
+    setCaptionComponents(tags: number[]) {
+        if (tags.length === this.captionComponents.length && tags.every((tag, i) => tag === this.captionComponents[i])) {
+            return;
+        }
+        this.captionComponents = tags;
+        this.postCaptionComponents();
+    }
+
+    private postCaptionComponents() {
+        this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "captionComponents", tags: this.captionComponents }, appOrigin);
+    }
+
+    // 字幕を提示時刻まで待たせてからアプリケーションに渡す
+    pushCaption(caption: B62Caption) {
+        if (this.frame == null) {
+            return;
+        }
+        if (caption.pts == null || this.currentTimeMillis == null) {
+            this.deliverCaption(caption);
+            return;
+        }
+        const begin = caption.dataType === 0 ? firstBeginMillis(caption.data) : 0;
+        const due = caption.pts / 90 + begin + caption.delay;
+        this.captionQueue.push({ due, caption });
+        this.flushCaptions();
+    }
+
+    // 映像の時刻 (PCR、ミリ秒)
+    updateTime(pcrMillis: number) {
+        this.currentTimeMillis = pcrMillis;
+        this.flushCaptions();
+    }
+
+    private flushCaptions() {
+        const now = this.currentTimeMillis;
+        if (now == null || this.captionQueue.length === 0) {
+            return;
+        }
+        const ready = this.captionQueue.filter(entry => {
+            const lead = wrapMillis(entry.due - now);
+            return lead <= 0 || lead > maxCaptionLeadMillis;
+        });
+        if (ready.length === 0) {
+            return;
+        }
+        this.captionQueue = this.captionQueue.filter(entry => !ready.includes(entry));
+        ready.sort((a, b) => wrapMillis(a.due - b.due));
+        for (const entry of ready) {
+            this.deliverCaption(entry.caption);
+        }
+    }
+
+    // ARIB STD-B62のCaptionListenerに渡す形 (運用規定。NHK BSP4Kの字幕ページが読む形に合わせる)
+    private deliverCaption(caption: B62Caption) {
+        const payload = JSON.stringify({
+            data_type: toBinary4(caption.dataType),
+            TMD: toBinary4(caption.tmd),
+            data: caption.data,
+        });
+        this.frame?.contentWindow?.postMessage({ source: "b62Host", type: "caption", componentTag: caption.componentTag, payload }, appOrigin);
+    }
+
     setProgramInfo(programInfo: B62ProgramInfo) {
         this.programInfo = programInfo;
     }
@@ -153,11 +311,17 @@ export class B62ApplicationFrame {
         }
         const left = Math.max(0, r.left), top = Math.max(0, r.top);
         const right = Math.min(appWidth, r.left + r.width), bottom = Math.min(appHeight, r.top + r.height);
-        this.frame.style.clipPath = `polygon(evenodd, 0 0, ${appWidth}px 0, ${appWidth}px ${appHeight}px, 0 ${appHeight}px, 0 0, ` +
-            `${left}px ${top}px, ${right}px ${top}px, ${right}px ${bottom}px, ${left}px ${bottom}px, ${left}px ${top}px)`;
+        // evenodd: 全体、映像の穴、穴の中で手前に重なる要素 (重ならないように分割したもの) の順に重ねる。
+        // 各矩形は原点から行って戻るので、つなぎの線は面積を持たない
+        const rects = [{ left: 0, top: 0, right: appWidth, bottom: appHeight }, { left, top, right, bottom }, ...disjointRects(this.videoOverlays)];
+        const points = rects.flatMap(q => [
+            `${q.left}px ${q.top}px`, `${q.right}px ${q.top}px`, `${q.right}px ${q.bottom}px`, `${q.left}px ${q.bottom}px`, `${q.left}px ${q.top}px`, "0 0",
+        ]);
+        this.frame.style.clipPath = `polygon(evenodd, ${points.join(", ")})`;
     }
 
     private close() {
+        this.captionQueue = [];
         const hadVideo = this.videoRect != null;
         this.frame?.remove();
         this.frame = null;
@@ -189,8 +353,11 @@ export class B62ApplicationFrame {
                 duration: info?.durationSeconds ?? null,
             };
             (ev.source as Window).postMessage({ source: "b62Host", id: message.id, data }, appOrigin);
+        } else if (message.type === "hello") {
+            this.postCaptionComponents();
         } else if (message.type === "videoRect") {
             this.videoRect = message.rect;
+            this.videoOverlays = message.above ?? [];
             this.updateVideoHole();
             this.onVideoChanged();
         } else if (message.type === "destroy") {

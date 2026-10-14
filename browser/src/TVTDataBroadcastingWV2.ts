@@ -4,7 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
-import { B62ApplicationFrame } from "./b62_application";
+import { B62ApplicationFrame, type B62Caption } from "./b62_application";
 
 declare global {
     interface Window {
@@ -444,6 +444,8 @@ function onMessage(msg: ResponseMessage) {
         pcr = (msg.pcrBase + msg.pcrExtension / 300) / 90;
     } else if (msg.type === "pmt") {
         audioESList = msg.components.filter(x => audioStreamType.has(x.streamType)).sort((a, b) => a.componentId - b.componentId);
+        // 字幕 (0x30-0x37) と文字スーパー (0x38-0x3F)
+        b62Application.setCaptionComponents(msg.components.map(x => x.componentId).filter(id => id >= 0x30 && id <= 0x3f).sort((a, b) => a - b));
         if (!pmtRetrieved) {
             // 地上デジタル放送向けマルチメディア符号化方式(Cプロファイル) 0x000d
             cProfile = msg.components.some(x => x.dataComponentId === 0x000d);
@@ -549,7 +551,9 @@ type ToWebViewMessage = {
 } | {
     type: "channelsConfig",
     ws_uri: string,
-} | {
+} | ({
+    type: "b62Caption",
+} & B62Caption) | {
     // 4Kデータ放送 (ARIB STD-B62) のアプリケーション。urlがnullなら終了
     type: "b62Application",
     url: string | null,
@@ -586,6 +590,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
             player.updateTime(curPCR);
+            b62Application.updateTime(curPCR);
         }
     } else if (data.type === "streamBase64") {
         if (!oneSegLaunched && cProfile) {
@@ -598,6 +603,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
             player.updateTime(curPCR);
+            b62Application.updateTime(curPCR);
         }
     } else if (data.type === "key") {
         remoteControlStatusContainer.style.visibility = "visible";
@@ -698,6 +704,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         channelsClient = new ChannelsClient(data.ws_uri, (channels) => {
             postMessage({ type: "channelsUpdate", channels });
         });
+    } else if (data.type === "b62Caption") {
+        b62Application.pushCaption(data);
     } else if (data.type === "b62Application") {
         b62Application.update(data.url, data.version);
     }

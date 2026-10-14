@@ -225,6 +225,7 @@ void AppReceiver::ResetApplicationLocked()
     this->application.reset();
     this->publishedApplication.reset();
     this->pathIndexDirty = true;
+    this->filesGeneration++;
     this->pathIndex.clear();
     this->fileCache.clear();
 }
@@ -249,6 +250,7 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
         }
         before = this->publishedApplication;
         loadingBefore = this->IsApplicationLoadingLocked();
+        const uint64_t filesGenerationBefore = this->filesGeneration;
         const size_t captionCount = this->captions.size();
         const size_t eventMessageCount = this->eventMessages.size();
         this->FeedSectionData(pid, packet, this->sectionBuffers[pid]);
@@ -258,7 +260,8 @@ void AppReceiver::FeedPacket(const uint8_t* packet)
             callback = this->applicationChangedCallback;
         }
         if ((this->captions.size() != captionCount && !this->captions.empty()) ||
-            (this->eventMessages.size() != eventMessageCount && !this->eventMessages.empty()))
+            (this->eventMessages.size() != eventMessageCount && !this->eventMessages.empty()) ||
+            this->filesGeneration != filesGenerationBefore)
         {
             captionNotify = this->messageCallback;
         }
@@ -677,6 +680,7 @@ void AppReceiver::OnDdmt(const SectionKey& key, const uint8_t* section, size_t s
     }
     this->ddmtSections[key] = std::move(parsed);
     this->pathIndexDirty = true;
+    this->filesGeneration++;
 }
 
 void AppReceiver::OnDamt(const SectionKey& key, const uint8_t* section, size_t size)
@@ -736,6 +740,7 @@ void AppReceiver::OnDamt(const SectionKey& key, const uint8_t* section, size_t s
     }
     this->damtSections[key] = std::move(parsed);
     this->pathIndexDirty = true;
+    this->filesGeneration++;
 }
 
 std::optional<std::vector<uint8_t>> AppReceiver::AssembleSections(const uint8_t* section, size_t size)
@@ -901,6 +906,7 @@ void AppReceiver::OnItem(const std::vector<uint8_t>& body)
     slot.assign(body.begin() + 14, body.end());
     this->itemBytes += slot.size();
     this->pathIndexDirty = true;
+    this->filesGeneration++;
 
     if (this->itemBytes > kMaxItemBytes)
     {
@@ -1117,6 +1123,28 @@ std::optional<AppReceiver::File> AppReceiver::GetFile(const std::string& path)
     }
     this->fileCache[entry->first] = { item->second, file };
     return file;
+}
+
+std::vector<std::pair<std::string, std::string>> AppReceiver::ListFileVersions()
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    this->RebuildPathIndexLocked();
+    std::vector<std::pair<std::string, std::string>> files;
+    for (const auto& [path, entry] : this->pathIndex)
+    {
+        if (this->items.contains(entry.key))
+        {
+            const auto& [componentTag, mpu, itemId] = entry.key;
+            files.emplace_back(path, std::to_string(componentTag) + "-" + std::to_string(mpu) + "-" + std::to_string(itemId));
+        }
+    }
+    return files;
+}
+
+uint64_t AppReceiver::GetFilesGeneration() const
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return this->filesGeneration;
 }
 
 std::vector<std::string> AppReceiver::ListFiles()

@@ -70,6 +70,8 @@ struct DeferralResponse
 #define IDT_RESIZE 2
 #define IDT_PLAYBACK 3
 #define IDT_JK_WATCHDOG 4
+// 4Kデータ放送のファイル一覧をまとめて送るためのタイマー
+#define IDT_B62_FILES 5
 
 // RegisterPanelItemで登録するパネル項目のID ("データ放送" / "実況勢い")
 static const int kPanelItemIDs[] = { 1, 2 };
@@ -386,6 +388,10 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendB62Application();
     void SendB62Captions();
     void SendB62FollowingEvent();
+    // アプリケーションのキャッシュイベントのためのファイル一覧。最後に送った世代と、送るのを待っているか
+    uint64_t b62FilesSentGeneration = UINT64_MAX;
+    bool b62FilesTimer = false;
+    void SendB62Files();
     // 通信中の4Kデータ放送のアプリケーションのリクエストの数 (メッセージウィンドウのスレッドでのみ触る)
     int b62NetworkingCount = 0;
     void SendB62Networking();
@@ -980,6 +986,13 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         case IDT_PLAYBACK:
         {
             pThis->PlaybackTick();
+            break;
+        }
+        case IDT_B62_FILES:
+        {
+            KillTimer(hWnd, wParam);
+            pThis->b62FilesTimer = false;
+            pThis->SendB62Files();
             break;
         }
         case IDT_JK_WATCHDOG:
@@ -1702,6 +1715,9 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
+                // 読み込み直したページはファイル一覧を持っていない
+                this->b62FilesSentGeneration = UINT64_MAX;
+                this->SendB62Files();
                 this->SendB62Application();
                 if (this->oneSegWindowIsShown)
                 {
@@ -2163,6 +2179,28 @@ void CDataBroadcastingWV2::SendB62Networking()
         return;
     }
     nlohmann::json message{ { "type", "b62Networking" }, { "active", this->b62NetworkingCount > 0 } };
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+}
+
+// 4Kデータ放送のアプリケーションのキャッシュイベント (cacheEvent) のために、受信済みのファイルとその版をページに渡す
+void CDataBroadcastingWV2::SendB62Files()
+{
+    if (!this->webView || !this->webViewLoaded || !this->b62Supported)
+    {
+        return;
+    }
+    const auto generation = this->b62Receiver.GetFilesGeneration();
+    if (generation == this->b62FilesSentGeneration)
+    {
+        return;
+    }
+    this->b62FilesSentGeneration = generation;
+    nlohmann::json files = nlohmann::json::array();
+    for (const auto& [path, version] : this->b62Receiver.ListFileVersions())
+    {
+        files.push_back({ path, version });
+    }
+    nlohmann::json message{ { "type", "b62Files" }, { "files", std::move(files) } };
     this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
 }
 
@@ -4940,6 +4978,11 @@ void CDataBroadcastingWV2::SendB62Application()
 // 4Kデータ放送のアプリケーションが自分で表示する字幕 (addCaptionListener) をページに渡す
 void CDataBroadcastingWV2::SendB62Captions()
 {
+    // ファイルが変わったら、続けて変わる間はまとめて0.5秒後に送る
+    if (this->b62Receiver.GetFilesGeneration() != this->b62FilesSentGeneration && !this->b62FilesTimer && this->hMessageWnd)
+    {
+        this->b62FilesTimer = SetTimer(this->hMessageWnd, IDT_B62_FILES, 500, nullptr) != 0;
+    }
     auto captions = this->b62Receiver.TakeCaptions();
     auto eventMessages = this->b62Receiver.TakeEventMessages();
     if (!this->webView || !this->webViewLoaded || !this->b62Supported)

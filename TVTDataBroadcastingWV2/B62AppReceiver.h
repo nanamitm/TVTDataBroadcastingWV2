@@ -100,6 +100,12 @@ public:
     // path is relative to the application root, e.g. "sh4/40/001/startup/html/index.html".
     std::optional<File> GetFile(const std::string& path);
     std::vector<std::string> ListFiles();
+    // Every file that can be served, with a version that changes when the file
+    // is replaced (its MPU and item), for the applications' cache events.
+    std::vector<std::pair<std::string, std::string>> ListFileVersions();
+    // Increases whenever the tables or items change, so ListFileVersions()
+    // may have changed. The message callback is called when it does.
+    uint64_t GetFilesGeneration() const;
 
 private:
     struct SectionBuffer
@@ -205,6 +211,7 @@ private:
     std::optional<Application> publishedApplication;
 
     bool pathIndexDirty = true;
+    uint64_t filesGeneration = 0;
     std::map<std::string, PathEntry> pathIndex;
     // path -> (raw item size, decoded file)
     std::unordered_map<std::string, std::pair<std::vector<uint8_t>, File>> fileCache;

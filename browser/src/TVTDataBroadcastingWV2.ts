@@ -607,6 +607,10 @@ type ToWebViewMessage = {
     // 4Kデータ放送のアプリケーションが通信中か
     type: "b62Networking",
     active: boolean,
+} | {
+    // 4Kデータ放送の受信済みのファイルとその版
+    type: "b62Files",
+    files: [string, string][],
 } | ({
     type: "b62FollowingEvent",
 } & B62FollowingEvent);
@@ -799,6 +803,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
                 remoteControl.setB62NetworkingStatus(false);
             }, 1000);
         }
+    } else if (data.type === "b62Files") {
+        b62Application.setFiles(data.files);
     } else if (data.type === "b62FollowingEvent") {
         b62Application.setFollowingEvent(data);
     }

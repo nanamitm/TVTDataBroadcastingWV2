@@ -1,3 +1,6 @@
 [submodule "TVTDataBroadcastingWV2/thirdparty/libaribcaption"]
 	path = TVTDataBroadcastingWV2/thirdparty/libaribcaption
 	url = https://github.com/nanamitm/libaribcaption.git
+[submodule "TVTDataBroadcastingWV2/thirdparty/dantto4k"]
+	path = TVTDataBroadcastingWV2/thirdparty/dantto4k
+	url = https://github.com/nanamitm/dantto4k.git

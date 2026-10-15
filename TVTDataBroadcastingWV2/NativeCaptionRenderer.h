@@ -36,6 +36,9 @@ struct NativeCaptionSettings
     bool replaceDrcs = false;
     // 振り仮名らしきものを除外する
     bool ignoreSmall = false;
+    // 4K/8K放送の字幕 (ARIB-TTML) をB24に変換したものではなく、TTMLのままページで描く
+    // (dantto4kがTSに載せた字幕を使う。届いている間はB24の字幕を表示しない)
+    bool ttmlCaption = true;
 };
 
 class NativeCaptionRenderer

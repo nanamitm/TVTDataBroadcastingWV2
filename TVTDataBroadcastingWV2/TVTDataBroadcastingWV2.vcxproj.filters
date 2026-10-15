@@ -36,6 +36,9 @@
     <ClInclude Include="B62RomSound.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="TtmlCaption.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="proxy.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -66,6 +69,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="proxy.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="TtmlCaption.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="InputDialog.cpp">

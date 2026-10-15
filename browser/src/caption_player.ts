@@ -30,6 +30,8 @@ export class CaptionPlayer extends VideoPlayer {
     private readonly canvases = [document.createElement("canvas"), document.createElement("canvas")];
     private readonly sendMessage: SendMessage;
     private audioNode?: AudioNode;
+    // TTMLのまま表示しているので、B24の字幕を表示しないトラック (ttml_caption.ts)
+    private readonly suppressed = [false, false];
 
     public constructor(video: HTMLVideoElement, container: HTMLElement, sendMessage: SendMessage) {
         super(video, container);
@@ -64,6 +66,9 @@ export class CaptionPlayer extends VideoPlayer {
         if (streamId !== 0xbd && streamId !== 0xbf) {
             return;
         }
+        if (this.suppressed[streamId === 0xbd ? 0 : 1]) {
+            return;
+        }
         this.sendMessage({
             type: "captionPes",
             streamId,
@@ -72,10 +77,21 @@ export class CaptionPlayer extends VideoPlayer {
         });
     }
 
+    // 字幕 (0) か文字スーパー (1) のB24の字幕を表示しない。表示中のものも消す
+    public suppress(track: number): void {
+        const canvas = this.canvases[track];
+        if (canvas == null) {
+            return;
+        }
+        this.suppressed[track] = true;
+        canvas.style.display = "none";
+        canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
     public draw(track: number, frameWidth: number | undefined, frameHeight: number | undefined,
                 images: NativeCaptionImage[]): void {
         const canvas = this.canvases[track];
-        if (canvas == null) {
+        if (canvas == null || this.suppressed[track]) {
             return;
         }
         if (frameWidth != null && frameHeight != null &&

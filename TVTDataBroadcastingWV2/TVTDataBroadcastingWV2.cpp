@@ -17,6 +17,7 @@
 #include "NVRAMSettingsDialog.h"
 #include "CaptionSettingsDialog.h"
 #include "NativeCaptionRenderer.h"
+#include "TtmlCaption.h"
 #include "proxy.h"
 #include "InputDialog.h"
 #include "OneSeg.h"
@@ -397,6 +398,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool b62Supported = false;
     void SendB62Application();
     void SendB62Captions();
+    void SendTtmlCaptionConfig();
+    void SendTtmlCaption(const B62::AppReceiver::Caption& caption, int delay);
     void SendB62FollowingEvent();
     // アプリケーションのキャッシュイベントのためのファイル一覧。最後に送った世代と、送るのを待っているか
     uint64_t b62FilesSentGeneration = UINT64_MAX;
@@ -856,6 +859,7 @@ NativeCaptionSettings CDataBroadcastingWV2::LoadCaptionSettings()
     settings.replaceFullJapanese = this->GetIniItem(L"ReplaceFullJapanese", 1) != 0;
     settings.replaceDrcs = this->GetIniItem(L"ReplaceDrcs", 0) != 0;
     settings.ignoreSmall = this->GetIniItem(L"IgnoreSmall", 0) != 0;
+    settings.ttmlCaption = this->GetIniItem(L"TtmlCaption", 1) != 0;
     return settings;
 }
 
@@ -880,7 +884,8 @@ bool CDataBroadcastingWV2::SaveCaptionSettings(const NativeCaptionSettings& sett
            setInt(L"ReplaceFullAlnum", settings.replaceFullAlnum) &&
            setInt(L"ReplaceFullJapanese", settings.replaceFullJapanese) &&
            setInt(L"ReplaceDrcs", settings.replaceDrcs) &&
-           setInt(L"IgnoreSmall", settings.ignoreSmall);
+           setInt(L"IgnoreSmall", settings.ignoreSmall) &&
+           setInt(L"TtmlCaption", settings.ttmlCaption);
 }
 
 bool CDataBroadcastingWV2::Initialize()
@@ -1802,6 +1807,7 @@ void CDataBroadcastingWV2::InitWebView2()
                     this->webViewController->put_IsVisible(true);
                 }
                 this->UpdateCaptionState(false);
+                this->SendTtmlCaptionConfig();
                 this->UpdateVolume();
                 // Send channels WebSocket config
                 {
@@ -4228,6 +4234,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                         // DelayTimeSuperはINIから読み直す
                         pThis->nativeCaptionRenderer->SetSettings(pThis->LoadCaptionSettings());
                     }
+                    pThis->SendTtmlCaptionConfig();
                 }
             }
         }
@@ -5211,7 +5218,8 @@ void CDataBroadcastingWV2::SendB62Application()
     this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
 }
 
-// 4Kデータ放送のアプリケーションが自分で表示する字幕 (addCaptionListener) をページに渡す
+// 4Kデータ放送のアプリケーションが自分で表示する字幕 (addCaptionListener) と、
+// ページがTTMLのまま表示する字幕 (ttml_caption.ts) をページに渡す
 void CDataBroadcastingWV2::SendB62Captions()
 {
     // ファイルが変わったら、続けて変わる間はまとめて0.5秒後に送る
@@ -5222,9 +5230,15 @@ void CDataBroadcastingWV2::SendB62Captions()
     auto captions = this->b62Receiver.TakeCaptions();
     auto eventMessages = this->b62Receiver.TakeEventMessages();
     auto nptReferences = this->b62Receiver.TakeNptReferences();
-    if (!this->webView || !this->webViewLoaded || !this->b62Supported)
+    if (!this->webView || !this->webViewLoaded)
     {
         return;
+    }
+    // アプリケーション向けのものは、アプリケーションを動かせるWebView2のときだけ送る
+    if (!this->b62Supported)
+    {
+        nptReferences.clear();
+        eventMessages.clear();
     }
     // UTC-NPT参照記述子 (NPTを時刻に使うイベントメッセージやsetAlarmByUTCNPT用)
     for (const auto& reference : nptReferences)
@@ -5267,13 +5281,22 @@ void CDataBroadcastingWV2::SendB62Captions()
     for (const auto& caption : captions)
     {
         const bool superimpose = caption.componentTag >= 0x38;
+        const int delay = superimpose ? settings.delayTimeSuper : settings.delayTime;
+        if (settings.ttmlCaption)
+        {
+            this->SendTtmlCaption(caption, delay);
+        }
+        if (!this->b62Supported)
+        {
+            continue;
+        }
         nlohmann::json message{
             { "type", "b62Caption" },
             { "componentTag", caption.componentTag },
             { "dataType", caption.dataType },
             { "tmd", caption.tmd },
             { "pts", caption.pts ? nlohmann::json(*caption.pts) : nlohmann::json(nullptr) },
-            { "delay", superimpose ? settings.delayTimeSuper : settings.delayTime },
+            { "delay", delay },
             { "languageCode", caption.languageCode },
             { "resolution", caption.resolution },
             { "referenceStartTimeSeconds", caption.referenceStartTimeSeconds },
@@ -5285,6 +5308,75 @@ void CDataBroadcastingWV2::SendB62Captions()
         };
         this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
     }
+}
+
+// 字幕をTTMLのまま表示するページ (ttml_caption.ts) に渡す。文書は解析とスタイルの
+// 解決を済ませて送り、SVGフォント (外字) はそのまま送る
+void CDataBroadcastingWV2::SendTtmlCaption(const B62::AppReceiver::Caption& caption, int delay)
+{
+    // ARIB STD-B60の字幕 (0x30-0x37) と文字スーパー (0x38-0x3F)
+    if (caption.componentTag < 0x30 || caption.componentTag > 0x3F)
+    {
+        return;
+    }
+    const bool superimpose = caption.componentTag >= 0x38;
+    const std::string_view data(reinterpret_cast<const char*>(caption.data.data()), caption.data.size());
+    if (caption.dataType == 0)
+    {
+        // TMDが1111なら時刻制御なしで、begin/endを読まない (ARIB TR-B39 8.5.9.2)
+        auto document = ParseTtmlCaption(data, superimpose, caption.tmd == 0b1111);
+        if (document.contains("error"))
+        {
+            return;
+        }
+        nlohmann::json message{
+            { "type", "ttmlCaption" },
+            { "componentTag", caption.componentTag },
+            { "tmd", caption.tmd },
+            { "pts", caption.pts ? nlohmann::json(*caption.pts) : nlohmann::json(nullptr) },
+            { "delay", delay },
+            { "resolution", caption.resolution },
+            { "document", std::move(document) },
+        };
+        this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+    }
+    else if (caption.dataType == 6 && data.find("<svg") != std::string_view::npos)
+    {
+        nlohmann::json message{
+            { "type", "ttmlCaptionFont" },
+            { "componentTag", caption.componentTag },
+            { "data", std::string(data) },
+        };
+        this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
+    }
+}
+
+// TTMLのまま表示する字幕の設定。字幕プラグインの設定のうち当てはまるものを使う
+void CDataBroadcastingWV2::SendTtmlCaptionConfig()
+{
+    if (!this->webView)
+    {
+        return;
+    }
+    const auto settings = this->LoadCaptionSettings();
+    nlohmann::json faces = nlohmann::json::array();
+    for (const auto* face : { &settings.faceName, &settings.faceName1, &settings.faceName2 })
+    {
+        if (!face->empty())
+        {
+            faces.push_back(wstrToUTF8String(face->c_str()));
+        }
+    }
+    nlohmann::json message{
+        { "type", "ttmlCaptionConfig" },
+        { "enable", settings.ttmlCaption },
+        { "faces", std::move(faces) },
+        { "strokeWidth", settings.strokeWidth },
+        { "noBackground", settings.noBackground },
+        { "showCaption", settings.showCaption },
+        { "showSuperimpose", settings.showSuperimpose },
+    };
+    this->webView->PostWebMessageAsJson(jsonToWString(message).c_str());
 }
 
 // アプリケーションのオリジン直後の"/"より後ろを、放送のファイルのパスにする

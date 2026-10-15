@@ -76,6 +76,8 @@ struct DeferralResponse
 #define IDT_JK_WATCHDOG 4
 // 4Kデータ放送のファイル一覧をまとめて送るためのタイマー
 #define IDT_B62_FILES 5
+// 4Kデータ放送のまだ届いていないファイルの要求を待たせて、届いたか調べるタイマー
+#define IDT_B62_PENDING_FILES 6
 
 // RegisterPanelItemで登録するパネル項目のID ("データ放送" / "実況勢い")
 static const int kPanelItemIDs[] = { 1, 2 };
@@ -401,6 +403,18 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendB62Networking();
     std::shared_ptr<void> BeginB62Networking();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
+    // まだ届いていないファイルの要求 (ServeB62File)。WebViewのスレッドでのみ触る
+    struct PendingB62File
+    {
+        wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs> args;
+        wil::com_ptr<ICoreWebView2Deferral> deferral;
+        std::wstring path;
+        ULONGLONG deadline;
+        B62::AppReceiver::Application app;
+    };
+    static constexpr ULONGLONG kB62PendingFileTimeoutMs = 15000;
+    std::vector<PendingB62File> b62PendingFiles;
+    void ServicePendingB62Files(bool finish = false);
     bool HasB62File(LPCWSTR path);
     // アプリケーションがiframeを移動させた外部のページのサーバーと、そのときのアプリケーション
     // (B62Navigation.h)。アプリケーションが替われば使わない。WebViewのスレッドでのみ触る。
@@ -998,6 +1012,11 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         case IDT_PLAYBACK:
         {
             pThis->PlaybackTick();
+            break;
+        }
+        case IDT_B62_PENDING_FILES:
+        {
+            pThis->ServicePendingB62Files();
             break;
         }
         case IDT_B62_FILES:
@@ -2549,6 +2568,7 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->webViewLifetime.Cancel();
     this->b62NavigatedOrigin.clear();
     this->b62NavigatedApp.reset();
+    this->ServicePendingB62Files(true);
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
     if (this->hMessageWnd) {
@@ -5224,7 +5244,39 @@ HRESULT CDataBroadcastingWV2::RedirectB62Navigation(ICoreWebView2WebResourceRequ
     return args->put_Response(response.get());
 }
 
+// 放送で受信したアプリケーションのファイルの応答を作る。まだ受信していなければnullptr
+static wil::com_ptr<ICoreWebView2WebResourceResponse> CreateB62FileResponse(
+    ICoreWebView2Environment* env, const std::optional<B62::AppReceiver::File>& file)
+{
+    if (!file)
+    {
+        return nullptr;
+    }
+    wil::com_ptr<IStream> stream;
+    stream.attach(SHCreateMemStream(file->data.data(), static_cast<UINT>(file->data.size())));
+    if (!stream)
+    {
+        return nullptr;
+    }
+    // item_typeは放送由来なのでヘッダーを壊す文字が入っていれば使わない
+    std::wstring mimeType(file->mimeType.begin(), file->mimeType.end());
+    if (mimeType.empty() || mimeType.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+.-_;= ") != std::wstring::npos)
+    {
+        mimeType = L"application/octet-stream";
+    }
+    std::wstring headers = L"Content-Type: " + mimeType + L"\r\nCache-Control: no-store";
+    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+    if (FAILED(env->CreateWebResourceResponse(stream.get(), 200, L"OK", headers.c_str(), response.put())))
+    {
+        return nullptr;
+    }
+    return response;
+}
+
 // 4Kデータ放送のアプリケーションのファイルを返す。pathはオリジン直後の"/"より後ろ
+// ファイルは放送で繰り返し少しずつ届くので、文書が読み込もうとした時点でまだ届いて
+// いないことがある (アプリケーションの最初のページだけ届いた直後など)。すぐに404を
+// 返すと、そのページのスクリプトが欠けたまま動いてしまうので、届くまでしばらく待つ。
 HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR path)
 {
     wil::com_ptr<ICoreWebView2Environment> env;
@@ -5234,34 +5286,69 @@ HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEven
         return hr;
     }
 
-    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
-    auto file = this->b62Receiver.GetFile(DecodeB62Path(path));
-    if (!file)
+    auto response = CreateB62FileResponse(env.get(), this->b62Receiver.GetFile(DecodeB62Path(path)));
+    if (!response)
     {
+        auto app = this->b62Receiver.GetApplication();
+        wil::com_ptr<ICoreWebView2Deferral> deferral;
+        if (app && this->hMessageWnd && SUCCEEDED(args->GetDeferral(deferral.put())))
+        {
+            this->b62PendingFiles.push_back(PendingB62File{
+                wil::com_ptr<ICoreWebView2WebResourceRequestedEventArgs>(args), deferral, path,
+                ::GetTickCount64() + kB62PendingFileTimeoutMs, *app });
+            SetTimer(this->hMessageWnd, IDT_B62_PENDING_FILES, 200, nullptr);
+            return S_OK;
+        }
         hr = env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", response.put());
-    }
-    else
-    {
-        wil::com_ptr<IStream> stream;
-        stream.attach(SHCreateMemStream(file->data.data(), static_cast<UINT>(file->data.size())));
-        if (!stream)
+        if (FAILED(hr))
         {
-            return E_OUTOFMEMORY;
+            return hr;
         }
-        // item_typeは放送由来なのでヘッダーを壊す文字が入っていれば使わない
-        std::wstring mimeType(file->mimeType.begin(), file->mimeType.end());
-        if (mimeType.empty() || mimeType.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+.-_;= ") != std::wstring::npos)
-        {
-            mimeType = L"application/octet-stream";
-        }
-        std::wstring headers = L"Content-Type: " + mimeType + L"\r\nCache-Control: no-store";
-        hr = env->CreateWebResourceResponse(stream.get(), 200, L"OK", headers.c_str(), response.put());
-    }
-    if (FAILED(hr))
-    {
-        return hr;
     }
     return args->put_Response(response.get());
+}
+
+// 待たせているファイルの要求に、届いていれば応答し、時間切れやアプリケーションの
+// 終了・交代なら404を返す。finishならすべて終わらせる (無効化するとき)。
+void CDataBroadcastingWV2::ServicePendingB62Files(bool finish)
+{
+    wil::com_ptr<ICoreWebView2Environment> env;
+    if (this->webView)
+    {
+        this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+    }
+    const auto app = this->b62Receiver.GetApplication();
+    const auto now = ::GetTickCount64();
+    std::vector<PendingB62File> waiting;
+    for (auto& pending : this->b62PendingFiles)
+    {
+        wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+        bool done = finish || !env || app != pending.app;
+        if (!done)
+        {
+            response = CreateB62FileResponse(env.get(), this->b62Receiver.GetFile(DecodeB62Path(pending.path.c_str())));
+            done = response || now >= pending.deadline;
+        }
+        if (!done)
+        {
+            waiting.push_back(std::move(pending));
+            continue;
+        }
+        if (!response && env)
+        {
+            env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", response.put());
+        }
+        if (response)
+        {
+            pending.args->put_Response(response.get());
+        }
+        pending.deferral->Complete();
+    }
+    this->b62PendingFiles = std::move(waiting);
+    if (this->b62PendingFiles.empty() && this->hMessageWnd)
+    {
+        KillTimer(this->hMessageWnd, IDT_B62_PENDING_FILES);
+    }
 }
 
 TVTest::CTVTestPlugin* CreatePluginClass()

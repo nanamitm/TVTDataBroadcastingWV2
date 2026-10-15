@@ -1552,7 +1552,7 @@ void CDataBroadcastingWV2::InitWebView2()
             settings->put_AreDefaultScriptDialogsEnabled(TRUE);
             settings->put_IsWebMessageEnabled(TRUE);
             // 4Kデータ放送のアプリケーション向けに受信機APIの代用品を用意する
-            this->webView->AddScriptToExecuteOnDocumentCreated(B62::kShimScript, nullptr);
+            this->webView->AddScriptToExecuteOnDocumentCreated(B62::ShimScript().c_str(), nullptr);
 
             this->webViewController->put_ParentWindow(this->hContainerWnd);
             RECT bounds;

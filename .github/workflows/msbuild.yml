@@ -82,6 +82,18 @@ jobs:
       working-directory: ./browser/
       run: npm run build
 
+    # プロキシ・寿命管理のネイティブテスト、アプリケーションのTypeScriptのテスト、
+    # 型チェック。ネイティブテストはx64で単独ビルドするので1つの構成だけで走らせる。
+    - name: Run regression tests
+      if: matrix.platform == 'x64'
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        ./tests/run-safety-tests.ps1
+        node tests/b62_application.test.cjs
+        if ($LASTEXITCODE -ne 0) { throw "B62 application tests failed with exit code $LASTEXITCODE" }
+        node browser/node_modules/typescript/bin/tsc --noEmit -p browser/tsconfig.json
+        if ($LASTEXITCODE -ne 0) { throw "TypeScript type check failed with exit code $LASTEXITCODE" }
+
     - name: Prepare artifact
       env:
         DIR: ${{ steps.name.outputs.DIR_NAME }}

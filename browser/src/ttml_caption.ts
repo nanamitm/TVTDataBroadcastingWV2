@@ -35,6 +35,10 @@ const clockPeriodMillis = 2 ** 33 / 90;
 const maxLeadMillis = 60 * 1000;
 // 時刻がこれ以上飛んだらシークなどとみなして字幕を捨てる
 const maxJumpMillis = 10 * 1000;
+// B24の字幕文が届いてからこれだけ経ってもTTMLが届かなければ、TTMLの無いストリーム
+// (古いdantto4kで変換した録画など) に変わったとみなしてB24の字幕に戻す。
+// dantto4kは同じ字幕のTTMLとB24を同時に送るので、普段は数ミリ秒しか離れない
+const fallbackMillis = 3 * 1000;
 
 function wrapMillis(diff: number): number {
     diff %= clockPeriodMillis;
@@ -44,6 +48,17 @@ function wrapMillis(diff: number): number {
         diff += clockPeriodMillis;
     }
     return diff;
+}
+
+// B24の字幕のPES (PES_data_byte) が字幕文か。字幕管理データ (data_group_idが0x00/0x20)
+// は字幕が無くても送られてくるので数えない (ARIB STD-B24 第三編 表9-1、表9-3)
+export function isB24CaptionStatement(pes: Uint8Array): boolean {
+    if (pes.length < 3) {
+        return false;
+    }
+    // data_identifier、private_stream_id、PES_data_packet_header_lengthの後にデータグループ
+    const index = 3 + (pes[2] & 0x0f);
+    return index < pes.length && ((pes[index] >> 2) & 0x0f) !== 0;
 }
 
 type Entry = {
@@ -214,9 +229,13 @@ export class TtmlCaptionPlayer {
     private readonly glyphs = new Map<number, DrcsGlyph>();
     private config: TtmlCaptionConfig = { enable: false, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true };
     private now: number | null = null;
+    // TTMLの文書が最後に届いた時刻 (PCR、ミリ秒)
+    private readonly lastArrivals: (number | null)[] = [null, null];
+    // TTMLを表示している間にB24の字幕文だけが届いた時刻
+    private readonly b24OnlySince: (number | null)[] = [null, null];
     // 字幕 (0) か文字スーパー (1) をTTMLで表示し始めた
     public onActivated?: (track: number) => void;
-    // TTMLで表示するのをやめた (設定で無効にした)。B24の字幕に戻す
+    // TTMLで表示するのをやめた (設定で無効にした、TTMLが届かなくなった)。B24の字幕に戻す
     public onDeactivated?: (track: number) => void;
 
     constructor(container: HTMLElement) {
@@ -234,15 +253,33 @@ export class TtmlCaptionPlayer {
     setConfig(config: TtmlCaptionConfig) {
         this.config = config;
         if (!config.enable) {
-            this.tracks.forEach((track, index) => {
-                track.reset();
-                if (this.componentTags[index] != null) {
-                    this.componentTags[index] = null;
-                    this.onDeactivated?.(index);
-                }
-            });
+            this.deactivate(0);
+            this.deactivate(1);
         }
         this.render();
+    }
+
+    private deactivate(index: number) {
+        this.tracks[index].reset();
+        this.lastArrivals[index] = null;
+        this.b24OnlySince[index] = null;
+        if (this.componentTags[index] != null) {
+            this.componentTags[index] = null;
+            this.onDeactivated?.(index);
+        }
+    }
+
+    // TTMLを表示しているトラックにB24の字幕文 (isB24CaptionStatement) が届いた。
+    // 少し待ってもTTMLが届かなければB24の字幕に戻す
+    noteB24Statement(index: number) {
+        if (!this.isActive(index) || this.now == null || this.b24OnlySince[index] != null) {
+            return;
+        }
+        const last = this.lastArrivals[index];
+        if (last != null && Math.abs(wrapMillis(this.now - last)) <= fallbackMillis) {
+            return;
+        }
+        this.b24OnlySince[index] = this.now;
     }
 
     // B24の字幕の代わりにTTMLを表示しているか
@@ -266,6 +303,8 @@ export class TtmlCaptionPlayer {
                 this.onActivated?.(index);
             }
         }
+        this.lastArrivals[index] = this.now;
+        this.b24OnlySince[index] = null;
         this.tracks[index].push(caption, this.now);
         if (this.now != null && this.tracks[index].update(this.now)) {
             this.render();
@@ -288,9 +327,14 @@ export class TtmlCaptionPlayer {
     updateTime(pcrMillis: number) {
         this.now = pcrMillis;
         let changed = false;
-        for (const track of this.tracks) {
+        this.tracks.forEach((track, index) => {
+            const since = this.b24OnlySince[index];
+            if (since != null && Math.abs(wrapMillis(pcrMillis - since)) > fallbackMillis) {
+                this.deactivate(index);
+                changed = true;
+            }
             changed = track.update(pcrMillis) || changed;
-        }
+        });
         if (changed) {
             this.render();
         }

@@ -176,13 +176,13 @@ jkcnsl(nanamitm版)の`cache_server_url`を設定すると、ニコニコ実況�
 
 Visual C++ 2022が必要(2019でもおそらく可能)
 
-サブモジュール（libaribcaptionを含む）を取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
+サブモジュール（libaribcaptionとdantto4k）を取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init
 ```
 
-新しくクローンする場合は、`git clone --recursive`を使用しても構いません。browser以下のnpmパッケージとlibaribcaptionのサブモジュールは別々に取得します。
+dantto4kはTTMLのパーサだけを使うので、その中のサブモジュール (tsduck、asio) は要りません (`--recursive`でも構いませんが、取得に時間がかかります)。browser以下のnpmパッケージとサブモジュールは別々に取得します。
 
 Release x64ビルド後、起動時のパネル復元スモークテストは以下で実行できます。
 

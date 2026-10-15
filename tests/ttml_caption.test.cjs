@@ -178,4 +178,47 @@ check(() => {
     same(activated, [0, 0], 'enabling again takes the caption over when TTML arrives');
 }, 'player');
 
+// B24の字幕のPES: data_identifier、private_stream_id、ヘッダー長、データグループ
+const b24Pes = (dataGroupId, headerLength = 0) => new Uint8Array([0x80, 0xff, 0xf0 | headerLength, ...new Array(headerLength).fill(0), dataGroupId << 2, 0, 0]);
+check(() => {
+    assert.equal(caption.isB24CaptionStatement(b24Pes(0x00)), false, 'caption management (group A)');
+    assert.equal(caption.isB24CaptionStatement(b24Pes(0x20)), false, 'caption management (group B)');
+    assert.equal(caption.isB24CaptionStatement(b24Pes(0x01)), true, 'statement (group A)');
+    assert.equal(caption.isB24CaptionStatement(b24Pes(0x21, 3)), true, 'statement after the PES data header');
+    assert.equal(caption.isB24CaptionStatement(new Uint8Array([0x80, 0xff])), false, 'too short');
+}, 'B24 statements');
+
+// TTMLが届かなくなったらB24の字幕に戻す (古いdantto4kで変換した録画を続けて開いたときなど)
+check(() => {
+    const container = { append() {}, getBoundingClientRect() { return { width: 960, height: 540 }; } };
+    const player = new caption.TtmlCaptionPlayer(container);
+    const events = [];
+    player.onActivated = (track) => events.push(['on', track]);
+    player.onDeactivated = (track) => events.push(['off', track]);
+    player.setConfig({ enable: true, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true });
+    player.updateTime(1000);
+    player.push(message(doc([span('一', 0, 1)]), 1000 * 90));
+    // 同じ字幕のB24は同時に届く
+    player.noteB24Statement(0);
+    player.updateTime(10000);
+    same(events, [['on', 0]], 'B24 with its TTML keeps TTML');
+    // 字幕の無い間に届くのは字幕管理データだけ。TTMLより先にB24が届くこともある
+    player.updateTime(60000);
+    player.noteB24Statement(0);
+    player.updateTime(60500);
+    player.push(message(doc([span('二', 0, 1)]), 60500 * 90));
+    player.updateTime(70000);
+    same(events, [['on', 0]], 'TTML arriving shortly after B24 keeps TTML');
+    // B24だけが届き続ける
+    player.updateTime(100000);
+    player.noteB24Statement(0);
+    player.updateTime(102000);
+    same(events, [['on', 0]], 'waits for TTML');
+    player.updateTime(103500);
+    same(events, [['on', 0], ['off', 0]], 'falls back to B24');
+    assert.equal(player.isActive(0), false);
+    player.push(message(doc([span('三', 0, 1)]), 104000 * 90));
+    same(events, [['on', 0], ['off', 0], ['on', 0]], 'TTML takes over again when it comes back');
+}, 'fallback to B24');
+
 console.log(`TTML caption tests passed: ${checks} checks`);

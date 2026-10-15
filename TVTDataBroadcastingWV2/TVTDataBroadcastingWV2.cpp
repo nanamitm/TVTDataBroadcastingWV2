@@ -3,6 +3,14 @@
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "thirdparty/TVTestPlugin.h"
 #include "resource.h"
+// ビルドした版 (git describe)。ビルド前にtools/generate-version-header.ps1が書き出す
+// (TVTestのTVTestVersionHashGen.batと同じ仕組み)
+#if __has_include("TVTDataBroadcastingWV2Version.h")
+#include "TVTDataBroadcastingWV2Version.h"
+#endif
+#ifndef TVTDATABROADCASTINGWV2_VERSION_STRING_W
+#define TVTDATABROADCASTINGWV2_VERSION_STRING_W L"unknown"
+#endif
 #include "StartupPolicy.h"
 #include "AsyncLifetime.h"
 #include "ProxyPolicy.h"
@@ -684,11 +692,7 @@ bool CDataBroadcastingWV2::GetPluginInfo(TVTest::PluginInfo* pInfo)
     pInfo->Flags = TVTest::PLUGIN_FLAG_DISABLEONSTART | TVTest::PLUGIN_FLAG_HASSETTINGS;
     pInfo->pszPluginName = L"TVTDataBroadcastingWV2";
     pInfo->pszCopyright = L"2022-2023 otya";
-#ifdef TVTDATABROADCASTINGWV2_VERSION
-    pInfo->pszDescription = L"データ放送を表示" TVTDATABROADCASTINGWV2_VERSION;
-#else
-    pInfo->pszDescription = L"データ放送を表示";
-#endif
+    pInfo->pszDescription = L"データ放送を表示 " TVTDATABROADCASTINGWV2_VERSION_STRING_W;
     return true;
 }
 

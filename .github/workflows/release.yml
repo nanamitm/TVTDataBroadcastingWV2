@@ -34,6 +34,8 @@ jobs:
         # libaribcaptionとdantto4k (TTMLのパーサ) をサブモジュールとして取り込んでビルドしている。
         # dantto4kの中のサブモジュール (tsduck、asio) は使わないので取得しない
         submodules: true
+        # ビルドした版 (git describe --tags) を埋め込むので、履歴とタグを取得する
+        fetch-depth: 0
 
     - name: Get version
       id: version
@@ -55,7 +57,7 @@ jobs:
       env:
         PLATFORM: ${{ matrix.platform }}
         VERSION: ${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
-      run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" .
+      run: msbuild /m /p:Configuration=Release /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 .
 
     - name: Run startup smoke tests
       if: matrix.platform != 'ARM64'

@@ -31,6 +31,8 @@ jobs:
         # libaribcaptionとdantto4k (TTMLのパーサ) をサブモジュールとして取り込んでビルドしている。
         # dantto4kの中のサブモジュール (tsduck、asio) は使わないので取得しない
         submodules: true
+        # ビルドした版 (git describe --tags) を埋め込むので、履歴とタグを取得する
+        fetch-depth: 0
 
     - name: Setup variable
       env:
@@ -59,7 +61,7 @@ jobs:
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
       run: |
-        msbuild /m /p:Configuration=$env:BUILD_CONFIGURATION /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 "/p:TVTDataBroadcastingWV2Version=L""$env:VERSION""" $env:SOLUTION_FILE_PATH
+        msbuild /m /p:Configuration=$env:BUILD_CONFIGURATION /p:Platform=$env:PLATFORM /p:PlatformToolset=v143 $env:SOLUTION_FILE_PATH
 
     - name: Run startup smoke tests
       if: matrix.platform != 'ARM64'

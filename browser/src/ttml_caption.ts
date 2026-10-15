@@ -216,6 +216,8 @@ export class TtmlCaptionPlayer {
     private now: number | null = null;
     // 字幕 (0) か文字スーパー (1) をTTMLで表示し始めた
     public onActivated?: (track: number) => void;
+    // TTMLで表示するのをやめた (設定で無効にした)。B24の字幕に戻す
+    public onDeactivated?: (track: number) => void;
 
     constructor(container: HTMLElement) {
         this.container = container;
@@ -232,10 +234,13 @@ export class TtmlCaptionPlayer {
     setConfig(config: TtmlCaptionConfig) {
         this.config = config;
         if (!config.enable) {
-            for (const track of this.tracks) {
+            this.tracks.forEach((track, index) => {
                 track.reset();
-            }
-            this.componentTags.fill(null);
+                if (this.componentTags[index] != null) {
+                    this.componentTags[index] = null;
+                    this.onDeactivated?.(index);
+                }
+            });
         }
         this.render();
     }

@@ -88,6 +88,16 @@ export class CaptionPlayer extends VideoPlayer {
         canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
     }
 
+    // suppress()をやめてB24の字幕を表示し直す (次に届いた字幕から表示される)
+    public unsuppress(track: number): void {
+        const canvas = this.canvases[track];
+        if (canvas == null) {
+            return;
+        }
+        this.suppressed[track] = false;
+        canvas.style.display = "";
+    }
+
     public draw(track: number, frameWidth: number | undefined, frameHeight: number | undefined,
                 images: NativeCaptionImage[]): void {
         const canvas = this.canvases[track];

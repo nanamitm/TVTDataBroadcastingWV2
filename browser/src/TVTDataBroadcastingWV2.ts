@@ -112,6 +112,7 @@ const player = new CaptionPlayer(document.createElement("video"), ccContainer, p
 // 4K/8K放送の字幕をTTMLのまま描く。描き始めたらB24に変換された同じ字幕は表示しない
 const ttmlPlayer = new TtmlCaptionPlayer(ccContainer);
 ttmlPlayer.onActivated = (track) => player.suppress(track);
+ttmlPlayer.onDeactivated = (track) => player.unsuppress(track);
 // リモコン
 const remoteControl = new StatusBarIndicator(browserElement.querySelector(".remote-control-receiving-status")!, browserElement.querySelector(".remote-control-networking-status")!);
 

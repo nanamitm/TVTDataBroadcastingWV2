@@ -167,9 +167,15 @@ check(() => {
     player.push(message(doc([span('英語', 0, 10)]), 1100 * 90, { componentTag: 0x32 }));
     player.updateTime(1200);
     same(drawn, ['字', '幕'], 'a second language is not mixed in');
+    const deactivated = [];
+    player.onDeactivated = (track) => deactivated.push(track);
     player.setConfig({ enable: false, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true });
     assert.equal(player.isActive(0), false);
     same(drawn, [], 'disabling clears the canvas');
+    same(deactivated, [0], 'disabling hands the caption back to B24');
+    player.setConfig({ enable: true, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true });
+    player.push(message(doc([span('再開', 0, 10)]), 1200 * 90));
+    same(activated, [0, 0], 'enabling again takes the caption over when TTML arrives');
 }, 'player');
 
 console.log(`TTML caption tests passed: ${checks} checks`);

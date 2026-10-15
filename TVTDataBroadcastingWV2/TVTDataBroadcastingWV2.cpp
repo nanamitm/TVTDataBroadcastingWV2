@@ -407,6 +407,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendB62Networking();
     std::shared_ptr<void> BeginB62Networking();
     HRESULT ServeB62File(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR uri);
+    // 要求にエラーの応答を付ける (応答を付けずに終えると、WebViewが自分で取りに行くため)
+    HRESULT RespondWithError(ICoreWebView2WebResourceRequestedEventArgs* args, int statusCode, LPCWSTR reasonPhrase);
     // まだ届いていないファイルの要求 (ServeB62File)。WebViewのスレッドでのみ触る
     struct PendingB62File
     {
@@ -1197,6 +1199,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         auto hr = pThis->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
         if (FAILED(hr))
         {
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
@@ -1206,6 +1209,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         auto  hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_NODISCARD, std::max<size_t>(response->content.size(), 1));
         if (!hGlobal)
         {
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
@@ -1213,6 +1217,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         if (!mem)
         {
             GlobalFree(hGlobal);
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
@@ -1221,12 +1226,18 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         if (FAILED(CreateStreamOnHGlobal(hGlobal, TRUE, stm.put())))
         {
             GlobalFree(hGlobal);
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
         ULARGE_INTEGER streamSize{};
         streamSize.QuadPart = response->content.size();
-        if (FAILED(stm->SetSize(streamSize))) { response->deferral->Complete(); break; }
+        if (FAILED(stm->SetSize(streamSize)))
+        {
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
+            response->deferral->Complete();
+            break;
+        }
         std::wistringstream iss(response->headers);
         std::wostringstream replacedHeader;
         std::wstring header;
@@ -1244,6 +1255,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         hr = env->CreateWebResourceResponse(stm.get(), response->statusCode, response->statusCodeText.c_str(), replacedHeader.str().c_str(), webResponse.put());
         if (FAILED(hr))
         {
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
@@ -1251,6 +1263,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         hr = webResponse->get_Headers(responseHeaders.put());
         if (FAILED(hr))
         {
+            pThis->RespondWithError(response->args.get(), 502, L"Bad Gateway");
             response->deferral->Complete();
             break;
         }
@@ -1621,6 +1634,8 @@ void CDataBroadcastingWV2::InitWebView2()
             }
             this->webView->add_WebResourceRequested(Callback<ICoreWebView2WebResourceRequestedEventHandler>(
                 [this](ICoreWebView2* sender, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                // 途中で失敗しても、応答を付けずに終えない (RespondWithError)
+                const HRESULT handled = [&]() -> HRESULT {
                 wil::com_ptr<ICoreWebView2WebResourceRequest> request;
                 HRESULT hr = args->get_Request(request.put());
                 if (FAILED(hr))
@@ -1670,7 +1685,7 @@ void CDataBroadcastingWV2::InitWebView2()
                         if (!this->proxySession || !this->enableNetwork || host.empty() ||
                             host.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:[]") != std::wstring::npos)
                         {
-                            return S_OK;
+                            return this->RespondWithError(args, 403, L"Blocked");
                         }
                         const auto url = L"http://" + rest;
                         return this->Proxy(args, url.c_str(), B62::kAppOrigin);
@@ -1681,7 +1696,7 @@ void CDataBroadcastingWV2::InitWebView2()
                     {
                         if (!this->proxySession || !this->enableNetwork)
                         {
-                            return S_OK;
+                            return this->RespondWithError(args, 503, L"Service Unavailable");
                         }
                         const auto url = utf8StrToWString(app->networkOrigin.c_str()) + L"/" + path;
                         return this->Proxy(args, url.c_str(), B62::kAppOrigin);
@@ -1692,7 +1707,7 @@ void CDataBroadcastingWV2::InitWebView2()
                     {
                         if (!this->proxySession || !this->enableNetwork)
                         {
-                            return S_OK;
+                            return this->RespondWithError(args, 503, L"Service Unavailable");
                         }
                         const auto url = this->b62NavigatedOrigin + L"/" + path;
                         return this->Proxy(args, url.c_str(), B62::kAppOrigin);
@@ -1745,6 +1760,12 @@ void CDataBroadcastingWV2::InitWebView2()
                         return hr;
                     }
                     return args->put_Response(response.get());
+                }
+                return S_OK;
+                }();
+                if (FAILED(handled))
+                {
+                    this->RespondWithError(args, 502, L"Bad Gateway");
                 }
                 return S_OK;
             }).Get(), &token);
@@ -2533,6 +2554,8 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
         }
         else
         {
+            // ここはWinHTTPのスレッドなので、WebViewの応答は作れない (UIのスレッドでしか触れない)。
+            // メッセージウィンドウが無いのは無効化の途中だけで、WebViewも閉じるところ。
             deferral->Complete();
         }
         return;
@@ -5330,6 +5353,22 @@ HRESULT CDataBroadcastingWV2::RedirectB62Navigation(ICoreWebView2WebResourceRequ
     {
         return hr;
     }
+    return args->put_Response(response.get());
+}
+
+// 要求にエラーの応答を付ける。WebResourceRequestedで応答を付けずに終えると、WebViewが
+// 自分でその要求を送ってしまう。4Kデータ放送のアプリケーションの外部への通信なら、
+// プロキシ (ローカル・プライベートな宛先の遮断) を通らなくなる。
+HRESULT CDataBroadcastingWV2::RespondWithError(ICoreWebView2WebResourceRequestedEventArgs* args, int statusCode, LPCWSTR reasonPhrase)
+{
+    if (!this->webView)
+    {
+        return E_FAIL;
+    }
+    wil::com_ptr<ICoreWebView2Environment> env;
+    RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+    RETURN_IF_FAILED(env->CreateWebResourceResponse(nullptr, statusCode, reasonPhrase, L"", response.put()));
     return args->put_Response(response.get());
 }
 

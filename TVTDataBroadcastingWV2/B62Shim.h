@@ -757,6 +757,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
     }
     function rectsAboveVideo(video, videoRect) {
         const videoRoot = rootStackingOf(video);
+        const videoNode = videoRoot.element || video;
+        const viewport = documentViewport();
         const seen = new Set();
         const rects = [];
         const elements = document.body ? document.body.querySelectorAll("*") : [];
@@ -767,7 +769,13 @@ constexpr wchar_t kShimScript[] = LR"JS(
             }
             seen.add(root.element);
             const style = getComputedStyle(root.element);
-            if (root.z <= videoRoot.z || style.visibility === "hidden" || Number(style.opacity) === 0 || root.element.getClientRects().length === 0) {
+            // Receivers draw an overlay that comes after the video in the document
+            // over it even when its z-index is lower: NHK's "利用状況調査" popup sits
+            // in a z-index 9 container below a z-index 10 video, with its notice and
+            // close button inside the video's area. Backgrounds placed before the
+            // video (a full-screen black layer, say) stay behind it.
+            const follows = (videoNode.compareDocumentPosition(root.element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+            if ((root.z <= videoRoot.z && !follows) || style.visibility === "hidden" || Number(style.opacity) === 0 || root.element.getClientRects().length === 0) {
                 continue;
             }
             for (const painted of paintedElements(root.element)) {
@@ -776,15 +784,30 @@ constexpr wchar_t kShimScript[] = LR"JS(
                 const top = Math.max(r.top, videoRect.top);
                 const right = Math.min(r.right, videoRect.left + videoRect.width);
                 const bottom = Math.min(r.bottom, videoRect.top + videoRect.height);
+                if (right <= left || bottom <= top) {
+                    continue;
+                }
                 // Something covering nearly the whole video is a full-screen layer,
-                // not an overlay; keeping it would hide the video entirely.
-                if (right <= left || bottom <= top || (right - left) * (bottom - top) >= videoRect.width * videoRect.height * 0.9) {
+                // not an overlay, when it covers most of the page too or draws no
+                // background of its own (text or a border only); keeping it would
+                // hide the video entirely. A popup panel with its own background
+                // that happens to cover the video is still an overlay.
+                const coversVideo = (right - left) * (bottom - top) >= videoRect.width * videoRect.height * 0.9;
+                const coversPage = r.width * r.height >= viewport.width * viewport.height * 0.9;
+                if (coversVideo && (coversPage || !paintsBackground(getComputedStyle(painted), painted))) {
                     continue;
                 }
                 rects.push({ left: left, top: top, width: right - left, height: bottom - top });
             }
         }
         return rects;
+    }
+    // Whether the element fills its whole box: a background, or media content.
+    function paintsBackground(style, element) {
+        const background = style.backgroundColor;
+        return style.backgroundImage !== "none" ||
+            !(background === "transparent" || /rgba\(.*,\s*0\)$/.test(background)) ||
+            /^(IMG|SVG|CANVAS|VIDEO|IFRAME|OBJECT)$/i.test(element.tagName);
     }
     // The element and descendants that draw something: an empty positioned box
     // over the video must not keep the page background below it visible.

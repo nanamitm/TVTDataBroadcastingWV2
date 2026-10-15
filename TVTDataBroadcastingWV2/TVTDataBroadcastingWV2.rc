@@ -322,6 +322,40 @@ IDB_PLUGIN              BITMAP                  "Icon16.bmp"
 // Generated from the TEXTINCLUDE 3 resource.
 //
 
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+// ビルドした版 (git describe)。ビルド前にtools/generate-version-header.ps1が書き出す
+
+#include <winver.h>
+#include "TVTDataBroadcastingWV2Version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION TVTDATABROADCASTINGWV2_VERSION_NUMBERS
+ PRODUCTVERSION TVTDATABROADCASTINGWV2_VERSION_NUMBERS
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041104b0"
+        BEGIN
+            VALUE "FileDescription", "TVTDataBroadcastingWV2 (TVTest plugin)"
+            VALUE "FileVersion", TVTDATABROADCASTINGWV2_VERSION_STRING
+            VALUE "ProductName", "TVTDataBroadcastingWV2"
+            VALUE "ProductVersion", TVTDATABROADCASTINGWV2_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x411, 1200
+    END
+END
+
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED

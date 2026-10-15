@@ -184,6 +184,8 @@ git submodule update --init
 
 dantto4kはTTMLのパーサだけを使うので、その中のサブモジュール (tsduck、asio) は要りません (`--recursive`でも構いませんが、取得に時間がかかります)。browser以下のnpmパッケージとサブモジュールは別々に取得します。
 
+ビルドの前に`tools/generate-version-header.ps1`が`git describe --tags --always --dirty`の結果 (例: `v20261015e-2-gfe95995`) を`TVTDataBroadcastingWV2Version.h`に書き出します (コミットしないファイルです)。この版はTVTestのプラグインの一覧の説明と、.tvtpのファイルのプロパティ (詳細タブ) で確認できます。gitが無い環境では`unknown`になります。
+
 Release x64ビルド後、起動時のパネル復元スモークテストは以下で実行できます。
 
 ```powershell

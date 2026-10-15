@@ -73,6 +73,10 @@ export class StatusBarIndicator implements Indicator {
         this.b62Receiving = receiving;
         this.update();
     }
+    // 「データ取得中」を表示しているか
+    public isReceiving(): boolean {
+        return this.receiving || this.b62Receiving;
+    }
     public setNetworkingGetStatus(get: boolean): void {
 
     }
@@ -687,6 +691,12 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         }
     } else if (data.type === "key") {
         remoteControlStatusContainer.style.visibility = "visible";
+        // 「データ取得中」の間はdボタンを渡さない。表示が終わる前にアプリケーションや
+        // BMLが受け取ると、表示しようとしているデータ放送を閉じてしまう。
+        if (data.keyCode === 20 && remoteControl.isReceiving()) {
+            remoteControlStatusTimeout = performance.now() + remoteControlStatusTimeoutMillis;
+            return;
+        }
         if (!b62Application.processKey(data.keyCode)) {
             bmlBrowser.content.processKeyDown(data.keyCode);
             bmlBrowser.content.processKeyUp(data.keyCode);

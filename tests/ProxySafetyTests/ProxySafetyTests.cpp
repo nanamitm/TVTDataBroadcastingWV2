@@ -10,6 +10,7 @@
 #include <thread>
 #include "../../TVTDataBroadcastingWV2/AsyncLifetime.h"
 #include "../../TVTDataBroadcastingWV2/ProxyPolicy.h"
+#include "../../TVTDataBroadcastingWV2/B62Navigation.h"
 // Expose only our driver types for deterministic completion fixtures. External
 // headers are included first, and the real WinHTTP path is tested below too.
 #define class struct
@@ -113,6 +114,20 @@ int main() {
     check(ProxyPolicy::LegacyBridgeAllowed(L"", host + L"/index.html"), "trusted Referer fallback");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", L""), "missing request source denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"https://tvtdatabroadcastingwv2-b62.invalid", host), "B62 Origin cannot fall back to host Referer");
+    {
+        using B62Navigation::SplitUrl;
+        const auto page = SplitUrl(L"https://shv.nhk.jp/4k-commu/source/index4k.html?t=1792021519575#top");
+        check(page && page->first == L"https://shv.nhk.jp" &&
+            page->second == L"4k-commu/source/index4k.html?t=1792021519575", "navigation keeps path and query, drops fragment");
+        const auto port = SplitUrl(L"HTTP://Example.jp:8080?q=1");
+        check(port && port->first == L"HTTP://Example.jp:8080" && port->second == L"?q=1", "navigation origin with port and no path");
+        check(!SplitUrl(L"https://user@evil.example/"), "navigation rejects credentials");
+        check(!SplitUrl(L"ftp://example.jp/"), "navigation rejects other schemes");
+        check(!SplitUrl(L"https:///path"), "navigation rejects an empty host");
+        check(!SplitUrl(L"https://example.jp/a\r\nLocation: x"), "navigation rejects header control characters");
+        check(B62Navigation::ScriptStringLiteral(L"https://a.invalid/p?t=1&x=<\"'\\") ==
+            L"\"https://a.invalid/p?t=1&x=\\u003c\\u0022\\u0027\\u005c\"", "redirect script string is escaped");
+    }
     check(!ProxyPolicy::LegacyBridgeAllowed(L"null", host), "opaque Origin denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", host + L".evil/path"), "host-prefix impersonation denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", L"http://TVTDataBroadcastingWV2.invalid/"), "wrong scheme denied");

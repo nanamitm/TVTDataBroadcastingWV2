@@ -281,6 +281,7 @@
     <ClInclude Include="StartupPolicy.h" />
     <ClInclude Include="AsyncLifetime.h" />
     <ClInclude Include="ProxyPolicy.h" />
+    <ClInclude Include="B62Navigation.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />

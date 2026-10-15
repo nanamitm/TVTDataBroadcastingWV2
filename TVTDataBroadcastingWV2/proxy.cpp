@@ -393,6 +393,11 @@ ProxySession::ProxySession(bool ignoreCertificateErrors, ProxyLimits limits)
 }
 
 bool ProxySession::IgnoreCertificateErrors() const { return ignoreCertificateErrors; }
+bool ProxySession::HasCapacity() const
+{
+    std::lock_guard lock(state->mutex);
+    return !state->stopping && state->requests.size() < state->limits.concurrentRequests;
+}
 HINTERNET ProxySession::GetSession(bool protectedRequest)
 {
     return protectedRequest ? state->protectedSession : state->session;

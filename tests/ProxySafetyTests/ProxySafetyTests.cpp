@@ -11,6 +11,8 @@
 #include "../../TVTDataBroadcastingWV2/AsyncLifetime.h"
 #include "../../TVTDataBroadcastingWV2/ProxyPolicy.h"
 #include "../../TVTDataBroadcastingWV2/B62Navigation.h"
+#include "../../TVTDataBroadcastingWV2/B62RomSound.h"
+#include <string>
 // Expose only our driver types for deterministic completion fixtures. External
 // headers are included first, and the real WinHTTP path is tested below too.
 #define class struct
@@ -128,6 +130,18 @@ int main() {
         check(B62Navigation::ScriptStringLiteral(L"https://a.invalid/p?t=1&x=<\"'\\") ==
             L"\"https://a.invalid/p?t=1&x=\\u003c\\u0022\\u0027\\u005c\"", "redirect script string is escaped");
     }
+    {
+        const auto wav = B62RomSound::SilentWav();
+        auto u32 = [&](size_t at) { return wav[at] | (wav[at + 1] << 8) | (wav[at + 2] << 16) | (static_cast<uint32_t>(wav[at + 3]) << 24); };
+        check(wav.size() == 44 + 160 && std::string(wav.begin(), wav.begin() + 4) == "RIFF" &&
+            std::string(wav.begin() + 8, wav.begin() + 16) == "WAVEfmt " && std::string(wav.begin() + 36, wav.begin() + 40) == "data",
+            "romsound silence is a WAV file");
+        check(u32(4) == wav.size() - 8 && u32(40) == wav.size() - 44 && u32(24) == 8000,
+            "romsound silence sizes and rate");
+        bool silent = true;
+        for (size_t i = 44; i < wav.size(); i++) silent = silent && wav[i] == 0;
+        check(silent, "romsound silence has only zero samples");
+    }
     check(!ProxyPolicy::LegacyBridgeAllowed(L"null", host), "opaque Origin denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", host + L".evil/path"), "host-prefix impersonation denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", L"http://TVTDataBroadcastingWV2.invalid/"), "wrong scheme denied");
@@ -194,11 +208,13 @@ int main() {
         ProxySession session(false, {128, 4, 1}); localProxy(session);
         auto outcome = std::make_shared<Outcome>(); check(start(session, server.url(), outcome), "start pending request");
         check(waitFor([&] { return server.received.load(); }), "pending server received request");
+        check(!session.HasCapacity(), "no capacity while the only slot is in use");
         auto rejected = std::make_shared<Outcome>();
         check(!start(session, server.url(), rejected), "concurrent request cap enforced");
         check(!start(session, server.url(), rejected, false, std::vector<BYTE>(5)), "upload cap enforced");
         session.Shutdown();
         check(outcome->failures == 1 && outcome->successes == 0 && session.state->requests.empty(), "cancel pending read and retain context through close");
+        check(!session.HasCapacity(), "no capacity after shutdown");
         const auto count = outcome->failures.load(); Sleep(30);
         check(outcome->failures == count, "no owner callback after shutdown");
     }

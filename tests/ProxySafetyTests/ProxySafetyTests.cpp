@@ -208,11 +208,13 @@ int main() {
         ProxySession session(false, {128, 4, 1}); localProxy(session);
         auto outcome = std::make_shared<Outcome>(); check(start(session, server.url(), outcome), "start pending request");
         check(waitFor([&] { return server.received.load(); }), "pending server received request");
+        check(!session.HasCapacity(), "no capacity while the only slot is in use");
         auto rejected = std::make_shared<Outcome>();
         check(!start(session, server.url(), rejected), "concurrent request cap enforced");
         check(!start(session, server.url(), rejected, false, std::vector<BYTE>(5)), "upload cap enforced");
         session.Shutdown();
         check(outcome->failures == 1 && outcome->successes == 0 && session.state->requests.empty(), "cancel pending read and retain context through close");
+        check(!session.HasCapacity(), "no capacity after shutdown");
         const auto count = outcome->failures.load(); Sleep(30);
         check(outcome->failures == count, "no owner callback after shutdown");
     }

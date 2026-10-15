@@ -34,6 +34,8 @@ public:
     explicit ProxySession(bool ignoreCertificateErrors = false, ProxyLimits limits = {});
     ~ProxySession();
     void Shutdown();
+    // Whether another request can start now (below the concurrent request limit).
+    bool HasCapacity() const;
     ProxySession(const ProxySession&) = delete;
     ProxySession& operator=(const ProxySession&) = delete;
 };

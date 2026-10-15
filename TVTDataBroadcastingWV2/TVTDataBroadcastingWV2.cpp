@@ -9,6 +9,8 @@
 #include "B62Navigation.h"
 #include "B62RomSound.h"
 #include <queue>
+#include <deque>
+#include <functional>
 #include <optional>
 #include <wil/stl.h>
 #include <wil/win32_helpers.h>
@@ -78,6 +80,8 @@ struct DeferralResponse
 #define IDT_B62_FILES 5
 // 4Kデータ放送のまだ届いていないファイルの要求を待たせて、届いたか調べるタイマー
 #define IDT_B62_PENDING_FILES 6
+// 同時に通信できる数を超えて待たせている通信を始めるタイマー
+#define IDT_PROXY_QUEUE 7
 
 // RegisterPanelItemで登録するパネル項目のID ("データ放送" / "実況勢い")
 static const int kPanelItemIDs[] = { 1, 2 };
@@ -574,6 +578,19 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // パネルのタブ自体("データ放送"/"実況勢い")の表示を切り替える。
     void EnablePanelItems(bool enable);
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin = nullptr);
+    // 同時に通信できる数 (ProxySessionの上限) を超えて待たせている通信。WebViewのスレッドでのみ触る
+    struct QueuedProxyRequest
+    {
+        std::wstring url;
+        std::wstring method;
+        std::vector<BYTE> payload;
+        std::vector<std::pair<std::wstring, std::wstring>> headers;
+        std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> respond;
+        bool blockPrivateAddresses = false;
+    };
+    std::deque<QueuedProxyRequest> proxyQueue;
+    void StartProxyRequest(QueuedProxyRequest request);
+    void ServiceProxyQueue(bool finish = false);
     HRESULT ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri);
     static bool IsFromB62Application(ICoreWebView2WebResourceRequest* request);
     static bool IsFromPluginPage(ICoreWebView2WebResourceRequest* request);
@@ -1012,6 +1029,11 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         case IDT_PLAYBACK:
         {
             pThis->PlaybackTick();
+            break;
+        }
+        case IDT_PROXY_QUEUE:
+        {
+            pThis->ServiceProxyQueue();
             break;
         }
         case IDT_B62_PENDING_FILES:
@@ -2515,14 +2537,70 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
         }
         return;
     };
-    // Both success and failure are completed on the WebView UI thread.
-    if (!ProxyRequest::RequestAsync(*this->proxySession, proxyUrl, method.get(), std::move(contentBuffer), headersPtr,
-        [postResponse] { postResponse(502, L"Bad Gateway", L"", 0, nullptr); }, postResponse, allowOrigin != nullptr))
+    QueuedProxyRequest queued{ proxyUrl, method.get(), std::move(contentBuffer), {}, postResponse, allowOrigin != nullptr };
+    for (const auto& [name, value] : headersPtr)
     {
-        deferral->Complete();
+        queued.headers.emplace_back(name, value);
+    }
+    // 同時に通信できる数を超えたら、空くまで順に待たせる。断って応答を返さずに終えると
+    // WebViewが自分で取りに行き、アプリケーションのオリジンは名前解決に失敗するうえ、
+    // 外部への通信はプロキシ (ローカル・プライベートな宛先の遮断) を通らなくなる。
+    if (this->proxyQueue.empty() && this->proxySession->HasCapacity())
+    {
+        this->StartProxyRequest(std::move(queued));
+    }
+    else
+    {
+        this->proxyQueue.push_back(std::move(queued));
+        if (this->hMessageWnd)
+        {
+            SetTimer(this->hMessageWnd, IDT_PROXY_QUEUE, 50, nullptr);
+        }
     }
     return S_OK;
 }
+
+// 待たせていた通信を始める。始められなければ (無効化中、接続の準備に失敗など) 502を返す
+void CDataBroadcastingWV2::StartProxyRequest(QueuedProxyRequest request)
+{
+    std::vector<std::pair<LPCWSTR, LPCWSTR>> headers;
+    for (const auto& [name, value] : request.headers)
+    {
+        headers.push_back({ name.c_str(), value.c_str() });
+    }
+    auto respond = request.respond;
+    // Both success and failure are completed on the WebView UI thread.
+    if (!this->proxySession || !ProxyRequest::RequestAsync(*this->proxySession, request.url.c_str(), request.method.c_str(),
+        std::move(request.payload), headers, [respond] { respond(502, L"Bad Gateway", L"", 0, nullptr); }, respond,
+        request.blockPrivateAddresses))
+    {
+        respond(502, L"Bad Gateway", L"", 0, nullptr);
+    }
+}
+
+// 同時に通信できる数が空いたら、待たせていた通信を順に始める。finishなら (無効化するとき)
+// 残りをすべて503で終わらせる。
+void CDataBroadcastingWV2::ServiceProxyQueue(bool finish)
+{
+    while (!this->proxyQueue.empty() && (finish || !this->proxySession || this->proxySession->HasCapacity()))
+    {
+        auto request = std::move(this->proxyQueue.front());
+        this->proxyQueue.pop_front();
+        if (finish || !this->proxySession)
+        {
+            request.respond(503, L"Service Unavailable", L"", 0, nullptr);
+        }
+        else
+        {
+            this->StartProxyRequest(std::move(request));
+        }
+    }
+    if (this->proxyQueue.empty() && this->hMessageWnd)
+    {
+        KillTimer(this->hMessageWnd, IDT_PROXY_QUEUE);
+    }
+}
+
 
 void CDataBroadcastingWV2::ResizeVideoWindow()
 {
@@ -2571,10 +2649,21 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->ServicePendingB62Files(true);
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
+    // 待たせていた通信は503で終わらせる (応答は下で処理する)
+    this->ServiceProxyQueue(true);
     if (this->hMessageWnd) {
         MSG message;
+        // 応答を付けずに終えるとWebViewが自分で取りに行くので、エラーを返して終える
+        wil::com_ptr<ICoreWebView2Environment> env;
+        if (this->webView) {
+            this->webView.query<ICoreWebView2_2>()->get_Environment(env.put());
+        }
         while (PeekMessageW(&message, this->hMessageWnd, WM_APP_RESPONSE, WM_APP_RESPONSE, PM_REMOVE)) {
             std::unique_ptr<DeferralResponse> response(reinterpret_cast<DeferralResponse*>(message.lParam));
+            wil::com_ptr<ICoreWebView2WebResourceResponse> unavailable;
+            if (env && SUCCEEDED(env->CreateWebResourceResponse(nullptr, 503, L"Service Unavailable", L"", unavailable.put()))) {
+                response->args->put_Response(unavailable.get());
+            }
             response->deferral->Complete();
         }
     }

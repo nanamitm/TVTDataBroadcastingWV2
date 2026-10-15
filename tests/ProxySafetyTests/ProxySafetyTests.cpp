@@ -11,6 +11,8 @@
 #include "../../TVTDataBroadcastingWV2/AsyncLifetime.h"
 #include "../../TVTDataBroadcastingWV2/ProxyPolicy.h"
 #include "../../TVTDataBroadcastingWV2/B62Navigation.h"
+#include "../../TVTDataBroadcastingWV2/B62RomSound.h"
+#include <string>
 // Expose only our driver types for deterministic completion fixtures. External
 // headers are included first, and the real WinHTTP path is tested below too.
 #define class struct
@@ -127,6 +129,18 @@ int main() {
         check(!SplitUrl(L"https://example.jp/a\r\nLocation: x"), "navigation rejects header control characters");
         check(B62Navigation::ScriptStringLiteral(L"https://a.invalid/p?t=1&x=<\"'\\") ==
             L"\"https://a.invalid/p?t=1&x=\\u003c\\u0022\\u0027\\u005c\"", "redirect script string is escaped");
+    }
+    {
+        const auto wav = B62RomSound::SilentWav();
+        auto u32 = [&](size_t at) { return wav[at] | (wav[at + 1] << 8) | (wav[at + 2] << 16) | (static_cast<uint32_t>(wav[at + 3]) << 24); };
+        check(wav.size() == 44 + 160 && std::string(wav.begin(), wav.begin() + 4) == "RIFF" &&
+            std::string(wav.begin() + 8, wav.begin() + 16) == "WAVEfmt " && std::string(wav.begin() + 36, wav.begin() + 40) == "data",
+            "romsound silence is a WAV file");
+        check(u32(4) == wav.size() - 8 && u32(40) == wav.size() - 44 && u32(24) == 8000,
+            "romsound silence sizes and rate");
+        bool silent = true;
+        for (size_t i = 44; i < wav.size(); i++) silent = silent && wav[i] == 0;
+        check(silent, "romsound silence has only zero samples");
     }
     check(!ProxyPolicy::LegacyBridgeAllowed(L"null", host), "opaque Origin denied");
     check(!ProxyPolicy::LegacyBridgeAllowed(L"", host + L".evil/path"), "host-prefix impersonation denied");

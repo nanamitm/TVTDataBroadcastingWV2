@@ -7,6 +7,7 @@
 #include "AsyncLifetime.h"
 #include "ProxyPolicy.h"
 #include "B62Navigation.h"
+#include "B62RomSound.h"
 #include <queue>
 #include <optional>
 #include <wil/stl.h>
@@ -1671,6 +1672,22 @@ void CDataBroadcastingWV2::InitWebView2()
                         return this->RedirectB62Navigation(args, uri.get());
                     }
                     return this->ProxyB62(args, request.get(), uri.get());
+                }
+                // 受信機内蔵音は無音を返して読み込みを成功させる (鳴らすのはB62Shim.h)
+                else if (!_wcsnicmp(uri.get(), L"romsound://", 11))
+                {
+                    static const auto silence = B62RomSound::SilentWav();
+                    wil::com_ptr<ICoreWebView2Environment> env;
+                    RETURN_IF_FAILED(this->webView.query<ICoreWebView2_2>()->get_Environment(env.put()));
+                    wil::com_ptr<IStream> stream;
+                    stream.attach(SHCreateMemStream(silence.data(), static_cast<UINT>(silence.size())));
+                    if (!stream)
+                    {
+                        return E_OUTOFMEMORY;
+                    }
+                    wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+                    RETURN_IF_FAILED(env->CreateWebResourceResponse(stream.get(), 200, L"OK", L"Content-Type: audio/wav", response.put()));
+                    return args->put_Response(response.get());
                 }
                 else if (_wcsnicmp(L"https://TVTDataBroadcastingWV2.invalid/", uri.get(), wcslen(L"https://TVTDataBroadcastingWV2.invalid/")))
                 {

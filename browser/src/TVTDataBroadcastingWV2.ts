@@ -4,6 +4,7 @@ import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
 import { decodeTS } from "web-bml/ts";
 import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
+import { TtmlCaptionPlayer, type TtmlCaptionConfig, type TtmlCaptionMessage } from "./ttml_caption";
 import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence, type B62NptReference } from "./b62_application";
 
 declare global {
@@ -108,6 +109,10 @@ const boldRoundGothic: BMLBrowserFontFace = { source: "url('../dist/KosugiMaru-B
 const squareGothic: BMLBrowserFontFace = { source: "url('../dist/Kosugi-Regular.woff2'), local('MS Gothic')" };
 const ccContainer = browserElement.querySelector(".arib-video-cc-container") as HTMLElement;
 const player = new CaptionPlayer(document.createElement("video"), ccContainer, postMessage);
+// 4K/8K放送の字幕をTTMLのまま描く。描き始めたらB24に変換された同じ字幕は表示しない
+const ttmlPlayer = new TtmlCaptionPlayer(ccContainer);
+ttmlPlayer.onActivated = (track) => player.suppress(track);
+ttmlPlayer.onDeactivated = (track) => player.unsuppress(track);
 // リモコン
 const remoteControl = new StatusBarIndicator(browserElement.querySelector(".remote-control-receiving-status")!, browserElement.querySelector(".remote-control-networking-status")!);
 
@@ -597,6 +602,15 @@ type ToWebViewMessage = {
 } | ({
     type: "b62Caption",
 } & B62Caption) | ({
+    type: "ttmlCaption",
+} & TtmlCaptionMessage) | {
+    // 字幕のリソースのSVGフォント (外字)
+    type: "ttmlCaptionFont",
+    componentTag: number,
+    data: string,
+} | ({
+    type: "ttmlCaptionConfig",
+} & TtmlCaptionConfig) | ({
     type: "b62EventMessage",
 } & B62EventMessage) | {
     // 4Kデータ放送 (ARIB STD-B62) のアプリケーション。urlがnullなら終了
@@ -674,6 +688,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
             player.updateTime(curPCR);
+            ttmlPlayer.updateTime(curPCR);
             b62Application.updateTime(curPCR);
         }
     } else if (data.type === "streamBase64") {
@@ -687,6 +702,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
             player.updateTime(curPCR);
+            ttmlPlayer.updateTime(curPCR);
             b62Application.updateTime(curPCR);
         }
     } else if (data.type === "key") {
@@ -715,6 +731,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
                 ccStatusAnimation.play();
             }
             player.showCC();
+            ttmlPlayer.render();
         } else {
             if (data.showIndicator) {
                 ccStatus.style.display = "";
@@ -794,6 +811,12 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         channelsClient = new ChannelsClient(data.ws_uri, (channels) => {
             postMessage({ type: "channelsUpdate", channels });
         });
+    } else if (data.type === "ttmlCaption") {
+        ttmlPlayer.push(data);
+    } else if (data.type === "ttmlCaptionFont") {
+        ttmlPlayer.pushFont(data.data);
+    } else if (data.type === "ttmlCaptionConfig") {
+        ttmlPlayer.setConfig(data);
     } else if (data.type === "b62Caption") {
         b62Application.pushCaption(data);
     } else if (data.type === "b62EventMessage") {
@@ -853,6 +876,7 @@ function onResized() {
     document.body.style.transform = `translate(${Math.ceil((contentWidth * s + windowWidth) / 2 - contentWidth * s)}px, ${Math.ceil((contentHeight * s + windowHeight) / 2 - contentHeight * s)}px) scale(${s})`;
     document.body.style.transformOrigin = `0px 0px`;
     b62Application.resize();
+    ttmlPlayer.render();
     // 4Kデータ放送のアプリケーションが映像を置いていればその位置に映像を出す
     const b62VideoRect = b62Application.videoRectInViewport();
     const { left, top, right, bottom } = b62VideoRect ?? videoContainer.getBoundingClientRect();

@@ -283,6 +283,7 @@
     <ClInclude Include="ProxyPolicy.h" />
     <ClInclude Include="B62Navigation.h" />
     <ClInclude Include="B62RomSound.h" />
+    <ClInclude Include="TtmlCaption.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CommentFetcher.cpp" />
@@ -301,6 +302,16 @@
     <ClCompile Include="B62AppReceiver.cpp" />
     <ClCompile Include="ZlibInflate.cpp" />
     <ClCompile Include="proxy.cpp" />
+    <ClCompile Include="TtmlCaption.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories>thirdparty\dantto4k\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\pugixml.cpp;thirdparty\dantto4k\src\ttml\parser.cpp;thirdparty\dantto4k\src\ttml\resolver.cpp;thirdparty\dantto4k\src\ttml\style.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <SDLCheck>false</SDLCheck>
+      <AdditionalIncludeDirectories>thirdparty\dantto4k\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="TVTDataBroadcastingWV2.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

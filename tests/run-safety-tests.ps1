@@ -20,6 +20,10 @@ if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTests\StartupSmokeTests.cpp /Fo:"$output\startup.obj" /Fe:"$output\startup.exe"
 if errorlevel 1 exit /b 1
 "$output\startup.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"TVTDataBroadcastingWV2" /I"TVTDataBroadcastingWV2\thirdparty\dantto4k\src" tests\TtmlCaptionTests\TtmlCaptionTests.cpp TVTDataBroadcastingWV2\TtmlCaption.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\pugixml.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\parser.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\resolver.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\style.cpp /Fo:"$output\\" /Fe:"$output\ttml.exe"
+if errorlevel 1 exit /b 1
+"$output\ttml.exe"
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $batch
 if ($LASTEXITCODE -ne 0) { throw 'Native safety tests failed' }

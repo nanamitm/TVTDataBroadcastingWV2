@@ -113,6 +113,7 @@ const player = new CaptionPlayer(document.createElement("video"), ccContainer, p
 const ttmlPlayer = new TtmlCaptionPlayer(ccContainer);
 ttmlPlayer.onActivated = (track) => player.suppress(track);
 ttmlPlayer.onDeactivated = (track) => player.unsuppress(track);
+player.onSuppressedStatement = (track) => ttmlPlayer.noteB24Statement(track);
 // リモコン
 const remoteControl = new StatusBarIndicator(browserElement.querySelector(".remote-control-receiving-status")!, browserElement.querySelector(".remote-control-networking-status")!);
 

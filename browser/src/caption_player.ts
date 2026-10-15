@@ -1,7 +1,11 @@
 import { playRomSound } from "web-bml";
 import { VideoPlayer } from "./video_player";
+import { isB24CaptionStatement } from "./ttml_caption";
 
 type SendMessage = (message: any) => void;
+
+// 表示しない間に取っておくPESの数。字幕管理データは0.5秒ごとに届く
+const maxHeldPes = 32;
 
 function toBase64(input: Uint8Array): string {
     if ("toBase64" in globalThis.Uint8Array.prototype) {
@@ -32,6 +36,10 @@ export class CaptionPlayer extends VideoPlayer {
     private audioNode?: AudioNode;
     // TTMLのまま表示しているので、B24の字幕を表示しないトラック (ttml_caption.ts)
     private readonly suppressed = [false, false];
+    // 表示しない間に届いたPES。B24の字幕に戻したときに渡す
+    private readonly held: { streamId: number, pes: Uint8Array, pts?: number }[][] = [[], []];
+    // 表示しないトラックにB24の字幕文が届いた
+    public onSuppressedStatement?: (track: number) => void;
 
     public constructor(video: HTMLVideoElement, container: HTMLElement, sendMessage: SendMessage) {
         super(video, container);
@@ -66,9 +74,22 @@ export class CaptionPlayer extends VideoPlayer {
         if (streamId !== 0xbd && streamId !== 0xbf) {
             return;
         }
-        if (this.suppressed[streamId === 0xbd ? 0 : 1]) {
+        const track = streamId === 0xbd ? 0 : 1;
+        if (this.suppressed[track]) {
+            const held = this.held[track];
+            held.push({ streamId, pes, pts });
+            if (held.length > maxHeldPes) {
+                held.shift();
+            }
+            if (isB24CaptionStatement(pes)) {
+                this.onSuppressedStatement?.(track);
+            }
             return;
         }
+        this.send(streamId, pes, pts);
+    }
+
+    private send(streamId: number, pes: Uint8Array, pts?: number): void {
         this.sendMessage({
             type: "captionPes",
             streamId,
@@ -84,18 +105,24 @@ export class CaptionPlayer extends VideoPlayer {
             return;
         }
         this.suppressed[track] = true;
+        this.held[track] = [];
         canvas.style.display = "none";
         canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
     }
 
-    // suppress()をやめてB24の字幕を表示し直す (次に届いた字幕から表示される)
+    // suppress()をやめてB24の字幕を表示し直す。表示しない間に届いたものから渡す
     public unsuppress(track: number): void {
         const canvas = this.canvases[track];
-        if (canvas == null) {
+        if (canvas == null || !this.suppressed[track]) {
             return;
         }
         this.suppressed[track] = false;
         canvas.style.display = "";
+        const held = this.held[track];
+        this.held[track] = [];
+        for (const { streamId, pes, pts } of held) {
+            this.send(streamId, pes, pts);
+        }
     }
 
     public draw(track: number, frameWidth: number | undefined, frameHeight: number | undefined,

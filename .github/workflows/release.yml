@@ -31,8 +31,9 @@ jobs:
     steps:
     - uses: actions/checkout@v5
       with:
-        # libaribcaptionをサブモジュールとして取り込んでビルドしている
-        submodules: recursive
+        # libaribcaptionとdantto4k (TTMLのパーサ) をサブモジュールとして取り込んでビルドしている。
+        # dantto4kの中のサブモジュール (tsduck、asio) は使わないので取得しない
+        submodules: true
 
     - name: Get version
       id: version

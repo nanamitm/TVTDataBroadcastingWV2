@@ -1,4 +1,6 @@
 #pragma once
+#include <string>
+#include <string_view>
 
 namespace B62
 {
@@ -11,7 +13,12 @@ constexpr wchar_t kAppOrigin[] = L"https://tvtdatabroadcastingwv2-b62.invalid";
 // A minimal stand-in for the receiver APIs of ARIB STD-B62 Volume 2 that
 // applications seen on air call at startup, so they can load. Values are
 // placeholders; event messages, caching and key sets do nothing yet.
-constexpr wchar_t kShimScript[] = LR"JS(
+// The script is kept in pieces: Visual Studio 2022 (MSVC 14.4x) rejects a
+// string literal longer than 16,380 bytes and a concatenated one longer than
+// about 64 KB (C2026), while newer compilers accept them, so the sizes are
+// checked here too. Split a piece at a line break when it grows.
+constexpr std::wstring_view kShimScriptParts[] = {
+LR"JS(
 (function () {
     if (location.origin !== "https://tvtdatabroadcastingwv2-b62.invalid") {
         return;
@@ -153,7 +160,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
         }
     }
     // The version of what path names: a file's own, or every file under a
-    // directory. undefined when nothing of it has been received.
+)JS",
+LR"JS(    // directory. undefined when nothing of it has been received.
     function cacheState(files, path) {
         if (!files) {
             return undefined;
@@ -299,7 +307,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
         return utcNptState.references.find(function (reference) { return reference.tag === wanted; }) || null;
     }
     function utcNptSource(reference) {
-        return Object.assign({}, utcNptState.service, { event_message_tag: reference.tag });
+)JS",
+LR"JS(        return Object.assign({}, utcNptState.service, { event_message_tag: reference.tag });
     }
     const dayMillis = 24 * 60 * 60 * 1000;
     function leapBoundaryMillis(reference) {
@@ -434,7 +443,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
                 utcNptAlarms.set(handle, { tag: utcNptTag(param), value: value, handler: handler, timer: null });
                 scheduleUtcNptAlarms();
                 return handle;
-            },
+)JS",
+LR"JS(            },
             unsetAlarmByUTCNPT: function (handle) {
                 const alarm = utcNptAlarms.get(handle);
                 if (alarm) {
@@ -574,7 +584,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
     // ARIB STD-B62 Volume 2 3.3.10. The queries are defined by the operational
     // rules; none of the optional functions they ask about (BS/terrestrial
     // shared NVRAM, sourceIs, ...) is provided.
-    define("capabilities", { hasCapability: function () { return false; } });
+)JS",
+LR"JS(    define("capabilities", { hasCapability: function () { return false; } });
 
     // Requests to http URLs. The application's origin is https, so the browser
     // blocks them as mixed content, while on a receiver an application
@@ -706,7 +717,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
 
     // <object type="video/x-arib2-broadcast"> marks where the broadcast video
     // goes. The plugin draws the video behind the page, so the object must be
-    // see-through instead of Chromium's white "plugin not supported" box.
+)JS",
+LR"JS(    // see-through instead of Chromium's white "plugin not supported" box.
     // A constructed sheet needs no <head>, which does not exist yet here.
     const sheet = new CSSStyleSheet();
     sheet.replaceSync('object[type="video/x-arib2-broadcast" i], object[type="audio/x-arib2-broadcast" i] { visibility: hidden !important; }');
@@ -809,7 +821,8 @@ constexpr wchar_t kShimScript[] = LR"JS(
             !(background === "transparent" || /rgba\(.*,\s*0\)$/.test(background)) ||
             /^(IMG|SVG|CANVAS|VIDEO|IFRAME|OBJECT)$/i.test(element.tagName);
     }
-    // The element and descendants that draw something: an empty positioned box
+)JS",
+LR"JS(    // The element and descendants that draw something: an empty positioned box
     // over the video must not keep the page background below it visible.
     function paintedElements(root) {
         const result = [];
@@ -861,6 +874,32 @@ constexpr wchar_t kShimScript[] = LR"JS(
         }, 100);
     }
 })();
-)JS";
+)JS",
+};
+constexpr bool ShimScriptPartsFit()
+{
+    for (const auto part : kShimScriptParts)
+    {
+        if ((part.size() + 1) * sizeof(wchar_t) > 16380)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(ShimScriptPartsFit(), "a piece of the B62 shim is too long for MSVC (C2026)");
+
+inline const std::wstring& ShimScript()
+{
+    static const std::wstring script = [] {
+        std::wstring joined;
+        for (const auto part : kShimScriptParts)
+        {
+            joined += part;
+        }
+        return joined;
+    }();
+    return script;
+}
 
 }

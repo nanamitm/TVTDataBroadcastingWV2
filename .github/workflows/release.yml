@@ -15,6 +15,9 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # 同梱するjkcnsl (コメント機能が使う外部ツール)。NicoJKのリリースと同じ版・同じzipを使う
+  JKCNSL_VERSION: v20261018a
+  JKCNSL_SHA256: 351c846bc4ba59f6c1e476e0c513715d9d9a1b5ba3a15c8d019b5de91cd9b137
 
 jobs:
   build:
@@ -81,6 +84,37 @@ jobs:
       working-directory: ./browser/
       run: npm run build
 
+    # jkcnslのライセンスとREADMEを、同梱する実行ファイルと同じタグから取得する
+    - name: Checkout jkcnsl metadata
+      uses: actions/checkout@v5
+      with:
+        repository: nanamitm/jkcnsl
+        ref: ${{ env.JKCNSL_VERSION }}
+        path: jkcnsl-source
+
+    # jkcnslはwin-x64版のみ。x86/ARM64版のzipにも同じものを入れる
+    # (64bit Windowsなら32bitのTVTestからでも起動でき、ARM64版Windowsではx64エミュレーションで動く)
+    - name: Download jkcnsl release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $asset = "jkcnsl-windows-x64-$env:JKCNSL_VERSION.zip"
+        New-Item -ItemType Directory -Force -Path 'jkcnsl-download' | Out-Null
+        gh release download $env:JKCNSL_VERSION --repo nanamitm/jkcnsl --pattern $asset --dir 'jkcnsl-download'
+        if ($LASTEXITCODE -ne 0) { throw "jkcnsl download failed: $asset" }
+
+        $archive = Join-Path 'jkcnsl-download' $asset
+        $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+        if ($actualHash -ne $env:JKCNSL_SHA256) {
+          throw "jkcnsl checksum mismatch: expected $env:JKCNSL_SHA256, actual $actualHash"
+        }
+
+        Expand-Archive -LiteralPath $archive -DestinationPath 'jkcnsl-expanded'
+        foreach ($f in 'jkcnsl.exe', 'JkcnslLoginWindow.exe') {
+          if (-not (Test-Path "jkcnsl-expanded/jkcnsl/$f")) { throw "$f was not found in the jkcnsl release archive" }
+        }
+        Copy-Item 'jkcnsl-source/License.txt', 'jkcnsl-source/Readme.txt' 'jkcnsl-expanded/jkcnsl/'
+
     - name: Package
       env:
         PLATFORM: ${{ matrix.platform }}
@@ -100,6 +134,7 @@ jobs:
         copy browser/node_modules/web-bml-fonts/LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/fonts-LICENSE.txt"
         copy browser/dist/TVTDataBroadcastingWV2.js.LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/"
         copy browser/TVTDataBroadcastingWV2.html "$name/TVTDataBroadcastingWV2/resources/"
+        Copy-Item -Recurse 'jkcnsl-expanded/jkcnsl' "$name/jkcnsl"
         Compress-Archive -Path $name -DestinationPath "$name.zip"
 
     - uses: actions/upload-artifact@v7
@@ -123,3 +158,6 @@ jobs:
         name: ${{ needs.build.outputs.version }}
         files: artifacts/*.zip
         generate_release_notes: true
+        body: |
+          コメント機能で使うjkcnsl ${{ env.JKCNSL_VERSION }} (JkcnslLoginWindowを含むwin-x64版) を同梱しています。
+          `jkcnsl` フォルダの中身をTVTest.exeのあるフォルダに配置してください。

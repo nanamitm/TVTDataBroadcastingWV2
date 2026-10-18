@@ -109,6 +109,8 @@ EnableNetwork=1
 
 このフォークでは、ニコニコ実況/NX-Jikkyoのコメントを取得して動画に重ねて表示する機能を追加しています(NicoJK相当)。コメント自体の取得は外部ツール[jkcnsl](https://github.com/nanamitm/jkcnsl)(`jkcnsl.exe`をTVTest本体と同じフォルダに配置)が行い、本プラグインは表示・投稿・NGフィルタ等のUIを担当します。
 
+リリースのzipには`jkcnsl`フォルダ(win-x64版の`jkcnsl.exe`と`JkcnslLoginWindow.exe`)を同梱しています。中身をTVTest.exeのあるフォルダに配置してください。x86/ARM64版のzipに入っているのも同じwin-x64版で、64bit Windowsなら32bitのTVTestからも使え、ARM64版Windowsではx64エミュレーションで動作します。
+
 ### 有効化
 
 コメント機能は本体のプラグイン有効/無効・通信機能の有効化とは別に、パネルレイアウト(リモコンパネル形式)上のチェックボタン「コメント」で切り替えます。右クリックメニューには表示されないため、TVTestのパネル設定でリモコンパネルを表示しておく必要があります。INIにも起動時のゲートとして`EnableComment`があります。

@@ -1847,6 +1847,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 {
                     int opacityPct = this->GetIniItem(L"CommentOpacity", 100);
                     opacityPct = std::max(0, std::min(100, opacityPct));
+                    if (!this->GetIniItem(L"CommentEnabled", 1)) opacityPct = 0;
                     int durationMs = this->GetIniItem(L"CommentDuration", 4000);
                     durationMs = std::max(1000, std::min(5000, durationMs));
                     std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"rgba(0,0,0,0.7)");

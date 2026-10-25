@@ -62,6 +62,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_B62_APPLICATION (WM_APP + 9)
 #define WM_APP_B62_CAPTION (WM_APP + 10)
 #define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
+#define WM_APP_COMMENT_STATUS (WM_APP + 12)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -522,6 +523,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
+    nlohmann::json m_commentLog = nlohmann::json::array();
+    void AppendCommentLog(const nlohmann::json& items);
+    void QueueCommentStatus(JkcnslReader::Status status);
     JkcnslLogin    m_jkcnslLogin;
     std::thread    m_authThread;
     std::mutex     m_authMutex;
@@ -1359,6 +1363,21 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     {
         pThis->m_streamConnected = (wParam != 0);
         pThis->PushAuthState();
+        break;
+    }
+    case WM_APP_COMMENT_STATUS:
+    {
+        const char* text = "";
+        switch (static_cast<JkcnslReader::Status>(wParam))
+        {
+        case JkcnslReader::Status::Connecting: text = "コメントサーバーに接続開始しました。"; break;
+        case JkcnslReader::Status::Connected: text = "コメントサーバーに接続しました。"; break;
+        case JkcnslReader::Status::Disconnected: text = "コメントサーバーとの接続を終了しました。"; break;
+        case JkcnslReader::Status::Failed: text = "コメントサーバーとの通信に失敗しました。再接続を待ちます。"; break;
+        }
+        pThis->AppendCommentLog(nlohmann::json::array({
+            { { "text", text }, { "date", static_cast<long long>(lParam) }, { "system", true } }
+        }));
         break;
     }
     }
@@ -2855,6 +2874,9 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 this->m_jkcnslReader.SetConnectionCallback([this](bool connected) {
                     PostMessageW(this->hMessageWnd, WM_APP_CONN, connected ? 1 : 0, 0);
                 });
+                this->m_jkcnslReader.SetStatusCallback([this](JkcnslReader::Status status) {
+                    this->QueueCommentStatus(status);
+                });
                 this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
                     auto payload = std::make_unique<JkcnslLoginEvent>(JkcnslLoginEvent{ ev, std::move(msg) });
                     if (PostMessageW(this->hMessageWnd, WM_APP_LOGIN,
@@ -3078,10 +3100,25 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
         this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
     }
 
-    // Comment log list -> momentum panel WebView.
+    this->AppendCommentLog(logArr);
+}
+
+void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
+{
+    // 接続処理とワーカースレッドの通知を同じキューに載せ、発生順に表示する。
+    PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
+                 static_cast<WPARAM>(status), static_cast<LPARAM>(std::time(nullptr)));
+}
+
+void CDataBroadcastingWV2::AppendCommentLog(const nlohmann::json& items)
+{
+    // パネルの初期化前に発生した接続通知も、コメントと一緒に保持する。
+    for (const auto& item : items) this->m_commentLog.push_back(item);
+    if (this->m_commentLog.size() > 500)
+        this->m_commentLog.erase(this->m_commentLog.begin(), this->m_commentLog.end() - 500);
     if (this->momentumWebView && this->momentumWebViewReady)
     {
-        nlohmann::json m{ { "type", "commentLog" }, { "items", logArr } };
+        nlohmann::json m{ { "type", "commentLog" }, { "items", items } };
         this->momentumWebView->ExecuteScript(jsonToUpdateScript(m).c_str(), nullptr);
     }
 }
@@ -3399,7 +3436,9 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     // ハンドルとスレッドは残ったままなので Stop() は無条件に呼ぶ。飛ばすと
     // Start() がハンドルを上書きし、join 前のスレッドに代入して terminate する。
     this->m_jkcnslReader.Stop();
-    this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd);
+    this->QueueCommentStatus(JkcnslReader::Status::Connecting);
+    if (!this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd))
+        this->QueueCommentStatus(JkcnslReader::Status::Failed);
     this->PushAuthState(); // reflect the new post target colour
 
     // 再接続を試みた直後は、次の判定までウォッチドッグの間隔をあけ直す。
@@ -4476,6 +4515,7 @@ LR"HTML(#lb:hover{background:var(--hov)}
 .le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
 .le.past{opacity:.65;font-style:italic}
+.le.system .lx{color:#f44}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -4662,13 +4702,14 @@ $('tabL').addEventListener('click',()=>showTab(false));
 let ngUsers=new Set();
 function applyNg(e){
   const u=e.dataset.u;
-  const ng=e.dataset.nb==='1'||(u&&ngUsers.has(u));
+  const ng=e.dataset.system!=='1'&&(e.dataset.nb==='1'||(!!u&&ngUsers.has(u)));
   e.classList.toggle('ng',ng);
 }
 function logAdd(items){
   const frag=document.createDocumentFragment();
   (items||[]).forEach(d=>{
-    const e=document.createElement('div');e.className='le'+(d.past?' past':'');
+    const e=document.createElement('div');e.className='le'+(d.system?' system':(d.past?' past':''));
+    e.dataset.system=d.system?'1':'0';
     if(d.userId)e.dataset.u=d.userId;
     e.dataset.nb=d.nb?'1':'0';applyNg(e);
     const tm=new Date((d.date||0)*1000);
@@ -4679,7 +4720,7 @@ function logAdd(items){
     if(d.userId)lm.title=d.userId;
     const lx=document.createElement('span');lx.className='lx';
     if(d.color)lx.style.color=d.color;lx.textContent=d.text;
-    e.append(lt,lm,lx);frag.appendChild(e);
+    e.appendChild(lt);if(!d.system)e.appendChild(lm);e.appendChild(lx);frag.appendChild(e);
   });
   logEl.appendChild(frag);
   while(logEl.childElementCount>500)logEl.removeChild(logEl.firstChild);
@@ -4853,6 +4894,10 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                     Callback<ICoreWebView2NavigationCompletedEventHandler>(
                         [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
                             this->momentumWebViewReady = true;
+                            {
+                                nlohmann::json log{ { "type", "commentLog" }, { "items", this->m_commentLog } };
+                                this->momentumWebView->ExecuteScript(jsonToUpdateScript(log).c_str(), nullptr);
+                            }
                             this->SendMomentumTheme();
                             // Restore the saved sort order before sending channels.
                             {

@@ -71,9 +71,18 @@ static void JkDbg(const char* msg)
 
 void JkcnslReader::SetConnected(bool connected)
 {
-    if (m_connected.exchange(connected) != connected && m_connCallback) {
-        m_connCallback(connected);
+    if (m_connected.exchange(connected) != connected) {
+        if (m_connCallback) m_connCallback(connected);
+        if (connected && m_statusCallback) m_statusCallback(Status::Connected);
     }
+}
+
+void JkcnslReader::CloseStream(bool failed)
+{
+    const bool wasOpen = m_streamOpen.exchange(false);
+    SetConnected(false);
+    if (wasOpen && m_statusCallback)
+        m_statusCallback(failed ? Status::Failed : Status::Disconnected);
 }
 
 void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf)
@@ -90,8 +99,7 @@ void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineB
                 else if (c0 == '.' || c0 == '!' || c0 == '?') {
                     // jkcnsl closed the stream; the process stays alive waiting
                     // for a new command, so mark the stream dead for the watchdog.
-                    m_streamOpen = false;
-                    SetConnected(false);
+                    CloseStream(c0 != '.');
                 }
             }
             // Past comments are backfilled inside <x_past_chat_begin>..<end>.
@@ -123,6 +131,7 @@ void JkcnslReader::ReadLoop()
     HANDLE ioEvent = CreateEventW(nullptr, FALSE, TRUE, nullptr);
     if (!ioEvent) {
         JkDbg("ReadLoop: CreateEvent failed");
+        CloseStream(true);
         m_running = false;
         return;
     }
@@ -177,8 +186,7 @@ void JkcnslReader::ReadLoop()
 
     CloseHandle(ioEvent);
     JkDbg("ReadLoop ended");
-    m_streamOpen = false;
-    SetConnected(false);
+    CloseStream(WaitForSingleObject(m_hStopEvent, 0) != WAIT_OBJECT_0);
     m_running = false;
 }
 

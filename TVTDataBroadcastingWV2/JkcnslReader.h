@@ -40,6 +40,10 @@ public:
     using ConnectionCallback = std::function<void(bool connected)>;
     void SetConnectionCallback(ConnectionCallback cb) { m_connCallback = std::move(cb); }
 
+    enum class Status { Connecting, Connected, Disconnected, Failed };
+    using StatusCallback = std::function<void(Status)>;
+    void SetStatusCallback(StatusCallback cb) { m_statusCallback = std::move(cb); }
+
     static bool ParseChatLine(const std::string& line, Comment& out);
     // jkcnslの行頭マーカーを除いた "<chat ...>...</chat>" 単体を解釈する。
     // ParseChatLineと違い本文が空でも成功する([CustomReplace]の置換結果用)。
@@ -48,6 +52,7 @@ public:
 private:
     Callback m_callback;
     ConnectionCallback m_connCallback;
+    StatusCallback m_statusCallback;
     HANDLE m_hProcess    = nullptr;
     HANDLE m_hStdinWrite = nullptr;
     HANDLE m_hStdoutRead = nullptr; // overlapped read end
@@ -63,5 +68,6 @@ private:
     void ReadLoop();
     void ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf);
     void SetConnected(bool connected);
+    void CloseStream(bool failed = false);
     static std::string GetXmlAttr(const std::string& xml, const std::string& attr);
 };

@@ -21,9 +21,11 @@ function check(fn, name) {
 
 // キャンバスの代わり。描いた文字を覚える
 const drawn = [];
+const strokes = [];
 const canvasContext = {
-    save() {}, restore() {}, scale() {}, translate() {}, clearRect() { drawn.length = 0; },
-    fillRect() {}, fill() {}, strokeText() {},
+    save() {}, restore() {}, scale() {}, translate() {}, clearRect() { drawn.length = 0; strokes.length = 0; },
+    fillRect() {}, fill() {},
+    strokeText(text) { strokes.push({ text, color: this.strokeStyle, width: this.lineWidth }); },
     fillText(text) { drawn.push(text); },
     measureText() { return { width: 100 }; },
 };
@@ -152,6 +154,7 @@ check(() => {
 check(() => {
     const container = { append() {}, getBoundingClientRect() { return { width: 960, height: 540 }; } };
     const player = new caption.TtmlCaptionPlayer(container);
+    player.setCaptionEnabled(true);
     const activated = [];
     player.onActivated = (track) => activated.push(track);
     player.push(message(doc([span('無効', 0, 1)]), 0));
@@ -177,6 +180,89 @@ check(() => {
     player.push(message(doc([span('再開', 0, 10)]), 1200 * 90));
     same(activated, [0, 0], 'enabling again takes the caption over when TTML arrives');
 }, 'player');
+
+// 通常字幕のボタンと両トラックの設定の全組み合わせ。表示中の設定変更も即座に反映する。
+check(() => {
+    const container = { append() {}, getBoundingClientRect() { return { width: 960, height: 540 }; } };
+    const player = new caption.TtmlCaptionPlayer(container);
+    const config = { enable: true, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true };
+    player.setConfig(config);
+    player.updateTime(1000);
+    player.push(message(doc([span('字', 0, 10)]), 1000 * 90));
+    player.push(message(doc([span('ス', 0, 10)]), 1000 * 90, { componentTag: 0x38 }));
+    same(drawn, ['ス'], 'superimposition is visible with the caption button initially off');
+    for (const enabled of [true, false, true]) {
+        for (const showCaption of [true, false]) {
+            for (const showSuperimpose of [true, false]) {
+                player.setConfig({ ...config, showCaption, showSuperimpose });
+                player.setCaptionEnabled(enabled);
+                same(drawn, [...(enabled && showCaption ? ['字'] : []), ...(showSuperimpose ? ['ス'] : [])]);
+            }
+        }
+    }
+}, 'caption button and settings independently control TTML tracks');
+
+check(() => {
+    const container = { append() {}, getBoundingClientRect() { return { width: 960, height: 540 }; } };
+    const player = new caption.TtmlCaptionPlayer(container);
+    const config = { enable: true, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true };
+    player.setConfig(config);
+    player.updateTime(1000);
+    const push = (style) => player.push(message(doc([span('震度3', 0, 10, style)]), 1000 * 90, { componentTag: 0x38 }));
+    const blackOnGreen = { color: [0, 0, 0, 255], backgroundColor: [0, 255, 0, 255] };
+    push(blackOnGreen);
+    same(drawn, ['震', '度', '3']);
+    same(strokes, ['震', '度', '3'].map(text => ({ text, color: 'rgba(0,255,0,1)', width: 24 })), 'forced outline uses green instead of thickening the black letters');
+    push({ ...blackOnGreen, backgroundColor: [0, 0, 0, 128] });
+    assert.ok(strokes.every(s => s.color === 'rgba(0,0,0,0.5019607843137255)'), 'background alpha is preserved');
+    push({ ...blackOnGreen, backgroundColor: [0, 0, 0, 0] });
+    assert.ok(strokes.every(s => s.color === 'rgba(0,0,0,0)'), 'a transparent background does not add an opaque outline');
+    push({ ...blackOnGreen, textOutline: { color: white, width: 2, blur: 0 } });
+    assert.ok(strokes.every(s => s.color === 'rgba(255,255,255,1)' && s.width === 4), 'broadcast outline color and width take priority');
+    push({ ...blackOnGreen, textOutline: { width: 2, blur: 0 } });
+    assert.ok(strokes.every(s => s.color === 'rgba(0,0,0,1)' && s.width === 4), 'a broadcast outline without a color uses the text color');
+    push({ ...blackOnGreen, textOutline: { width: 0, blur: 0 } });
+    same(strokes, [], 'an explicit zero width is respected');
+    player.setConfig({ ...config, strokeWidth: 0 });
+    push(blackOnGreen);
+    same(strokes, [], 'forced outline can be disabled');
+    push({ ...blackOnGreen, textOutline: { color: white, width: 2, blur: 0 } });
+    assert.equal(strokes.length, 3, 'broadcast outlines remain when forced outline is disabled');
+}, 'TTML forced outlines match background colors and preserve broadcast outlines');
+
+check(() => {
+    const canvases = [];
+    load('video_player', {});
+    modules['web-bml'] = { playRomSound() {} };
+    const { CaptionPlayer } = load('caption_player', {
+        document: { createElement() {
+            const canvas = { style: {}, width: 0, height: 0, getContext() { return canvasContext; } };
+            canvases.push(canvas);
+            return canvas;
+        } },
+    });
+    const container = { style: {}, append() {} };
+    const player = new CaptionPlayer({}, container, () => {});
+    const visible = () => canvases.map(c => c.style.display !== 'none');
+    same(visible(), [false, true], 'superimposition is initially visible');
+    player.showCC();
+    same(visible(), [true, true]);
+    player.hideCC();
+    same(visible(), [false, true], 'turning captions off leaves superimposition visible');
+    assert.notEqual(container.style.display, 'none', 'the shared TTML container stays visible');
+    player.suppress(0);
+    player.unsuppress(0);
+    same(visible(), [false, true], 'fallback from TTML respects the caption button');
+    player.suppress(0);
+    player.showCC();
+    same(visible(), [false, true], 'turning captions on respects TTML suppression');
+    player.unsuppress(0);
+    same(visible(), [true, true]);
+    player.suppress(1);
+    player.hideCC();
+    player.unsuppress(1);
+    same(visible(), [false, true], 'superimposition fallback works with captions off');
+}, 'B24 caption button and TTML fallback preserve independent track visibility');
 
 // B24の字幕のPES: data_identifier、private_stream_id、ヘッダー長、データグループ
 const b24Pes = (dataGroupId, headerLength = 0) => new Uint8Array([0x80, 0xff, 0xf0 | headerLength, ...new Array(headerLength).fill(0), dataGroupId << 2, 0, 0]);

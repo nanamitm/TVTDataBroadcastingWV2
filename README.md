@@ -35,6 +35,7 @@ TVTest起動時には有効にならないようになっているため右ク�
 ### 字幕
 
 字幕ボタンを押すと[libaribcaption](https://github.com/xqq/libaribcaption)を使った字幕を表示できます。
+文字スーパーは字幕ボタンの状態に関係なく、設定の「文字スーパーを表示する」にチェックが入っていれば表示します。
 
 字幕ストリームのTS/PES分離はweb-bml、ARIB STD-B24字幕のデコードとDirectWriteによる描画はネイティブ側のlibaribcaptionが担当します。aribb24.jsは直接使用していません。
 

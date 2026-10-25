@@ -724,6 +724,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "captionSound") {
         player.playBuiltinSound(data.sound);
     } else if (data.type === "caption") {
+        ttmlPlayer.setCaptionEnabled(data.enable);
         if (data.enable) {
             if (data.showIndicator) {
                 ccStatus.style.display = "";
@@ -732,7 +733,6 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
                 ccStatusAnimation.play();
             }
             player.showCC();
-            ttmlPlayer.render();
         } else {
             if (data.showIndicator) {
                 ccStatus.style.display = "";

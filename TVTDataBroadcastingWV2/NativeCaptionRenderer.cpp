@@ -102,7 +102,7 @@ struct NativeCaptionRenderer::Impl
 
     bool IsTrackVisible(int index) const
     {
-        return index == 0 ? settings.showCaption : settings.showSuperimpose;
+        return index == 0 ? enabled && settings.showCaption : settings.showSuperimpose;
     }
 
     std::int64_t TrackDelayMs(int index) const
@@ -253,11 +253,6 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
             }
         }
     }
-    if (!impl_->enabled)
-    {
-        // 字幕オフの間はデコードだけ続け、描画とブラウザへの送信は行わない
-        return;
-    }
     // 表示再開直後はlibaribcaptionが差分なしと判断しても描き直す必要がある
     const bool forceRedraw = frameSizeChanged || impl_->forceRender;
     impl_->forceRender = false;
@@ -294,7 +289,7 @@ void NativeCaptionRenderer::SetEnabled(bool enabled)
     // 表示再開時に期限切れの字幕が一瞬見えないよう消しておく
     for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
     {
-        if (impl_->tracks[i].visible)
+        if (!impl_->IsTrackVisible(i) && impl_->tracks[i].visible)
         {
             impl_->SendClear(i);
         }
@@ -307,5 +302,14 @@ void NativeCaptionRenderer::SetSettings(const NativeCaptionSettings& settings)
     for (auto& track : impl_->tracks)
     {
         impl_->ApplySettings(track);
+    }
+    // 非表示の間に描画済みと判定された字幕も、設定変更後は描き直す。
+    impl_->forceRender = true;
+    for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
+    {
+        if (!impl_->IsTrackVisible(i) && impl_->tracks[i].visible)
+        {
+            impl_->SendClear(i);
+        }
     }
 }

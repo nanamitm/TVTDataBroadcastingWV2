@@ -34,6 +34,7 @@ export class CaptionPlayer extends VideoPlayer {
     private readonly canvases = [document.createElement("canvas"), document.createElement("canvas")];
     private readonly sendMessage: SendMessage;
     private audioNode?: AudioNode;
+    private captionEnabled = false;
     // TTMLのまま表示しているので、B24の字幕を表示しないトラック (ttml_caption.ts)
     private readonly suppressed = [false, false];
     // 表示しない間に届いたPES。B24の字幕に戻したときに渡す
@@ -53,6 +54,7 @@ export class CaptionPlayer extends VideoPlayer {
             canvas.style.pointerEvents = "none";
             this.container.append(canvas);
         }
+        this.hideCC();
         this.sendMessage({ type: "captionReset" });
     }
 
@@ -117,7 +119,7 @@ export class CaptionPlayer extends VideoPlayer {
             return;
         }
         this.suppressed[track] = false;
-        canvas.style.display = "";
+        canvas.style.display = track === 0 && !this.captionEnabled ? "none" : "";
         const held = this.held[track];
         this.held[track] = [];
         for (const { streamId, pes, pts } of held) {
@@ -170,11 +172,13 @@ export class CaptionPlayer extends VideoPlayer {
     }
 
     public showCC(): void {
-        this.container.style.display = "";
+        this.captionEnabled = true;
+        this.canvases[0].style.display = this.suppressed[0] ? "none" : "";
     }
 
     public hideCC(): void {
-        this.container.style.display = "none";
+        this.captionEnabled = false;
+        this.canvases[0].style.display = "none";
     }
 
     public override setPRAAudioNode(audioNode?: AudioNode): void {

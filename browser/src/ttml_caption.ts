@@ -229,6 +229,7 @@ export class TtmlCaptionPlayer {
     private readonly glyphs = new Map<number, DrcsGlyph>();
     private config: TtmlCaptionConfig = { enable: false, faces: [], strokeWidth: 30, noBackground: false, showCaption: true, showSuperimpose: true };
     private now: number | null = null;
+    private captionEnabled = false;
     // TTMLの文書が最後に届いた時刻 (PCR、ミリ秒)
     private readonly lastArrivals: (number | null)[] = [null, null];
     // TTMLを表示している間にB24の字幕文だけが届いた時刻
@@ -256,6 +257,12 @@ export class TtmlCaptionPlayer {
             this.deactivate(0);
             this.deactivate(1);
         }
+        this.render();
+    }
+
+    // 通常字幕の表示ボタン。文字スーパーの表示設定には影響しない。
+    setCaptionEnabled(enabled: boolean) {
+        this.captionEnabled = enabled;
         this.render();
     }
 
@@ -362,7 +369,7 @@ export class TtmlCaptionPlayer {
         if (!this.config.enable) {
             return;
         }
-        const visible = [this.config.showCaption, this.config.showSuperimpose];
+        const visible = [this.captionEnabled && this.config.showCaption, this.config.showSuperimpose];
         this.tracks.forEach((track, index) => {
             const state = track.state();
             if (visible[index] && state != null) {
@@ -437,10 +444,14 @@ export class TtmlCaptionPlayer {
         if (stroke) {
             const outline = glyph.style.textOutline;
             // textOutlineの太さは字形の外側の幅。strokeは線の半分が外に出る
-            const outlineWidth = outline != null && outline.width > 0 ? outline.width : forcedStroke;
+            const outlineWidth = outline != null ? outline.width : forcedStroke;
             if (outlineWidth > 0) {
                 context.lineWidth = outlineWidth * 2;
-                context.strokeStyle = ttmlColor(outline?.color) ?? (outline == null ? "black" : ttmlColor(glyph.style.color) ?? "black");
+                // 強制縁取りはB24表示と同じく文字の背景色を使う。
+                // 黒文字に黒い縁取りを足すと、震度表示などの字形が潰れてしまう。
+                context.strokeStyle = outline == null
+                    ? ttmlColor(glyph.style.backgroundColor) ?? "black"
+                    : ttmlColor(outline.color) ?? ttmlColor(glyph.style.color) ?? "white";
                 context.lineJoin = "round";
                 context.strokeText(glyph.ch, 0, 0);
             }

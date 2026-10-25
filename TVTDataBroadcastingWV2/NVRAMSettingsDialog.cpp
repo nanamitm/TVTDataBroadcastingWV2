@@ -76,7 +76,9 @@ HRESULT NVRAMSettingsDialog::ReadNVRAM(std::function<HRESULT(HRESULT, nlohmann::
     ss << "window.sendMessage(" << msg << ")";
     auto ws = utf8StrToWString(ss.str().c_str());
     return this->webView->ExecuteScript(ws.c_str(), Microsoft::WRL::Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-        [callback](HRESULT result, LPCWSTR resultObjectAsJson) -> HRESULT {
+        [callback, ticket = this->lifetime.GetTicket()](HRESULT result, LPCWSTR resultObjectAsJson) -> HRESULT {
+        // 閉じたダイアログのpThisを、遅れて届いた応答から参照しない。
+        if (!AsyncLifetime::IsCurrent(ticket)) return S_OK;
         if (SUCCEEDED(result))
         {
             // スクリプトの実行結果は信用できないのでパース失敗で例外を漏らさない
@@ -99,6 +101,7 @@ INT_PTR CALLBACK NVRAMSettingsDialog::DlgProc(HWND hDlg, UINT uMsg, WPARAM wPara
     switch (uMsg) {
     case WM_INITDIALOG:
     {
+        pThis->lifetime.Begin();
         pThis->hDlg = hDlg;
         if (pThis->webView)
         {
@@ -281,6 +284,8 @@ INT_PTR CALLBACK NVRAMSettingsDialog::DlgProc(HWND hDlg, UINT uMsg, WPARAM wPara
     }
     case WM_DESTROY:
     {
+        pThis->lifetime.Cancel();
+        pThis->hDlg = nullptr;
         return 1;
     }
     }

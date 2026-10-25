@@ -100,8 +100,14 @@ bool CommentLogReader::ReadMore()
     if (!GetFileSizeEx(h, &size)) { CloseHandle(h); return false; }
     if (size.QuadPart < m_fileOffset)
     {
+        // ログが書き換えられて縮んだら先頭から読み直す。読み込み済みのコメントも
+        // ここで捨てる。今の呼び出し元はいずれもm_bufを使い切ってから呼ぶので
+        // 実際には空だが、残っていると読み直した分が日付順を崩して後ろに積まれ、
+        // 同じコメントをもう一度配信してしまうため、この関数側で断っておく。
         m_fileOffset = 0;
         m_partialLine.clear();
+        m_buf.clear();
+        m_pos = 0;
     }
     LARGE_INTEGER offset{};
     offset.QuadPart = m_fileOffset;

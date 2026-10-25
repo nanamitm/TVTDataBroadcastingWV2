@@ -3117,6 +3117,9 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
 void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
 {
     // 接続処理とワーカースレッドの通知を同じキューに載せ、発生順に表示する。
+    // ウィンドウがないときに投げるとスレッドメッセージになって誰も拾わないので、
+    // 無効化でウィンドウを畳んだ後に届いた通知はここで捨てる。
+    if (!this->hMessageWnd) return;
     PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
                  static_cast<WPARAM>(status), static_cast<LPARAM>(std::time(nullptr)));
 }
@@ -4483,7 +4486,8 @@ void CDataBroadcastingWV2::UpdateCommentToggle()
 }
 
 static const wchar_t kMomentumHtml[] = LR"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-:root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3)}
+:root{--bg:#f0f0f0;--fg:#000;--sb:rgba(128,128,128,.5);--hov:rgba(128,128,128,.15);--sel:rgba(128,128,128,.3);
+      --sys:#c00000}
 *{box-sizing:border-box;margin:0;padding:0}
 [hidden]{display:none!important}
 body{background:var(--bg);color:var(--fg);font:9pt "Meiryo UI",sans-serif;overflow:hidden;
@@ -4553,7 +4557,7 @@ LR"HTML(#lb:hover{background:var(--hov)}
 .le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
 .le.past{opacity:.65;font-style:italic}
-.le.system .lx{color:#f44}
+.le.system .lx{color:var(--sys)}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 col.c0{width:56px}col.c1{width:90px}col.c2{width:44px}col.c3{width:auto}
 th{position:sticky;top:0;background:var(--bg);text-align:left;padding:2px 4px;
@@ -4790,6 +4794,7 @@ function _update(m){
     const s=document.documentElement.style;
     s.setProperty('--bg',m.bg);s.setProperty('--fg',m.fg);
     if(m.sb)s.setProperty('--sb',m.sb);
+    if(m.sys)s.setProperty('--sys',m.sys);
     document.body.style.background=m.bg;
   }
 }
@@ -4963,7 +4968,12 @@ void CDataBroadcastingWV2::SendMomentumTheme()
     if (!this->momentumWebView || !this->momentumWebViewReady) return;
     COLORREF bg = this->panelBackColor, fg = this->panelTextColor;
     COLORREF sb = RGB((GetRValue(bg)+GetRValue(fg))/2, (GetGValue(bg)+GetGValue(fg))/2, (GetBValue(bg)+GetBValue(fg))/2);
-    nlohmann::json msg{{"type","thm"},{"bg",colorToHex(bg)},{"fg",colorToHex(fg)},{"sb",colorToHex(sb)}};
+    // 接続状況の行の赤。TVTestのパネル色は明暗どちらにもなるので、暗い背景では
+    // 明るい赤、明るい背景では暗い赤を渡して読めるようにする。
+    const int luma = (GetRValue(bg)*299 + GetGValue(bg)*587 + GetBValue(bg)*114) / 1000;
+    COLORREF sys = luma < 128 ? RGB(0xff, 0x6b, 0x6b) : RGB(0xc0, 0x00, 0x00);
+    nlohmann::json msg{{"type","thm"},{"bg",colorToHex(bg)},{"fg",colorToHex(fg)},{"sb",colorToHex(sb)},
+                       {"sys",colorToHex(sys)}};
     this->momentumWebView->ExecuteScript(jsonToUpdateScript(msg).c_str(), nullptr);
 }
 

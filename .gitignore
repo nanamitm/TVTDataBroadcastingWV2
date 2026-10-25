@@ -7,3 +7,4 @@ packages/
 *.user
 *.aps
 TVTDataBroadcastingWV2/TVTDataBroadcastingWV2Version.h
+work/

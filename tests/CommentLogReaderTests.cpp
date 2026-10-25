@@ -65,6 +65,20 @@ int main()
         Sleep(1100);
         Check(empty.Read(200, 201).size() == 1, "Logs created after Configure were ignored");
 
+        // 書き換えで縮んだログは先頭から読み直すが、配信済みのコメントは返さない。
+        std::filesystem::create_directories(folder / L"jk4");
+        const auto rewritten = folder / L"jk4/0000000300.txt";
+        Write(rewritten, Chat(301, "a") + "\n" + Chat(302, "b") + "\n" + Chat(303, "c") + "\n");
+        CommentLogReader shrunk;
+        Check(shrunk.Configure(folder.wstring(), 4), "Configure failed for the rewritten log");
+        shrunk.Seek(300);
+        Check(shrunk.Read(300, 303).size() == 3, "Comments written before the rewrite are missing");
+        Write(rewritten, Chat(301, "a") + "\n" + Chat(304, "d") + "\n");
+        auto afterShrink = shrunk.Read(303, 304);
+        Check(afterShrink.size() == 1 && afterShrink[0].text == "d",
+              "A shrunken log replayed old comments or lost the new one");
+        Check(shrunk.Read(304, 305).empty(), "A rewritten log duplicated the new comment");
+
         // Exercise incremental reads and seeks across the 64KiB read boundary.
         std::filesystem::create_directories(folder / L"jk3");
         std::string large;

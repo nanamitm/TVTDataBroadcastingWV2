@@ -7,6 +7,12 @@ const htmlSource = source.slice(source.indexOf('static const wchar_t kMomentumHt
 const html = [...htmlSource.matchAll(/LR"HTML\(([\s\S]*?)\)HTML"/g)].map(m=>m[1]).join('');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
+// 接続状況の行はTVTestのパネル色に追従させる。固定色に戻すと暗いパネルで読めない。
+assert.match(html,/--sys:#[0-9a-f]{6}/,'接続状況の色は:rootに既定値を持つ');
+assert.match(html,/\.le\.system \.lx\{color:var\(--sys\)\}/,'接続状況の色はテーマ変数を使う');
+assert.match(script,/setProperty\('--sys',m\.sys\)/,'テーマ通知で接続状況の色を更新する');
+const themeFn=source.slice(source.indexOf('void CDataBroadcastingWV2::SendMomentumTheme'),source.indexOf('void CDataBroadcastingWV2::SendMomentumChannels'));
+assert.match(themeFn,/"sys"/,'テーマ通知に接続状況の色を載せる');
 class Element {
   constructor(tag) { this.tag=tag; this.children=[]; this.dataset={}; this.style={}; this.className=''; this.classList={toggle:(name,on)=>{assert.equal(typeof on,'boolean','NG判定は常にbooleanを渡す');const c=new Set(this.className.split(' ')); on?c.add(name):c.delete(name);this.className=[...c].join(' ');}}; }
   appendChild(e) { if(e.tag==='fragment')this.children.push(...e.children);else this.children.push(e); }

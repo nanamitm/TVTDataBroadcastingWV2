@@ -92,6 +92,8 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
         ./tests/run-safety-tests.ps1
+        node tests/comment_log.test.cjs
+        if ($LASTEXITCODE -ne 0) { throw "Comment log tests failed with exit code $LASTEXITCODE" }
         node tests/b62_application.test.cjs
         if ($LASTEXITCODE -ne 0) { throw "B62 application tests failed with exit code $LASTEXITCODE" }
         node tests/ttml_caption.test.cjs

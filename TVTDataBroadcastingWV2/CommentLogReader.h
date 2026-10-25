@@ -33,7 +33,12 @@ private:
     std::vector<Comment> m_buf;     // parsed comments of loaded file(s), date-ordered
     size_t m_pos = 0;               // next index to consider in m_buf
     int    m_loadedFileIdx = -1;    // index of the last file loaded into m_buf
+    long long m_fileOffset = 0;
+    std::string m_partialLine;
+    ULONGLONG m_lastScanTick = 0;
 
     int  FileIndexForTime(time_t t) const; // largest start <= t (or 0)
     void LoadFile(int idx, bool append);
+    bool ReadMore();
+    void RefreshFiles(bool force = false);
 };

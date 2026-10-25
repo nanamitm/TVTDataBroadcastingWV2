@@ -45,4 +45,3 @@ assert.equal(logEl.scrollTop,17);
 context.atBottom=true;context.logAdd([{system:true,text:'再接続',date:1792971000}]);
 assert.equal(logEl.scrollTop,logEl.scrollHeight);
 console.log('Panel script syntax and log rendering checks passed');
-

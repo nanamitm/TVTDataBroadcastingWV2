@@ -24,6 +24,14 @@ if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"TVTDataBroadcastingWV2" /I"TVTDataBroadcastingWV2\thirdparty\dantto4k\src" tests\TtmlCaptionTests\TtmlCaptionTests.cpp TVTDataBroadcastingWV2\TtmlCaption.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\pugixml.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\parser.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\resolver.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\style.cpp /Fo:"$output\\" /Fe:"$output\ttml.exe"
 if errorlevel 1 exit /b 1
 "$output\ttml.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\JkcnslReaderTests.cpp TVTDataBroadcastingWV2\JkcnslReader.cpp TVTDataBroadcastingWV2\CommentFetcher.cpp /Fo:"$output\\" /Fe:"$output\jkcnsl-reader.exe"
+if errorlevel 1 exit /b 1
+"$output\jkcnsl-reader.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\CommentLogReaderTests.cpp TVTDataBroadcastingWV2\CommentLogReader.cpp TVTDataBroadcastingWV2\JkcnslReader.cpp TVTDataBroadcastingWV2\CommentFetcher.cpp /Fo:"$output\\" /Fe:"$output\comment-log-reader.exe"
+if errorlevel 1 exit /b 1
+"$output\comment-log-reader.exe"
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $batch
 if ($LASTEXITCODE -ne 0) { throw 'Native safety tests failed' }

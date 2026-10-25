@@ -523,6 +523,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool restoreCaptionState = false;
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
+    bool m_commentSessionEnabled = false; // UI thread; false throughout disable/teardown
     nlohmann::json m_commentLog = nlohmann::json::array();
     void AppendCommentLog(const nlohmann::json& items);
     void QueueCommentStatus(JkcnslReader::Status status);
@@ -2695,6 +2696,7 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->m_commentSessionEnabled = false;
     this->webViewLifetime.Cancel();
     this->b62NavigatedOrigin.clear();
     this->b62NavigatedApp.reset();
@@ -2858,7 +2860,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         }
         {
             auto enableComment = this->GetIniItem(L"EnableComment", 0);
-            if (enableComment)
+            if (enableComment && this->hMessageWnd)
             {
                 this->m_commentNg.Load(this->iniFile);
                 this->ReportReplaceErrors();
@@ -2901,6 +2903,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 }
                 // Playback sync: poll TOT and feed recorded comments during file
                 // playback. Needs a log folder.
+                this->m_commentSessionEnabled = true;
                 if (!this->m_logFolder.empty())
                     SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
                 // コメントサーバ切断の定期チェック。
@@ -3370,6 +3373,8 @@ std::string CDataBroadcastingWV2::BuildJkcnslCommand(int jkID, bool& isMix, bool
 
 void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
 {
+    // 選局通知は無効化中にも届く。前回の接続テーブルが残っていても接続しない。
+    if (!this->m_commentSessionEnabled) return;
     // Determine jikkyo channel (e.g. "jk141"); parse the numeric jkID.
     // 勢いリストからの手動指定があればそちらを優先する。ウォッチドッグからの
     // 呼び出しでも手動指定先を張り直すだけで、選局中のチャンネルには戻さない。

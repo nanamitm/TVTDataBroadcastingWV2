@@ -58,7 +58,6 @@ using namespace Microsoft::WRL;
 #define WM_APP_COMMENTS (WM_APP + 5)
 #define WM_APP_LOGIN (WM_APP + 6)
 #define WM_APP_AUTH (WM_APP + 7)
-#define WM_APP_CONN (WM_APP + 8)
 #define WM_APP_B62_APPLICATION (WM_APP + 9)
 #define WM_APP_B62_CAPTION (WM_APP + 10)
 #define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
@@ -80,6 +79,13 @@ struct DeferralResponse
     std::wstring allowOrigin;
     // 4Kデータ放送のアプリケーションの通信中であることを表す。最後の参照が無くなると通信が終わったことになる
     std::shared_ptr<void> networkingToken;
+};
+
+struct CommentStreamNotification
+{
+    AsyncLifetime::Ticket ticket;
+    std::vector<Comment> comments;
+    std::optional<bool> connected;
 };
 
 #define IDT_SHOW_EVR_WINDOW 1
@@ -524,6 +530,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SetCaptionState(bool enable);
     JkcnslReader   m_jkcnslReader;
     bool m_commentSessionEnabled = false; // UI thread; false throughout disable/teardown
+    AsyncLifetime m_commentStreamLifetime;
+    void StopCommentStream();
     nlohmann::json m_commentLog = nlohmann::json::array();
     void AppendCommentLog(const nlohmann::json& items);
     void QueueCommentStatus(JkcnslReader::Status status);
@@ -1332,8 +1340,17 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         return 0;
     case WM_APP_COMMENTS:
     {
-        auto comments = std::unique_ptr<std::vector<Comment>>(reinterpret_cast<std::vector<Comment>*>(wParam));
-        pThis->SendComments(std::move(*comments));
+        auto notification = std::unique_ptr<CommentStreamNotification>(reinterpret_cast<CommentStreamNotification*>(wParam));
+        if (!pThis->m_commentSessionEnabled || !AsyncLifetime::IsCurrent(notification->ticket)) break;
+        if (notification->connected.has_value())
+        {
+            pThis->m_streamConnected = *notification->connected;
+            pThis->PushAuthState();
+        }
+        else if (!pThis->m_playbackActive)
+        {
+            pThis->SendComments(std::move(notification->comments));
+        }
         break;
     }
     case WM_APP_LOGIN:
@@ -1358,12 +1375,6 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         {
             pThis->RefreshAuthState();
         }
-        break;
-    }
-    case WM_APP_CONN:
-    {
-        pThis->m_streamConnected = (wParam != 0);
-        pThis->PushAuthState();
         break;
     }
     case WM_APP_COMMENT_STATUS:
@@ -2723,7 +2734,15 @@ void CDataBroadcastingWV2::Disable(bool finalize)
         }
     }
     this->b62NetworkingCount = 0;
-    this->m_jkcnslReader.Stop();
+    this->StopCommentStream();
+    if (this->hMessageWnd)
+    {
+        MSG message;
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_COMMENTS, WM_APP_COMMENTS, PM_REMOVE))
+        {
+            std::unique_ptr<CommentStreamNotification> notification(reinterpret_cast<CommentStreamNotification*>(message.wParam));
+        }
+    }
     // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
     this->m_manualJkVideo.clear();
     if (!finalize) this->PushMomentumCurrentChannel();
@@ -2865,18 +2884,6 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
             {
                 this->m_commentNg.Load(this->iniFile);
                 this->ReportReplaceErrors();
-                this->m_jkcnslReader.SetCallback([this](std::vector<Comment> comments) {
-                    // 無効化直後などPostMessageに失敗した場合はここで解放する
-                    auto payload = std::make_unique<std::vector<Comment>>(std::move(comments));
-                    if (PostMessageW(this->hMessageWnd, WM_APP_COMMENTS,
-                                     reinterpret_cast<WPARAM>(payload.get()), 0))
-                    {
-                        payload.release();
-                    }
-                });
-                this->m_jkcnslReader.SetConnectionCallback([this](bool connected) {
-                    PostMessageW(this->hMessageWnd, WM_APP_CONN, connected ? 1 : 0, 0);
-                });
                 this->m_jkcnslReader.SetStatusCallback([this](JkcnslReader::Status status) {
                     this->QueueCommentStatus(status);
                 });
@@ -3212,7 +3219,7 @@ void CDataBroadcastingWV2::PlaybackTick()
     if (shouldPlayback && !this->m_playbackActive)
     {
         this->m_playbackActive = true;
-        this->m_jkcnslReader.Stop();   // stop live comments
+        this->StopCommentStream();   // stop live comments and reject queued live notifications
         this->m_logWriter.Close();     // stop recording during playback
         // 手動指定したjkの過去ログを再生しないよう、選局中のチャンネルに戻す。
         // 再生中のUpdateCommentChannel()はm_currentJkIDを決めるだけで接続はしない。
@@ -3386,10 +3393,10 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
         // 実況の一覧にないチャンネル -> 切断する。つないだままだと選局後も
         // 前のチャンネルのコメントが流れ続けてしまう。
         this->m_currentJkID = -1;
-        if (this->m_jkcnslReader.IsRunning())
+        if (this->m_jkcnslReader.IsRunning() || AsyncLifetime::IsCurrent(this->m_commentStreamLifetime.GetTicket()))
         {
             OutputDebugStringA("[TVTDataBroadcastingWV2] UpdateCommentChannel: no jikkyo channel, disconnect\n");
-            this->m_jkcnslReader.Stop();
+            this->StopCommentStream();
             this->ClearOnScreenComments();
         }
         return;
@@ -3404,12 +3411,12 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     {
         // Channel not supported (no stream id) -> disconnect, like NicoJK.
         // ウォッチドッグから毎回ログを吐かないよう、実際に切るときだけ出力する。
-        if (this->m_jkcnslReader.IsRunning())
+        if (this->m_jkcnslReader.IsRunning() || AsyncLifetime::IsCurrent(this->m_commentStreamLifetime.GetTicket()))
         {
             char logbuf[128];
             sprintf_s(logbuf, "[TVTDataBroadcastingWV2] UpdateCommentChannel jk%d: no stream, disconnect", jkID);
             OutputDebugStringA(logbuf); OutputDebugStringA("\n");
-            this->m_jkcnslReader.Stop();
+            this->StopCommentStream();
             this->ClearOnScreenComments();
         }
         return;
@@ -3441,7 +3448,24 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     // jkcnsl が落ちて ReadLoop だけ抜けている場合 IsRunning() は false だが、
     // ハンドルとスレッドは残ったままなので Stop() は無条件に呼ぶ。飛ばすと
     // Start() がハンドルを上書きし、join 前のスレッドに代入して terminate する。
-    this->m_jkcnslReader.Stop();
+    this->StopCommentStream();
+    this->m_commentStreamLifetime.Begin();
+    const auto ticket = this->m_commentStreamLifetime.GetTicket();
+    const HWND hwnd = this->hMessageWnd;
+    // 接続ごとのトークンを固定して通知に付ける。選局・再接続・再生移行後は旧通知を破棄する。
+    auto notify = [hwnd, ticket](std::vector<Comment> comments, std::optional<bool> connected) {
+        auto payload = std::make_unique<CommentStreamNotification>(CommentStreamNotification{
+            ticket, std::move(comments), connected
+        });
+        if (PostMessageW(hwnd, WM_APP_COMMENTS, reinterpret_cast<WPARAM>(payload.get()), 0))
+            payload.release();
+    };
+    this->m_jkcnslReader.SetCallback([notify](std::vector<Comment> comments) {
+        notify(std::move(comments), std::nullopt);
+    });
+    this->m_jkcnslReader.SetConnectionCallback([notify](bool connected) {
+        notify({}, connected);
+    });
     this->QueueCommentStatus(JkcnslReader::Status::Connecting);
     if (!this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd))
         this->QueueCommentStatus(JkcnslReader::Status::Failed);
@@ -3450,6 +3474,14 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     // 再接続を試みた直後は、次の判定までウォッチドッグの間隔をあけ直す。
     if (fromWatchdog)
         SetTimer(this->hMessageWnd, IDT_JK_WATCHDOG, JK_WATCHDOG_INTERVAL, nullptr);
+}
+
+void CDataBroadcastingWV2::StopCommentStream()
+{
+    this->m_commentStreamLifetime.Cancel();
+    this->m_jkcnslReader.Stop();
+    this->m_streamConnected = false;
+    this->PushAuthState();
 }
 
 // jkcnsl.exe is always in the TVTest folder (parent of Plugins directory).

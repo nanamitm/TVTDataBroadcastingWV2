@@ -69,6 +69,17 @@ static void JkDbg(const char* msg)
     return !out.text.empty();
 }
 
+/*static*/ bool JkcnslReader::ShouldLogStatus(std::optional<Status> last, Status next)
+{
+    if (!last) return true;
+    // 同じ状態が続いているだけなら何も増えない。
+    if (*last == next) return false;
+    // 失敗したまま張り直している間の接続開始は、同じ話の繰り返しなので残さない。
+    // 復帰 (Connected) や明示的な切断 (Disconnected) は状態が変わるので残す。
+    if (next == Status::Connecting && *last == Status::Failed) return false;
+    return true;
+}
+
 void JkcnslReader::SetConnected(bool connected)
 {
     if (m_connected.exchange(connected) != connected) {

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -43,6 +44,12 @@ public:
     enum class Status { Connecting, Connected, Disconnected, Failed };
     using StatusCallback = std::function<void(Status)>;
     void SetStatusCallback(StatusCallback cb) { m_statusCallback = std::move(cb); }
+
+    // 実況ログに残す価値のある状態変化かを返す。lastは直前に残した状態 (まだ
+    // 何も残していなければ空)。つながらないままだとウォッチドッグが20秒ごとに
+    // 張り直すので、同じ状態の繰り返しと、失敗したまま再試行している間の接続
+    // 開始は残さない。ログがコメントではなく状態行で埋まるのを防ぐ。
+    static bool ShouldLogStatus(std::optional<Status> last, Status next);
 
     static bool ParseChatLine(const std::string& line, Comment& out);
     // jkcnslの行頭マーカーを除いた "<chat ...>...</chat>" 単体を解釈する。

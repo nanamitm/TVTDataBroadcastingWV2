@@ -533,6 +533,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     AsyncLifetime m_commentStreamLifetime;
     void StopCommentStream();
     nlohmann::json m_commentLog = nlohmann::json::array();
+    // 直前に実況ログへ残した接続状況 (UIスレッドからのみ触る)
+    std::optional<JkcnslReader::Status> m_lastLoggedCommentStatus;
     void AppendCommentLog(const nlohmann::json& items);
     void QueueCommentStatus(JkcnslReader::Status status);
     JkcnslLogin    m_jkcnslLogin;
@@ -1379,8 +1381,12 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     }
     case WM_APP_COMMENT_STATUS:
     {
+        // つながらないままだと20秒ごとに張り直すので、繰り返しは残さない。
+        const auto status = static_cast<JkcnslReader::Status>(wParam);
+        if (!JkcnslReader::ShouldLogStatus(pThis->m_lastLoggedCommentStatus, status)) break;
+        pThis->m_lastLoggedCommentStatus = status;
         const char* text = "";
-        switch (static_cast<JkcnslReader::Status>(wParam))
+        switch (status)
         {
         case JkcnslReader::Status::Connecting: text = "コメントサーバーに接続開始しました。"; break;
         case JkcnslReader::Status::Connected: text = "コメントサーバーに接続しました。"; break;
@@ -2709,6 +2715,8 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
     this->m_commentSessionEnabled = false;
+    // 再度有効にしたときの接続開始は、無効化前の状態に関わらず残す
+    this->m_lastLoggedCommentStatus.reset();
     this->webViewLifetime.Cancel();
     this->b62NavigatedOrigin.clear();
     this->b62NavigatedApp.reset();

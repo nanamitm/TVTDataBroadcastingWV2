@@ -4,6 +4,7 @@
 #include "AsyncLifetime.h"
 #include <condition_variable>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 
 using Status = JkcnslReader::Status;
@@ -69,6 +70,33 @@ static void CheckQueuedCommentsAfterSwitch(const std::wstring& executable)
         throw std::runtime_error("A queued live comment survived stream teardown");
 }
 
+// つながらないままウォッチドッグが20秒ごとに張り直しても、実況ログの状態行は増えない。
+static void CheckStatusLogThrottling()
+{
+    std::vector<Status> logged;
+    std::optional<Status> last;
+    auto feed = [&](Status status) {
+        if (!JkcnslReader::ShouldLogStatus(last, status)) return;
+        last = status;
+        logged.push_back(status);
+    };
+    for (int retry = 0; retry < 10; ++retry) { feed(Status::Connecting); feed(Status::Failed); }
+    if (logged != std::vector<Status>{ Status::Connecting, Status::Failed })
+        throw std::runtime_error("Repeated connection failures kept filling the log");
+    // 復帰と、その後の明示的な切断は状態が変わるので残す。
+    feed(Status::Connecting);
+    feed(Status::Connected);
+    feed(Status::Connected);
+    feed(Status::Disconnected);
+    if (logged != std::vector<Status>{ Status::Connecting, Status::Failed,
+                                       Status::Connected, Status::Disconnected })
+        throw std::runtime_error("A real connection change was dropped from the log");
+    // 切断後の張り直しは、失敗待ちではないので接続開始を残す。
+    feed(Status::Connecting);
+    if (logged.size() != 5 || logged.back() != Status::Connecting)
+        throw std::runtime_error("A reconnect after a clean disconnect was dropped");
+}
+
 int main(int argc, char**)
 {
     if (argc > 1) {
@@ -99,6 +127,7 @@ int main(int argc, char**)
         CheckStream(path, "Lexit", { Status::Failed });
         CheckStream(path, "Lwait", { Status::Connected, Status::Disconnected }, true);
         CheckQueuedCommentsAfterSwitch(path);
+        CheckStatusLogThrottling();
         std::cout << "JkcnslReader status tests passed\n";
         return 0;
     } catch (const std::exception& error) {

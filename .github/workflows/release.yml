@@ -144,7 +144,9 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    # windows-2022と同じく版を固定する。ubuntu-latestは2026-10-19からUbuntu 26へ
+    # 移り変わるので、リリースの発行だけが突然別の環境で走らないようにする。
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/download-artifact@v8

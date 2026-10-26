@@ -3141,9 +3141,14 @@ void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
     // ウィンドウがないときに投げるとスレッドメッセージになって誰も拾わないので、
     // 無効化でウィンドウを畳んだ後に届いた通知はここで捨てる。
     if (!this->hMessageWnd) return;
+    // コメントの時刻は実況の投稿時刻 (放送時刻系) なので、状態行も放送時刻に
+    // 合わせる。追っかけ再生中は壁時計と60秒以上ずれるため、揃えないとログの
+    // 中で時刻が前後する。TOTが取れていないときだけ壁時計に落とす。
+    // getBroadcastTime()はatomicしか読まないのでワーカースレッドから呼べる。
+    const long long broadcast = this->packetQueue.getBroadcastTime();
     // 無効化直後などPostMessageに失敗した場合はここで解放する
     auto payload = std::make_unique<CommentStatusNotification>(CommentStatusNotification{
-        status, static_cast<long long>(std::time(nullptr))
+        status, broadcast != 0 ? broadcast : static_cast<long long>(std::time(nullptr))
     });
     if (PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
                      reinterpret_cast<WPARAM>(payload.get()), 0))

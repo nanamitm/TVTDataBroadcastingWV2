@@ -88,6 +88,14 @@ struct CommentStreamNotification
     std::optional<bool> connected;
 };
 
+// 接続状況とその時刻。時刻はWPARAM/LPARAMに収まらない (x86ビルドのLPARAMは
+// 32bitなのでtime_tが切り捨てられる) ので、他の通知と同じく構造体で渡す。
+struct CommentStatusNotification
+{
+    JkcnslReader::Status status;
+    long long date;
+};
+
 #define IDT_SHOW_EVR_WINDOW 1
 #define IDT_RESIZE 2
 #define IDT_PLAYBACK 3
@@ -1381,8 +1389,9 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     }
     case WM_APP_COMMENT_STATUS:
     {
+        auto notification = std::unique_ptr<CommentStatusNotification>(reinterpret_cast<CommentStatusNotification*>(wParam));
         // つながらないままだと20秒ごとに張り直すので、繰り返しは残さない。
-        const auto status = static_cast<JkcnslReader::Status>(wParam);
+        const auto status = notification->status;
         if (!JkcnslReader::ShouldLogStatus(pThis->m_lastLoggedCommentStatus, status)) break;
         pThis->m_lastLoggedCommentStatus = status;
         const char* text = "";
@@ -1394,7 +1403,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         case JkcnslReader::Status::Failed: text = "コメントサーバーとの通信に失敗しました。再接続を待ちます。"; break;
         }
         pThis->AppendCommentLog(nlohmann::json::array({
-            { { "text", text }, { "date", static_cast<long long>(lParam) }, { "system", true } }
+            { { "text", text }, { "date", notification->date }, { "system", true } }
         }));
         break;
     }
@@ -2750,6 +2759,10 @@ void CDataBroadcastingWV2::Disable(bool finalize)
         {
             std::unique_ptr<CommentStreamNotification> notification(reinterpret_cast<CommentStreamNotification*>(message.wParam));
         }
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_COMMENT_STATUS, WM_APP_COMMENT_STATUS, PM_REMOVE))
+        {
+            std::unique_ptr<CommentStatusNotification> status(reinterpret_cast<CommentStatusNotification*>(message.wParam));
+        }
     }
     // 再度有効にしたときに以前の手動指定先へ繋ぎ直さないよう解除する
     this->m_manualJkVideo.clear();
@@ -3128,8 +3141,15 @@ void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
     // ウィンドウがないときに投げるとスレッドメッセージになって誰も拾わないので、
     // 無効化でウィンドウを畳んだ後に届いた通知はここで捨てる。
     if (!this->hMessageWnd) return;
-    PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
-                 static_cast<WPARAM>(status), static_cast<LPARAM>(std::time(nullptr)));
+    // 無効化直後などPostMessageに失敗した場合はここで解放する
+    auto payload = std::make_unique<CommentStatusNotification>(CommentStatusNotification{
+        status, static_cast<long long>(std::time(nullptr))
+    });
+    if (PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
+                     reinterpret_cast<WPARAM>(payload.get()), 0))
+    {
+        payload.release();
+    }
 }
 
 void CDataBroadcastingWV2::AppendCommentLog(const nlohmann::json& items)

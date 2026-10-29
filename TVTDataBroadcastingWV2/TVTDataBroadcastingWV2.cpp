@@ -3897,8 +3897,15 @@ bool CDataBroadcastingWV2::OnCommand(int ID)
     case IDC_KEY_D:
         if (this->currentServiceIsOneSeg)
         {
-            this->CreateOneSegWindow();
-            this->webView->PostWebMessageAsJson(LR"({"type":"launchOneSeg"})");
+            if (this->hOneSegWnd != nullptr)
+            {
+                this->DestroyOneSegWindow();
+            }
+            else
+            {
+                this->CreateOneSegWindow();
+                this->webView->PostWebMessageAsJson(LR"({"type":"launchOneSeg"})");
+            }
         }
         else
         {

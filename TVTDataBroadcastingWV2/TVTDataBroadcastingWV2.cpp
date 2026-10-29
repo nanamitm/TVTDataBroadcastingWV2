@@ -653,6 +653,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool oneSegCaptionOverlayEnabled = false;
     RECT oneSegCaptionBounds = {};
     std::optional<std::int64_t> lastCaptionTime;
+    // 専用ウインドウを閉じてBMLだけ再読み込みする時は、映像上の字幕を継続する。
+    bool preserveCaptionOnPageReset = false;
     void UpdateOneSegCaptionBounds();
     void SendOneSegCaptionConfig();
     // 初期化に失敗した場合、字幕メッセージごとに再試行しないよう覚えておく
@@ -808,6 +810,7 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
         this->currentService.ServiceID != lastServiceID)
     {
         this->currentServiceIsOneSeg = false;
+        this->preserveCaptionOnPageReset = false;
         this->oneSegCaptionOverlay.Clear();
         this->packetQueue.clear();
         this->b62Receiver.Reset(this->currentService.ServiceID);
@@ -2080,6 +2083,15 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     auto type = typeValue.get<std::string>();
     if (type == "captionReset")
     {
+        const bool preserveCaption = this->preserveCaptionOnPageReset;
+        this->preserveCaptionOnPageReset = false;
+        if (preserveCaption && this->currentServiceIsOneSeg && this->oneSegCaptionOverlayEnabled &&
+            this->nativeCaptionRenderer && !this->nativeCaptionRendererFailed)
+        {
+            // 表示期限・デコーダー・PCR時刻も引き継ぐ。表示画像だけ残すと、
+            // 再読み込み後に期限切れの字幕が残ったり管理データを失ったりする。
+            return;
+        }
         this->lastCaptionTime.reset();
         this->oneSegCaptionOverlay.Clear();
         // チャンネル変更などでページが読み込み直された時は初期化を再試行する
@@ -2767,6 +2779,7 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->preserveCaptionOnPageReset = false;
     this->lastCaptionTime.reset();
     this->oneSegCaptionOverlay.Clear();
     this->m_commentSessionEnabled = false;
@@ -5375,7 +5388,10 @@ void CDataBroadcastingWV2::CreateOneSegWindow()
             this->hOneSegWnd = nullptr;
             if (this->currentServiceIsOneSeg)
             {
-                this->webView->Reload();
+                this->preserveCaptionOnPageReset = this->oneSegCaptionOverlayEnabled &&
+                    AsyncLifetime::IsCurrent(this->webViewLifetime.GetTicket());
+                if (FAILED(this->webView->Reload()))
+                    this->preserveCaptionOnPageReset = false;
             }
             this->UpdateDigitButton();
         }

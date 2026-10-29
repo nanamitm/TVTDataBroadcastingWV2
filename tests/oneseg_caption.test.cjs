@@ -8,6 +8,8 @@ const source = fs.readFileSync(`${__dirname}/../browser/src/TVTDataBroadcastingW
 const ast = ts.createSourceFile('browser.ts', source, ts.ScriptTarget.Latest, true);
 const handler = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'onWebViewMessage');
 const compiled = ts.transpileModule(handler.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const streamHandler = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'onMessage');
+const compiledStreamHandler = ts.transpileModule(streamHandler.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 let pushes = 0;
 let updates = 0;
 const context = {
@@ -19,9 +21,20 @@ const context = {
     ttmlPlayer: { updateTime() {} }, b62Application: { updateTime() {} },
     fromBase64: () => new Uint8Array([0x47]),
     browserElement: { style: { visibility: 'hidden' } },
+    pmtRetrieved: false, audioESList: [], audioStreamType: new Set(),
+    networkId: 1, serviceId: 1,
+    onResized() {}, postMessage() {},
+    remoteControlStatusContainer: { style: {} },
+    // BMLが親のvisibilityを上書きする文書でも非表示を維持する必要がある。
+    bmlBrowser: { emitMessage() { context.bmlChildVisibility = 'visible'; } },
 };
+context.b62Application.setCaptionComponents = () => {};
 vm.createContext(context);
 vm.runInContext(compiled, context);
+vm.runInContext(compiledStreamHandler, context);
+context.onMessage({ type: 'pmt', components: [{ dataComponentId: 0x000d }] });
+assert.equal(context.bmlChildVisibility, 'visible');
+assert.equal(context.browserElement.style.opacity, '0', 'BML descendants cannot override group opacity');
 for (const type of ['stream', 'streamBase64']) {
     const send = () => context.onWebViewMessage({ type, data: type === 'stream' ? [0x47] : 'Rw==' }, () => {});
     context.oneSegLaunched = false;
@@ -34,6 +47,7 @@ for (const type of ['stream', 'streamBase64']) {
     assert.equal(pushes, before + 1, `${type}: overlay receives captions before d button`);
     assert.equal(context.oneSegLaunched, false);
     assert.equal(context.browserElement.style.visibility, 'hidden');
+    assert.equal(context.browserElement.style.opacity, '0', 'caption-only reception keeps BML transparent');
     context.onWebViewMessage({ type: 'oneSegCaptionConfig', overlay: false });
     send();
     assert.equal(pushes, before + 1, `${type}: disabling overlay restores gate`);
@@ -41,7 +55,9 @@ for (const type of ['stream', 'streamBase64']) {
     send();
     assert.equal(pushes, before + 2, `${type}: dedicated window continues receiving`);
     assert.equal(context.browserElement.style.visibility, 'visible');
+    assert.equal(context.browserElement.style.opacity, '', 'd button restores BML in its dedicated window');
     context.browserElement.style.visibility = 'hidden';
+    context.browserElement.style.opacity = '0';
 }
 assert.equal(updates, pushes);
 context.cProfile = false;

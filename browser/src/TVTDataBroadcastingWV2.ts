@@ -505,6 +505,9 @@ function onMessage(msg: ResponseMessage) {
                 onResized();
                 if (!oneSegLaunched) {
                     browserElement.style.visibility = "hidden";
+                    // BMLの子要素はvisibility:visibleを明示できるため、親の
+                    // visibilityだけでは隠れない。字幕受信中も文書全体を透明にする。
+                    browserElement.style.opacity = "0";
                 }
                 remoteControlStatusContainer.style.visibility = "visible";
             }
@@ -790,6 +793,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "launchOneSeg") {
         oneSegLaunched = true;
         browserElement.style.visibility = "visible";
+        browserElement.style.opacity = "";
     } else if (data.type === "comments") {
         commentRenderer.add(data.comments);
     } else if (data.type === "clearComments") {

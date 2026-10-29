@@ -9,6 +9,8 @@
 
 #include "thirdparty/json.hpp"
 
+namespace aribcaption { struct RenderResult; }
+
 // 字幕の表示設定。キー名と既定値はTVCaption3に合わせている。
 struct NativeCaptionSettings
 {
@@ -39,12 +41,16 @@ struct NativeCaptionSettings
     // 4K/8K放送の字幕 (ARIB-TTML) をB24に変換したものではなく、TTMLのままページで描く
     // (dantto4kがTSに載せた字幕を使う。届いている間はB24の字幕を表示しない)
     bool ttmlCaption = true;
+    // ワンセグ字幕を専用ウインドウではなく映像の上に表示する
+    bool oneSegCaptionOverlay = false;
 };
 
 class NativeCaptionRenderer
 {
 public:
     using MessageCallback = std::function<void(const nlohmann::json&)>;
+    // trueを返したフレームはWebViewへ送らず、独立した映像上の表示に使う。
+    using FrameCallback = std::function<bool(int, int, int, const aribcaption::RenderResult&)>;
 
     explicit NativeCaptionRenderer(MessageCallback callback);
     ~NativeCaptionRenderer();
@@ -57,6 +63,9 @@ public:
     void SetSettings(const NativeCaptionSettings& settings);
     // 通常字幕の表示ボタン。文字スーパーはshowSuperimposeの設定だけに従う
     void SetEnabled(bool enabled);
+    void SetProfileC(bool profileC);
+    void SetFrameCallback(FrameCallback callback);
+    void RequestRedraw();
     void Reset();
     void Push(int streamId, const std::vector<std::uint8_t>& data, std::optional<std::int64_t> pts90kHz);
     void Update(std::int64_t currentTimeMs, int frameWidth, int frameHeight);

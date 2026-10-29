@@ -29,6 +29,7 @@
 #include "proxy.h"
 #include "InputDialog.h"
 #include "OneSeg.h"
+#include "OneSegCaptionOverlay.h"
 #include "CommentFetcher.h"
 #include "CommentNG.h"
 #include "NetworkServiceIDTable.h"
@@ -648,6 +649,12 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     wil::com_ptr<ICoreWebView2Controller> webViewController;
     wil::com_ptr<ICoreWebView2> webView;
     std::unique_ptr<NativeCaptionRenderer> nativeCaptionRenderer;
+    OneSegCaptionOverlay oneSegCaptionOverlay;
+    bool oneSegCaptionOverlayEnabled = false;
+    RECT oneSegCaptionBounds = {};
+    std::optional<std::int64_t> lastCaptionTime;
+    void UpdateOneSegCaptionBounds();
+    void SendOneSegCaptionConfig();
     // 初期化に失敗した場合、字幕メッセージごとに再試行しないよう覚えておく
     bool nativeCaptionRendererFailed = false;
 
@@ -801,6 +808,7 @@ bool CDataBroadcastingWV2::OnServiceUpdate()
         this->currentService.ServiceID != lastServiceID)
     {
         this->currentServiceIsOneSeg = false;
+        this->oneSegCaptionOverlay.Clear();
         this->packetQueue.clear();
         this->b62Receiver.Reset(this->currentService.ServiceID);
         // 選局し直したら勢いリストからの手動指定は解除して自動判定に戻す
@@ -823,6 +831,12 @@ void CDataBroadcastingWV2::RestoreVideoWindow()
 
 BOOL CALLBACK CDataBroadcastingWV2::WindowMessageCallback(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, void* pUserData)
 {
+    if (uMsg == WM_MOVE || uMsg == WM_WINDOWPOSCHANGED)
+    {
+        auto pThis = static_cast<CDataBroadcastingWV2*>(pUserData);
+        if (pThis->currentServiceIsOneSeg && pThis->oneSegCaptionOverlayEnabled && pThis->hMessageWnd)
+            PostMessageW(pThis->hMessageWnd, WM_APP_RESIZE, 0, 0);
+    }
     if (uMsg == WM_SIZE)
     {
         auto pThis = (CDataBroadcastingWV2*)pUserData;
@@ -887,6 +901,7 @@ NativeCaptionSettings CDataBroadcastingWV2::LoadCaptionSettings()
     settings.replaceDrcs = this->GetIniItem(L"ReplaceDrcs", 0) != 0;
     settings.ignoreSmall = this->GetIniItem(L"IgnoreSmall", 0) != 0;
     settings.ttmlCaption = this->GetIniItem(L"TtmlCaption", 1) != 0;
+    settings.oneSegCaptionOverlay = this->GetIniItem(L"OneSegCaptionOverlay", 0) != 0;
     return settings;
 }
 
@@ -912,7 +927,8 @@ bool CDataBroadcastingWV2::SaveCaptionSettings(const NativeCaptionSettings& sett
            setInt(L"ReplaceFullJapanese", settings.replaceFullJapanese) &&
            setInt(L"ReplaceDrcs", settings.replaceDrcs) &&
            setInt(L"IgnoreSmall", settings.ignoreSmall) &&
-           setInt(L"TtmlCaption", settings.ttmlCaption);
+           setInt(L"TtmlCaption", settings.ttmlCaption) &&
+           setInt(L"OneSegCaptionOverlay", settings.oneSegCaptionOverlay);
 }
 
 bool CDataBroadcastingWV2::Initialize()
@@ -1091,6 +1107,14 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         case IDT_RESIZE:
         {
+            pThis->UpdateOneSegCaptionBounds();
+            if (pThis->currentServiceIsOneSeg && pThis->oneSegCaptionOverlayEnabled &&
+                pThis->nativeCaptionRenderer && pThis->lastCaptionTime)
+            {
+                pThis->nativeCaptionRenderer->Update(*pThis->lastCaptionTime,
+                    pThis->oneSegCaptionBounds.right - pThis->oneSegCaptionBounds.left,
+                    pThis->oneSegCaptionBounds.bottom - pThis->oneSegCaptionBounds.top);
+            }
             if (pThis->webViewController && !pThis->oneSegWindowIsShown)
             {
                 // FIXME: Fullscreen
@@ -1132,6 +1156,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     }
     case WM_APP_RESIZE:
     {
+        pThis->UpdateOneSegCaptionBounds();
         if (pThis->webViewController && !pThis->oneSegWindowIsShown)
         {
 #if 0
@@ -1443,6 +1468,7 @@ HWND CDataBroadcastingWV2::GetFullscreenWindow()
 
 void CDataBroadcastingWV2::OnFilterGraphInitialized(TVTest::FilterGraphInfo* pInfo)
 {
+    this->oneSegCaptionOverlay.Clear();
     bool isRenderless = false;
     // VMR9
     if (SUCCEEDED(pInfo->pGraphBuilder->FindFilterByName(L"VMR9", this->vmr9Renderer.put())))
@@ -1568,6 +1594,7 @@ void CDataBroadcastingWV2::OnFilterGraphInitialized(TVTest::FilterGraphInfo* pIn
 
 void CDataBroadcastingWV2::OnFilterGraphFinalize(TVTest::FilterGraphInfo* pInfo)
 {
+    this->oneSegCaptionOverlay.Clear();
     this->basicVideo = nullptr;
     this->vmr7Renderer = nullptr;
     this->vmr9Renderer = nullptr;
@@ -1899,6 +1926,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
+                this->SendOneSegCaptionConfig();
                 // 読み込み直したページはファイル一覧を持っていない
                 this->b62FilesSentGeneration = UINT64_MAX;
                 this->SendB62Files();
@@ -1951,6 +1979,13 @@ bool CDataBroadcastingWV2::EnsureNativeCaptionRenderer()
         }
     });
     renderer->SetSettings(this->LoadCaptionSettings());
+    renderer->SetProfileC(this->currentServiceIsOneSeg);
+    renderer->SetFrameCallback([this](int track, int width, int height, const aribcaption::RenderResult& frame)
+    {
+        if (!this->currentServiceIsOneSeg || !this->oneSegCaptionOverlayEnabled) return false;
+        this->oneSegCaptionOverlay.Draw(track, width, height, frame);
+        return true;
+    });
     renderer->SetEnabled(this->caption);
     if (!renderer->Initialize())
     {
@@ -2045,6 +2080,8 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
     auto type = typeValue.get<std::string>();
     if (type == "captionReset")
     {
+        this->lastCaptionTime.reset();
+        this->oneSegCaptionOverlay.Clear();
         // チャンネル変更などでページが読み込み直された時は初期化を再試行する
         this->nativeCaptionRendererFailed = false;
         if (this->EnsureNativeCaptionRenderer())
@@ -2079,10 +2116,15 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         if (this->EnsureNativeCaptionRenderer() && a["time"].is_number() &&
             a["width"].is_number_integer() && a["height"].is_number_integer())
         {
+            this->UpdateOneSegCaptionBounds();
+            const bool overlay = this->currentServiceIsOneSeg && this->oneSegCaptionOverlayEnabled;
+            const int width = overlay ? this->oneSegCaptionBounds.right - this->oneSegCaptionBounds.left : a["width"].get<int>();
+            const int height = overlay ? this->oneSegCaptionBounds.bottom - this->oneSegCaptionBounds.top : a["height"].get<int>();
+            this->lastCaptionTime = static_cast<std::int64_t>(a["time"].get<double>());
             this->nativeCaptionRenderer->Update(
-                static_cast<std::int64_t>(a["time"].get<double>()),
-                std::clamp(a["width"].get<int>(), 1, 7680),
-                std::clamp(a["height"].get<int>(), 1, 4320));
+                *this->lastCaptionTime,
+                std::clamp(width, 1, 7680),
+                std::clamp(height, 1, 4320));
         }
     }
     else if (type == "videoChanged")
@@ -2272,6 +2314,8 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         if (this->currentService.ServiceID == serviceId && this->currentChannel.NetworkID == networkId)
         {
             this->currentServiceIsOneSeg = cProfile;
+            if (this->EnsureNativeCaptionRenderer()) this->nativeCaptionRenderer->SetProfileC(cProfile);
+            this->UpdateOneSegCaptionBounds();
             if (!cProfile)
             {
                 this->DestroyOneSegWindow();
@@ -2684,7 +2728,7 @@ void CDataBroadcastingWV2::ServiceProxyQueue(bool finish)
 
 void CDataBroadcastingWV2::ResizeVideoWindow()
 {
-    if (this->invisible || this->oneSegWindowIsShown)
+    if (this->invisible || this->oneSegWindowIsShown || this->currentServiceIsOneSeg)
     {
         this->RestoreVideoWindow();
     }
@@ -2723,6 +2767,8 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->lastCaptionTime.reset();
+    this->oneSegCaptionOverlay.Clear();
     this->m_commentSessionEnabled = false;
     // 再度有効にしたときの接続開始は、無効化前の状態に関わらず残す
     this->m_lastLoggedCommentStatus.reset();
@@ -4352,6 +4398,7 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                         pThis->nativeCaptionRenderer->SetSettings(pThis->LoadCaptionSettings());
                     }
                     pThis->SendTtmlCaptionConfig();
+                    pThis->SendOneSegCaptionConfig();
                 }
             }
         }
@@ -5257,6 +5304,55 @@ Audio CDataBroadcastingWV2::GetSelectedAudio()
     }
     auto index = this->m_pApp->GetAudioStream();
     return Audio(index);
+}
+
+void CDataBroadcastingWV2::SendOneSegCaptionConfig()
+{
+    this->oneSegCaptionOverlayEnabled = this->LoadCaptionSettings().oneSegCaptionOverlay;
+    this->UpdateOneSegCaptionBounds();
+    if (this->webView)
+    {
+        this->webView->PostWebMessageAsJson(jsonToWString({
+            {"type", "oneSegCaptionConfig"}, {"overlay", this->oneSegCaptionOverlayEnabled}
+        }).c_str());
+    }
+}
+
+void CDataBroadcastingWV2::UpdateOneSegCaptionBounds()
+{
+    if (!this->currentServiceIsOneSeg || !this->oneSegCaptionOverlayEnabled)
+    {
+        this->oneSegCaptionOverlay.Clear();
+        return;
+    }
+    RECT bounds = {};
+    HWND parent = IsWindowVisible(this->hContainerWnd) ? this->hContainerWnd : this->hViewWnd;
+    if (!GetClientRect(parent, &bounds)) return;
+    // 映像のアスペクト比を保ち、左右・上下の黒帯には字幕を載せない。
+    TVTest::VideoInfo video = {};
+    if (this->m_pApp->GetVideoInfo(&video) && video.XAspect > 0 && video.YAspect > 0)
+    {
+        const int width = bounds.right;
+        const int height = bounds.bottom;
+        if (static_cast<long long>(width) * video.YAspect > static_cast<long long>(height) * video.XAspect)
+        {
+            const int fitted = static_cast<int>(static_cast<long long>(height) * video.XAspect / video.YAspect);
+            bounds.left = (width - fitted) / 2;
+            bounds.right = bounds.left + fitted;
+        }
+        else
+        {
+            const int fitted = static_cast<int>(static_cast<long long>(width) * video.YAspect / video.XAspect);
+            bounds.top = (height - fitted) / 2;
+            bounds.bottom = bounds.top + fitted;
+        }
+    }
+    // NativeCaptionRendererと同じ上限。
+    bounds.right = bounds.left + std::min(7680L, bounds.right - bounds.left);
+    bounds.bottom = bounds.top + std::min(4320L, bounds.bottom - bounds.top);
+    this->oneSegCaptionBounds = bounds;
+    if (this->oneSegCaptionOverlay.SetBounds(parent, bounds) && this->nativeCaptionRenderer)
+        this->nativeCaptionRenderer->RequestRedraw();
 }
 
 void CDataBroadcastingWV2::CreateOneSegWindow()

@@ -48,6 +48,9 @@
     <ClInclude Include="OneSeg.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="OneSegCaptionOverlay.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="B62AppReceiver.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -78,6 +81,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="OneSeg.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="OneSegCaptionOverlay.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="B62AppReceiver.cpp">

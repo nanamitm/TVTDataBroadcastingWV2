@@ -277,6 +277,7 @@
     <ClInclude Include="CaptionSettingsDialog.h" />
     <ClInclude Include="NativeCaptionRenderer.h" />
     <ClInclude Include="OneSeg.h" />
+    <ClInclude Include="OneSegCaptionOverlay.h" />
     <ClInclude Include="B62AppReceiver.h" />
     <ClInclude Include="B62Shim.h" />
     <ClInclude Include="ZlibInflate.h" />
@@ -304,6 +305,7 @@
     <ClCompile Include="CaptionSettingsDialog.cpp" />
     <ClCompile Include="NativeCaptionRenderer.cpp" />
     <ClCompile Include="OneSeg.cpp" />
+    <ClCompile Include="OneSegCaptionOverlay.cpp" />
     <ClCompile Include="B62AppReceiver.cpp" />
     <ClCompile Include="ZlibInflate.cpp" />
     <ClCompile Include="proxy.cpp" />

@@ -66,6 +66,7 @@ struct NativeCaptionRenderer::Impl
             return false;
         }
         ApplySettings(track);
+        track.decoder->SetProfile(profileC ? aribcaption::Profile::kProfileC : aribcaption::Profile::kProfileA);
         return true;
     }
 
@@ -112,6 +113,7 @@ struct NativeCaptionRenderer::Impl
 
     void SendClear(int index)
     {
+        if (frameCallback) frameCallback(index, frameWidth, frameHeight, {});
         callback({{"type", "captionImage"}, {"track", index}, {"images", nlohmann::json::array()}});
         tracks[index].visible = false;
     }
@@ -135,6 +137,13 @@ struct NativeCaptionRenderer::Impl
             return;
         }
 
+        if (frameCallback && frameCallback(index, frameWidth, frameHeight, result))
+        {
+            // 表示先を切り替えた直後の専用ウインドウの字幕も消す。
+            callback({{"type", "captionImage"}, {"track", index}, {"images", nlohmann::json::array()}});
+            track.visible = !result.images.empty();
+            return;
+        }
         nlohmann::json images = nlohmann::json::array();
         for (const auto& image : result.images)
         {
@@ -162,6 +171,8 @@ struct NativeCaptionRenderer::Impl
     }
 
     MessageCallback callback;
+    FrameCallback frameCallback;
+    bool profileC = false;
     NativeCaptionSettings settings;
     bool enabled = false;
     bool forceRender = false;
@@ -178,6 +189,26 @@ NativeCaptionRenderer::NativeCaptionRenderer(MessageCallback callback) :
 }
 
 NativeCaptionRenderer::~NativeCaptionRenderer() = default;
+
+void NativeCaptionRenderer::RequestRedraw()
+{
+    impl_->forceRender = true;
+}
+
+void NativeCaptionRenderer::SetFrameCallback(FrameCallback callback)
+{
+    impl_->frameCallback = std::move(callback);
+    impl_->forceRender = true;
+}
+
+void NativeCaptionRenderer::SetProfileC(bool profileC)
+{
+    if (impl_->profileC != profileC)
+    {
+        impl_->profileC = profileC;
+        if (impl_->tracks[0].decoder) Reset();
+    }
+}
 
 bool NativeCaptionRenderer::Initialize()
 {

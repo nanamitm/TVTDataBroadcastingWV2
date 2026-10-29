@@ -98,6 +98,7 @@ INT_PTR CALLBACK CaptionSettingsDialog::DlgProc(HWND hDlg, UINT uMsg, WPARAM wPa
         SetCheck(hDlg, IDC_CHECK_REPLACE_DRCS, settings.replaceDrcs);
         SetCheck(hDlg, IDC_CHECK_IGNORE_SMALL, settings.ignoreSmall);
         SetCheck(hDlg, IDC_CHECK_TTML_CAPTION, settings.ttmlCaption);
+        SetCheck(hDlg, IDC_CHECK_ONESEG_CAPTION_OVERLAY, settings.oneSegCaptionOverlay);
         return 1;
     }
     case WM_COMMAND:
@@ -123,6 +124,7 @@ INT_PTR CALLBACK CaptionSettingsDialog::DlgProc(HWND hDlg, UINT uMsg, WPARAM wPa
             settings.replaceDrcs = GetCheck(hDlg, IDC_CHECK_REPLACE_DRCS);
             settings.ignoreSmall = GetCheck(hDlg, IDC_CHECK_IGNORE_SMALL);
             settings.ttmlCaption = GetCheck(hDlg, IDC_CHECK_TTML_CAPTION);
+            settings.oneSegCaptionOverlay = GetCheck(hDlg, IDC_CHECK_ONESEG_CAPTION_OVERLAY);
             EndDialog(hDlg, IDOK);
             return 1;
         }

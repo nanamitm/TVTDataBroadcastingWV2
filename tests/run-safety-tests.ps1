@@ -21,6 +21,10 @@ cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTes
 if errorlevel 1 exit /b 1
 "$output\startup.exe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption-config" /I"TVTDataBroadcastingWV2" /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption\include" /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption\src" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\OneSegCaptionOverlayTests.cpp TVTDataBroadcastingWV2\OneSegCaptionOverlay.cpp TVTDataBroadcastingWV2\thirdparty\libaribcaption\src\base\aligned_alloc.cpp /Fo:"$output\\" /Fe:"$output\oneseg-caption.exe" user32.lib gdi32.lib
+if errorlevel 1 exit /b 1
+"$output\oneseg-caption.exe"
+if %errorlevel% neq 0 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"TVTDataBroadcastingWV2" /I"TVTDataBroadcastingWV2\thirdparty\dantto4k\src" tests\TtmlCaptionTests\TtmlCaptionTests.cpp TVTDataBroadcastingWV2\TtmlCaption.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\pugixml.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\parser.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\resolver.cpp TVTDataBroadcastingWV2\thirdparty\dantto4k\src\ttml\style.cpp /Fo:"$output\\" /Fe:"$output\ttml.exe"
 if errorlevel 1 exit /b 1
 "$output\ttml.exe"

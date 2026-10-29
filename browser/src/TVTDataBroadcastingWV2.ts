@@ -484,6 +484,7 @@ let pmtRetrieved = false;
 // ワンセグのデータ放送の場合dボタンを押すまで起動しない状態にしておく
 let cProfile = false;
 let oneSegLaunched = false;
+let oneSegCaptionOverlay = false;
 
 function onMessage(msg: ResponseMessage) {
     if (msg.type === "pes") {
@@ -504,6 +505,9 @@ function onMessage(msg: ResponseMessage) {
                 onResized();
                 if (!oneSegLaunched) {
                     browserElement.style.visibility = "hidden";
+                    // BMLの子要素はvisibility:visibleを明示できるため、親の
+                    // visibilityだけでは隠れない。字幕受信中も文書全体を透明にする。
+                    browserElement.style.opacity = "0";
                 }
                 remoteControlStatusContainer.style.visibility = "visible";
             }
@@ -531,6 +535,9 @@ const tsStream = decodeTS({
 });
 
 type ToWebViewMessage = {
+    type: "oneSegCaptionConfig",
+    overlay: boolean,
+} | {
     type: "stream",
     data: number[],
     time?: number,
@@ -679,7 +686,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         remoteControlStatusTimeout = Number.MAX_VALUE;
     }
     if (data.type === "stream") {
-        if (!oneSegLaunched && cProfile) {
+        if (!oneSegLaunched && cProfile && !oneSegCaptionOverlay) {
             return;
         }
         const ts = data.data;
@@ -693,7 +700,7 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
             b62Application.updateTime(curPCR);
         }
     } else if (data.type === "streamBase64") {
-        if (!oneSegLaunched && cProfile) {
+        if (!oneSegLaunched && cProfile && !oneSegCaptionOverlay) {
             return;
         }
         const ts = data.data;
@@ -781,9 +788,12 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
                 bmlBrowser.setMainAudioStream(es.componentId, data.channelId);
             }
         }
+    } else if (data.type === "oneSegCaptionConfig") {
+        oneSegCaptionOverlay = data.overlay;
     } else if (data.type === "launchOneSeg") {
         oneSegLaunched = true;
         browserElement.style.visibility = "visible";
+        browserElement.style.opacity = "";
     } else if (data.type === "comments") {
         commentRenderer.add(data.comments);
     } else if (data.type === "clearComments") {

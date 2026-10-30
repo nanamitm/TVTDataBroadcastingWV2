@@ -1,4 +1,5 @@
 import { HybridcastHost, type HybridcastIncoming, type HybridcastOutgoing } from "./hybridcast";
+import { BroadcastCertificateCollector, type BroadcastCertificatesMessage } from "./broadcast_certificates";
 import { CommentData, CommentRenderer } from "./comment";
 import { ChannelInfo, ChannelsClient } from "./channels";
 import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
@@ -342,7 +343,7 @@ bmlBrowser.addEventListener("load", (evt) => {
     }
 });
 
-type FromWebViewMessage = HybridcastOutgoing | {
+type FromWebViewMessage = BroadcastCertificatesMessage | HybridcastOutgoing | {
     type: "videoChanged",
     left: number,
     top: number,
@@ -500,7 +501,9 @@ let cProfile = false;
 let oneSegLaunched = false;
 let oneSegCaptionOverlay = false;
 
+const broadcastCertificates = new BroadcastCertificateCollector(postMessage);
 function onMessage(msg: ResponseMessage) {
+    broadcastCertificates.accept(msg);
     if (msg.type === "pes") {
         player.push(msg.streamId, Uint8Array.from(msg.data), msg.pts);
     } else if (msg.type === "pcr") {

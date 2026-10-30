@@ -13,6 +13,7 @@
 #include "../../TVTDataBroadcastingWV2/B62Navigation.h"
 #include "../../TVTDataBroadcastingWV2/B62RomSound.h"
 #include <string>
+#include "../../TVTDataBroadcastingWV2/BroadcastCertificates.h"
 // Expose only our driver types for deterministic completion fixtures. External
 // headers are included first, and the real WinHTTP path is tested below too.
 #define class struct

@@ -28,6 +28,7 @@ const context = {
     // BMLが親のvisibilityを上書きする文書でも非表示を維持する必要がある。
     bmlBrowser: { emitMessage() { context.bmlChildVisibility = 'visible'; } },
     hybridcast: { emit() {} },
+    broadcastCertificates: { accept() {} },
 };
 context.b62Application.setCaptionComponents = () => {};
 vm.createContext(context);

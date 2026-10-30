@@ -63,6 +63,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_B62_CAPTION (WM_APP + 10)
 #define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
 #define WM_APP_COMMENT_STATUS (WM_APP + 12)
+#define WM_APP_PROXY_DIAGNOSTIC (WM_APP + 13)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -415,6 +416,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::wstring webView2Directory;
 
     std::atomic<bool> webViewLoaded;
+    std::shared_ptr<BroadcastCertificates::Store> broadcastCertificateStore;
+    void InitBroadcastCertificates();
+    void ReceiveBroadcastCertificates(const nlohmann::json& message);
     PacketQueue packetQueue;
     std::vector<WCHAR> packetsToJsonBuf;
     // ARIB-HTML5 (Hybridcast/BS4K) アプリケーションエンジン
@@ -1304,6 +1308,36 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         break;
     }
+    case WM_APP_PROXY_DIAGNOSTIC:
+    {
+        auto error = std::unique_ptr<ProxyDiagnostic>(reinterpret_cast<ProxyDiagnostic*>(lParam));
+        std::wstringstream text;
+        text << L"通信エラー: host=" << error->host << L", stage=" << error->stage
+            << L", error=0x" << std::hex << error->error << L", TLS flags=0x" << error->secureFlags;
+        if (error->error == CRYPT_E_REVOKED || error->error == CERT_E_REVOKED || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_REVOKED))
+            text << L" [証明書が失効しています]";
+        else if (error->error == CERT_E_CN_NO_MATCH || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_CN_INVALID))
+            text << L" [証明書の名前と接続先が一致しません]";
+        else if (error->error == CERT_E_EXPIRED || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_DATE_INVALID))
+            text << L" [証明書が有効期間外です]";
+        else if (error->error == CRYPT_E_REVOCATION_OFFLINE || error->error == CRYPT_E_NO_REVOCATION_CHECK ||
+            error->error == CERT_E_REVOCATION_FAILURE || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_REV_FAILED))
+            text << L" [証明書の失効状態を確認できません]";
+        else if (error->error == CERT_E_WRONG_USAGE || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_WRONG_USAGE))
+            text << L" [証明書の用途がTLSサーバー認証ではありません]";
+        else if (error->error == CERT_E_CHAINING || error->error == CERT_E_UNTRUSTEDROOT || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA))
+            text << L" [信頼できるルートまで証明書チェーンを構築できません]";
+        WCHAR reason[512]{};
+        if (FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+            error->error, 0, reason, _countof(reason), nullptr)) {
+            std::wstring message(reason);
+            std::replace(message.begin(), message.end(), L'\r', L' ');
+            std::replace(message.begin(), message.end(), L'\n', L' ');
+            text << L" (" << message << L")";
+        }
+        pThis->m_pApp->AddLog(text.str().c_str(), TVTest::LOG_TYPE_ERROR);
+        break;
+    }
     case WM_APP_RESPONSE:
     {
         auto response = std::unique_ptr<DeferralResponse>((DeferralResponse*)lParam);
@@ -2128,6 +2162,35 @@ static bool DecodeBase64(const std::string& input, std::vector<std::uint8_t>& ou
     return true;
 }
 
+void CDataBroadcastingWV2::InitBroadcastCertificates()
+{
+    if (this->broadcastCertificateStore) return;
+    this->broadcastCertificateStore = std::make_shared<BroadcastCertificates::Store>(
+        std::filesystem::path(this->baseDirectory) / L"broadcast-root-certificates.json");
+    const auto result = this->broadcastCertificateStore->Load();
+    for (const auto& message : result.messages) this->m_pApp->AddLog(message.c_str(), TVTest::LOG_TYPE_WARNING);
+    if (result.changed) this->m_pApp->AddLog(L"保存済み放送ルート証明書を再検証して読み込みました", TVTest::LOG_TYPE_INFORMATION);
+}
+
+void CDataBroadcastingWV2::ReceiveBroadcastCertificates(const nlohmann::json& message)
+{
+    this->InitBroadcastCertificates();
+    const auto& files = message.at("certificates");
+    if (!files.is_array() || files.size() > BroadcastCertificates::kMaxRoots) return;
+    std::vector<BroadcastCertificates::Candidate> candidates;
+    for (const auto& file : files) {
+        const auto& data = file.at("dataBase64");
+        if (!data.is_string() || data.get_ref<const std::string&>().size() > 21848) return;
+        std::vector<BYTE> der;
+        if (!DecodeBase64(data.get_ref<const std::string&>(), der)) return;
+        candidates.push_back({file.at("location").get<std::string>(), message.at("moduleVersion").get<int>(),
+            message.at("dataEventId").get<int>(), std::move(der)});
+    }
+    const auto result = this->broadcastCertificateStore->Update(candidates);
+    for (const auto& text : result.messages) this->m_pApp->AddLog(text.c_str(), TVTest::LOG_TYPE_WARNING);
+    if (result.changed) this->m_pApp->AddLog(L"放送ルート証明書を指紋・自己署名・有効期限で検証し、専用ストアを更新しました", TVTest::LOG_TYPE_INFORMATION);
+}
+
 void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
 {
     auto&& typeValue = a["type"];
@@ -2136,6 +2199,7 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         return;
     }
     auto type = typeValue.get<std::string>();
+    if (type == "broadcastCertificates") { this->ReceiveBroadcastCertificates(a); return; }
     if (type == "launchHtml5") { this->LaunchHtml5(a); return; }
     if (type == "killHtml5") { this->StopHtml5(false); return; }
     if (type == "html5Data") { this->PostToHtml5(a); return; }
@@ -2867,6 +2931,12 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->ServicePendingB62Files(true);
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
+    if (this->hMessageWnd) {
+        MSG message;
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_PROXY_DIAGNOSTIC, WM_APP_PROXY_DIAGNOSTIC, PM_REMOVE)) {
+            delete reinterpret_cast<ProxyDiagnostic*>(message.lParam);
+        }
+    }
     // 待たせていた通信は503で終わらせる (応答は下で処理する)
     this->ServiceProxyQueue(true);
     if (this->hMessageWnd) {
@@ -3033,6 +3103,12 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         {
             this->proxySession = std::unique_ptr<ProxySession>(
                 new ProxySession(this->GetIniItem(L"IgnoreCertificateErrors", 0) != 0));
+            this->InitBroadcastCertificates();
+            this->proxySession->SetCertificateStore(this->broadcastCertificateStore);
+            this->proxySession->SetDiagnosticCallback([window = this->hMessageWnd](const ProxyDiagnostic& diagnostic) {
+                auto message = std::make_unique<ProxyDiagnostic>(diagnostic);
+                if (window && PostMessageW(window, WM_APP_PROXY_DIAGNOSTIC, 0, reinterpret_cast<LPARAM>(message.get()))) message.release();
+            });
         }
         {
             auto enableComment = this->GetIniItem(L"EnableComment", 0);

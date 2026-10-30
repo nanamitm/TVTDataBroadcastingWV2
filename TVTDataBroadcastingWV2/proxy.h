@@ -6,6 +6,14 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include "BroadcastCertificates.h"
+
+struct ProxyDiagnostic {
+    DWORD error = 0;
+    DWORD secureFlags = 0;
+    std::wstring host;
+    std::wstring stage;
+};
 
 class ProxyRequest;
 struct ProxyLimits {
@@ -22,6 +30,8 @@ struct ProxySessionState {
     bool stopping = false;
     HINTERNET session = nullptr;
     HINTERNET protectedSession = nullptr;
+    std::shared_ptr<BroadcastCertificates::Store> certificates;
+    std::function<void(const ProxyDiagnostic&)> diagnostic;
 };
 
 class ProxySession {
@@ -36,6 +46,8 @@ public:
     void Shutdown();
     // Whether another request can start now (below the concurrent request limit).
     bool HasCapacity() const;
+    void SetCertificateStore(std::shared_ptr<BroadcastCertificates::Store> store);
+    void SetDiagnosticCallback(std::function<void(const ProxyDiagnostic&)> callback);
     ProxySession(const ProxySession&) = delete;
     ProxySession& operator=(const ProxySession&) = delete;
 };
@@ -58,12 +70,17 @@ class ProxyRequest : public std::enable_shared_from_this<ProxyRequest> {
     std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> callback;
     std::vector<BYTE> payload;
     bool blockPrivateAddresses = false;
+    std::shared_ptr<const BroadcastCertificates::Trust> certificateTrust;
+    std::function<void(const ProxyDiagnostic&)> diagnostic;
+    std::wstring tlsHost;
+    bool secure = false;
+    DWORD secureFailureFlags = 0;
     ProxyRequest(HINTERNET connect, HINTERNET request,
         std::function<void()> errorCallback,
         std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> callback,
         std::vector<BYTE> payload, bool blockPrivateAddresses);
     static void CALLBACK StaticAsyncCallback(HINTERNET, DWORD_PTR, DWORD, LPVOID, DWORD);
-    void Fail();
+    void Fail(DWORD error = ERROR_WINHTTP_INTERNAL_ERROR, LPCWSTR stage = L"request");
     void AsyncCallback(HINTERNET, DWORD, LPVOID, DWORD);
     void Close();
     void Cancel();

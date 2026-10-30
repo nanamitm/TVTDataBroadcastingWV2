@@ -99,6 +99,8 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Comment log tests failed with exit code $LASTEXITCODE" }
         node tests/b62_application.test.cjs
         if ($LASTEXITCODE -ne 0) { throw "B62 application tests failed with exit code $LASTEXITCODE" }
+        node tests/bml_navigation.test.cjs
+        if ($LASTEXITCODE -ne 0) { throw "BML navigation tests failed with exit code $LASTEXITCODE" }
         node tests/ait_controlled_app.test.cjs
         if ($LASTEXITCODE -ne 0) { throw "AIT application tests failed with exit code $LASTEXITCODE" }
         node tests/hybridcast.test.cjs

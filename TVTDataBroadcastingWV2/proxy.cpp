@@ -318,12 +318,19 @@ bool ProxyRequest::RequestAsync
     URL_COMPONENTSW components = { sizeof(URL_COMPONENTSW) };
     components.dwHostNameLength = 1;
     components.dwUrlPathLength = 1;
+    components.dwExtraInfoLength = 1;
     if (!WinHttpCrackUrl(url, 0, 0, &components))
     {
         return false;
     }
     std::wstring hostName(components.lpszHostName, components.lpszHostName + components.dwHostNameLength);
     std::wstring urlPath(components.lpszUrlPath, components.lpszUrlPath + components.dwUrlPathLength);
+    if (urlPath.empty()) urlPath = L"/";
+    if (components.dwExtraInfoLength) {
+        std::wstring extra(components.lpszExtraInfo, components.dwExtraInfoLength);
+        // Keep query parameters such as tsid, but never transmit fragments.
+        urlPath += extra.substr(0, extra.find(L'#'));
+    }
     auto connect = WinHttpConnect(session.GetSession(blockPrivateAddresses), hostName.c_str(), components.nPort, 0);
     if (!connect)
     {
@@ -433,10 +440,10 @@ ProxySession::ProxySession(bool ignoreCertificateErrors, ProxyLimits limits)
     : state(std::make_shared<ProxySessionState>()), ignoreCertificateErrors(ignoreCertificateErrors)
 {
     state->limits = limits;
-    state->session = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    state->session = WinHttpOpen(L"TVTDataBroadcastingWV2/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
     // Never share a pooled BML connection with address-restricted B62 traffic.
-    state->protectedSession = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    state->protectedSession = WinHttpOpen(L"TVTDataBroadcastingWV2/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
 }
 

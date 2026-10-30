@@ -9,6 +9,8 @@ import { CaptionPlayer, type NativeCaptionImage } from "./caption_player";
 import { TtmlCaptionPlayer, type TtmlCaptionConfig, type TtmlCaptionMessage } from "./ttml_caption";
 import { B62ApplicationFrame, type B62Caption, type B62EventMessage, type B62FollowingEvent, type B62Residence, type B62NptReference } from "./b62_application";
 
+import { getBMLResource } from "./bml_resource";
+
 declare global {
     interface Window {
         chrome: {
@@ -176,10 +178,7 @@ const apiIP: IP = {
             return {};
         }
         try {
-            const res = await window.fetch("https://tvtdatabroadcastingwv2-api.invalid/api/get/" + uri, {
-                method: "GET",
-            });
-            return { statusCode: res.status, headers: res.headers, response: new Uint8Array(await res.arrayBuffer()) };
+            return await getBMLResource(uri, window.fetch.bind(window));
         } catch {
             return {};
         }

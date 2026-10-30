@@ -62,6 +62,7 @@ struct Server {
     std::thread worker;
     std::atomic<bool> received{false}, accepted{false};
     unsigned short port;
+    std::string requestText;
     Server(std::string response, bool hold = false) {
         listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         sockaddr_in address{}; address.sin_family = AF_INET;
@@ -82,6 +83,7 @@ struct Server {
                 request.append(buffer, n);
             }
             received = !request.empty();
+            requestText = request;
             if (received) {
                 size_t sent = 0;
                 while (sent < response.size()) {
@@ -112,6 +114,16 @@ static bool start(ProxySession& session, const std::wstring& url, std::shared_pt
 }
 int main() {
     WSADATA wsa; check(WSAStartup(MAKEWORD(2, 2), &wsa) == 0, "Winsock startup");
+    {
+        Server server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        ProxySession session; auto outcome = std::make_shared<Outcome>();
+        check(start(session, server.url() + L"?tsid=0X7C14&x=1#local", outcome), "start query and user-agent fixture");
+        check(WaitForSingleObject(outcome->ready, 5000) == WAIT_OBJECT_0, "query fixture completes");
+        session.Shutdown();
+        check(server.requestText.find("GET /fixture?tsid=0X7C14&x=1 HTTP/") == 0,
+            ("preserve query and exclude fragment: " + server.requestText.substr(0, server.requestText.find("\r\n"))).c_str());
+        check(server.requestText.find("User-Agent: TVTDataBroadcastingWV2/1.0\r\n") != std::string::npos, "send product user-agent");
+    }
     const std::wstring host = L"https://TVTDataBroadcastingWV2.invalid";
     check(ProxyPolicy::LegacyBridgeAllowed(host, L""), "trusted Origin allowed");
     check(ProxyPolicy::LegacyBridgeAllowed(L"", host + L"/index.html"), "trusted Referer fallback");

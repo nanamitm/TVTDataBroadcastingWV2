@@ -51,11 +51,11 @@ async function main() {
     fs.writeFileSync(path.join(dir, 'index'), '');
     fs.writeFileSync(path.join(dir, 'serial'), '1000\n'); fs.writeFileSync(path.join(dir, 'crlnumber'), '1000\n');
     const extensions = (dns, usage) => `basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=${usage}\nsubjectAltName=DNS:${dns}\ncrlDistributionPoints=URI:http://127.0.0.1:${crlServer.address().port}/crl\n`;
-    fs.writeFileSync(path.join(dir, 'ca.cnf'), `[ca]\ndefault_ca=ca_default\n[ca_default]\ndir="${dir.replace(/\\/g, '/')}"\ndatabase=$dir/index\nserial=$dir/serial\ncrlnumber=$dir/crlnumber\nnew_certs_dir=$dir\ncertificate=$dir/root.pem\nprivate_key=$dir/root.key\ndefault_md=sha256\ndefault_days=30\ndefault_crl_days=1\npolicy=policy\nunique_subject=no\n[policy]\ncommonName=supplied\n[server]\n${extensions('localhost', 'serverAuth')}\n[wrong_name]\n${extensions('other.invalid', 'serverAuth')}\n[wrong_usage]\n${extensions('localhost', 'clientAuth')}`);
+    fs.writeFileSync(path.join(dir, 'ca.cnf'), `[ca]\ndefault_ca=ca_default\n[ca_default]\ndir="${dir.replace(/\\/g, '/')}"\ndatabase=$dir/index\nserial=$dir/serial\ncrlnumber=$dir/crlnumber\nnew_certs_dir=$dir\ncertificate=$dir/root.pem\nprivate_key=$dir/root.key\ndefault_md=sha256\ndefault_days=30\ndefault_crl_days=1\npolicy=policy\nunique_subject=no\n[policy]\ncommonName=supplied\n[server]\n${extensions('localhost', 'serverAuth')}\n[wrong_name]\n${extensions('other.invalid', 'serverAuth')}\n[wrong_usage]\n${extensions('localhost', 'clientAuth')}\n[no_crl]\n${extensions('localhost', 'serverAuth').replace(/^crlDistributionPoints=.*\n/m, '')}`);
     ssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'root.key', '-out', 'root.pem', '-days', '3650', '-subj', '/CN=Broadcast Fixture Root', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign');
     ssl('x509', '-in', 'root.pem', '-outform', 'DER', '-out', 'root.cer');
     ssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'leaf.key', '-out', 'leaf.csr', '-subj', '/CN=localhost');
-    for (const [name, extension] of [['valid', 'server'], ['revoked', 'server'], ['expired', 'server'], ['wrong-name', 'wrong_name'], ['wrong-usage', 'wrong_usage']]) {
+    for (const [name, extension] of [['valid', 'server'], ['uncheckable', 'no_crl'], ['revoked', 'server'], ['expired', 'server'], ['wrong-name', 'wrong_name'], ['wrong-usage', 'wrong_usage']]) {
       ssl('ca', '-batch', '-config', 'ca.cnf', '-extensions', extension, '-in', 'leaf.csr', '-out', name + '.pem',
         ...(name === 'expired' ? ['-startdate', '20000101000000Z', '-enddate', '20000102000000Z'] : []));
     }
@@ -63,7 +63,8 @@ async function main() {
     ssl('ca', '-gencrl', '-config', 'ca.cnf', '-out', 'root-crl.pem');
     ssl('crl', '-in', 'root-crl.pem', '-outform', 'DER', '-out', 'root.crl');
     ssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'foreign.key', '-out', 'foreign.pem', '-days', '30', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost');
-    for (const name of ['valid', 'revoked', 'expired', 'wrong-name', 'wrong-usage', 'foreign']) {
+    // Before a valid CRL is cached, lack of revocation information must fail.
+    for (const name of ['uncheckable', 'valid', 'revoked', 'expired', 'wrong-name', 'wrong-usage', 'foreign']) {
       const fixture = await serverFor(name);
       try {
         const result = await native(fixture.url, name === 'valid' ? 'success' : 'failure');

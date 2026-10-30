@@ -117,7 +117,7 @@ void ProxyRequest::Fail(DWORD errorCode, LPCWSTR stage)
 {
     if (!completed) {
         completed = true;
-        try { if (diagnostic) diagnostic({errorCode, secureFailureFlags, tlsHost, stage}); } catch (...) {}
+        try { if (diagnostic && errorCode != ERROR_OPERATION_ABORTED) diagnostic({errorCode, secureFailureFlags, tlsHost, stage}); } catch (...) {}
         callback = nullptr;
         auto error = std::exchange(errorCallback, nullptr);
         try { if (error) error(); } catch (...) {}
@@ -128,7 +128,7 @@ void ProxyRequest::Fail(DWORD errorCode, LPCWSTR stage)
 void ProxyRequest::Cancel()
 {
     std::lock_guard lock(mutex);
-    Fail();
+    Fail(ERROR_OPERATION_ABORTED, L"cancel");
 }
 
 void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength)

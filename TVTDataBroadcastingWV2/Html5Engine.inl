@@ -766,7 +766,7 @@ bool CDataBroadcastingWV2::OnHtml5Command(int ID)
     case IDC_KEY_7: name = "VK_7"; inKeySet = k.numeric; fallbackCommand = L"Channel7"; break;
     case IDC_KEY_8: name = "VK_8"; inKeySet = k.numeric; fallbackCommand = L"Channel8"; break;
     case IDC_KEY_9: name = "VK_9"; inKeySet = k.numeric; fallbackCommand = L"Channel9"; break;
-    case IDC_KEY_10: name = "VK_10"; inKeySet = k.numeric; fallbackCommand = L"Channel10"; break;
+    case IDC_KEY_10: name = "VK_0"; inKeySet = k.numeric; fallbackCommand = L"Channel10"; break;
     case IDC_KEY_11: name = "VK_11"; inKeySet = k.numeric; fallbackCommand = L"Channel11"; break;
     case IDC_KEY_12: name = "VK_12"; inKeySet = k.numeric; fallbackCommand = L"Channel12"; break;
     case IDC_KEY_D:

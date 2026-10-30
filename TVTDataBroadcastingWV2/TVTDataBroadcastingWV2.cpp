@@ -3864,7 +3864,8 @@ static std::unordered_map<int, CommandInfo> commandList
     { IDC_KEY_7, { 12, UsedKeyType::NumericTuning, L"Channel7" } },
     { IDC_KEY_8, { 13, UsedKeyType::NumericTuning, L"Channel8" } },
     { IDC_KEY_9, { 14, UsedKeyType::NumericTuning, L"Channel9" } },
-    { IDC_KEY_10, { 15, UsedKeyType::NumericTuning, L"Channel10" } },
+    // TV remotes share the 10/0 button. Keep Channel10 as the unused-key fallback.
+    { IDC_KEY_10, { 5, UsedKeyType::NumericTuning, L"Channel10" } },
     { IDC_KEY_11, { 16, UsedKeyType::NumericTuning, L"Channel11" } },
     { IDC_KEY_12, { 17, UsedKeyType::NumericTuning, L"Channel12" } },
 };

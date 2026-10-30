@@ -15,7 +15,7 @@ let updates = 0;
 const context = {
     cProfile: true, oneSegLaunched: false, oneSegCaptionOverlay: false,
     performance: { now: () => 0 },
-    pcr: 0, remoteControlStatusTimeout: Infinity,
+    pcr: 0, broadcastTimeKnown: false, remoteControlStatusTimeout: Infinity,
     tsStream: { push() { pushes++; context.pcr++; } },
     player: { updateTime() { updates++; } },
     ttmlPlayer: { updateTime() {} }, b62Application: { updateTime() {} },
@@ -27,6 +27,7 @@ const context = {
     remoteControlStatusContainer: { style: {} },
     // BMLが親のvisibilityを上書きする文書でも非表示を維持する必要がある。
     bmlBrowser: { emitMessage() { context.bmlChildVisibility = 'visible'; } },
+    hybridcast: { emit() {} },
 };
 context.b62Application.setCaptionComponents = () => {};
 vm.createContext(context);

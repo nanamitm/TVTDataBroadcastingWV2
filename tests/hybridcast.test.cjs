@@ -19,7 +19,7 @@ const host = new HybridcastHost({ available: () => available, post: msg => messa
 const app = (id, code, priority) => ({ organizationId: 1, applicationId: id, controlCode: code, priority,
   transports: [{ transportProtocolLabel: 0, urls: [{ urlBase: 'https://example.test/app/', urlExtensions: [] }] }],
   transportProtocolLabels: [], location: 'index.html', boundaries: [] });
-const ait = apps => ({ type: 'ait', section: { applicationType: 0x10, applications: apps, commonTransports: [] } });
+const ait = apps => ({ type: 'ait', section: { applicationType: 0x10, version: 1, sectionNumber: 0, lastSectionNumber: 0, applications: apps, commonTransports: [] } });
 host.emit(ait([app(1, 1, 10)]));
 assert.equal(messages.length, 0, 'disabled engine does not launch');
 host.configure(true, true);
@@ -40,6 +40,12 @@ host.configure(true, false);
 const count = messages.filter(x => x.type === 'launchHtml5').length;
 host.emit(ait([app(4, 1, 10)]));
 assert.equal(messages.filter(x => x.type === 'launchHtml5').length, count, 'autostart can be disabled');
+host.ait.clearBroadcastAIT();
+const first = ait([app(5, 1, 1)]).section;
+host.ait.setBroadcastAIT({ ...first, version: 2, sectionNumber: 1, lastSectionNumber: 1 });
+assert.equal(host.ait.getBroadcastAIT(), null, 'partial AIT never publishes an incomplete application list');
+host.ait.setBroadcastAIT({ ...first, version: 2, sectionNumber: 0, lastSectionNumber: 1, applications: [app(6, 2, 1)] });
+assert.equal(host.ait.getBroadcastAIT().applications.length, 2, 'out-of-order sections form one AIT');
 console.log('Hybridcast ownership, priority, AIT control and availability tests passed');
 
 function runtime(url, boundaries) {

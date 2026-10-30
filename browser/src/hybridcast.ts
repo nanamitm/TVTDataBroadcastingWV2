@@ -85,6 +85,7 @@ export class HybridcastHost {
     private runningFromBroadcast = false;
     emit(message: ResponseMessage) {
         const available = this.options.available();
+        const becameAvailable = available && !this.wasAvailable;
         if (!available && (this.wasAvailable || this.running)) this.suspend();
         this.wasAvailable = available;
         if (message.type === "eitPresentFollowing") this.lastEIT = message;
@@ -96,6 +97,7 @@ export class HybridcastHost {
             this.ait.setBroadcastAIT(message.section);
             this.processAIT();
         }
+        if (becameAvailable) this.processAIT();
         if (this.enabled && this.running && (["eitPresentFollowing", "programInfo", "esEventUpdated", "ait", "pmt"].includes(message.type)
             || (message.type === "currentTime" && ++this.timeCounter % 10 === 0))) this.options.post({ type: "html5Data", data: message });
     }

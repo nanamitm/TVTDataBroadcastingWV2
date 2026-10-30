@@ -156,6 +156,8 @@ export class AITControlledAppHost implements AITControlledApp {
     private activeDocument: string | null = null;
     private generation = 0;
     private broadcastAIT: Html5AIT | null = null;
+    private sectionKey = "";
+    private sections = new Map<number, AITSection>();
     private readonly options: AITControlledAppHostOptions;
     private static readonly MAX_ENTRIES = 10;
 
@@ -167,16 +169,27 @@ export class AITControlledAppHost implements AITControlledApp {
         if (!this.options.supportedApplicationTypes.has(section.applicationType)) {
             return;
         }
-        this.broadcastAIT = convertAITSection(section);
+        if (section.sectionNumber < 0 || section.lastSectionNumber > 255 || section.sectionNumber > section.lastSectionNumber) return;
+        const key = `${section.applicationType}:${section.version}:${section.lastSectionNumber}`;
+        if (key !== this.sectionKey) {
+            this.sections.clear();
+            this.sectionKey = key;
+        }
+        this.sections.set(section.sectionNumber, section);
+        if (this.sections.size !== section.lastSectionNumber + 1) return;
+        this.broadcastAIT = { source: null, applications: [...this.sections.values()]
+            .sort((a, b) => a.sectionNumber - b.sectionNumber).flatMap(s => convertAITSection(s).applications) };
     }
 
     public clearBroadcastAIT() {
         this.broadcastAIT = null;
+        this.sections.clear();
+        this.sectionKey = "";
     }
 
     public reset() {
         this.entries.clear();
-        this.broadcastAIT = null;
+        this.clearBroadcastAIT();
         this.activeDocument = null;
         this.generation++;
     }

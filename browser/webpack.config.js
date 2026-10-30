@@ -10,6 +10,13 @@ module.exports = {
         path: path.resolve(__dirname, 'dist'),
         filename: '[name].js',
     },
+    plugins: [
+        new webpack.NormalModuleReplacementPlugin(/^\.\/ait$/, resource => {
+            if (resource.context.replace(/\\/g, '/').endsWith('/web-bml/dist/server')) {
+                resource.request = path.resolve(__dirname, 'src/broadcast_ait.ts');
+            }
+        }),
+    ],
     module: {
         rules: [
             {

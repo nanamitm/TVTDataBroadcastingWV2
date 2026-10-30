@@ -144,6 +144,7 @@ const epg: EPG = {
 
 let networkEnabled = false;
 let isRecord = false;
+let broadcastTimeKnown = false;
 
 const apiIP: IP = {
     getConnectionType() {
@@ -251,7 +252,7 @@ function X_DPA_startResidentApp(appName: string, showAV: number, returnURI: stri
 
 let b62Active = false;
 const hybridcast = new HybridcastHost({
-    available: () => networkEnabled && !isRecord && !b62Active && !cProfile,
+    available: () => networkEnabled && broadcastTimeKnown && !isRecord && !b62Active && !cProfile,
     post: postMessage,
     async fetchXMLAIT(uri) {
         const response = await apiIP.get!(uri);
@@ -533,6 +534,7 @@ function onMessage(msg: ResponseMessage) {
         }
         pmtRetrieved = true;
     } else if (msg.type === "currentTime") {
+        broadcastTimeKnown = true;
         isRecord = new Date().getTime() - msg.timeUnixMillis >= 5 * 60 * 1000;
         b62Application.setBroadcastTime(msg.timeUnixMillis);
     } else if (msg.type === "programInfo") {

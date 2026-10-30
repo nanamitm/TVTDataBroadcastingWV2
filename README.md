@@ -261,6 +261,8 @@ node browser/node_modules/typescript/bin/tsc --noEmit -p browser/tsconfig.json
 
 ### web-bmlのビルド
 
+web-bmlは [nanamitm/web-bml](https://github.com/nanamitm/web-bml) をサブモジュールとして参照します。[SomeDena786/web-bml](https://github.com/SomeDena786/web-bml) からフォークし、参照コミットを固定しています。上流の更新はフォークで確認・統合した後、このリポジトリのサブモジュール参照を更新してください。
+
 通信時は `TVTDataBroadcastingWV2/1.0` をUser-Agentとして送信します。HTTPエラー応答はBMLとして解析せず、文書の取得・解析に失敗した場合はデータ放送画面を閉じてイベント処理を復帰します。ConsoleにはHTTPステータスとクエリを除いた取得先を記録します。
 
 `browser/loaders/bml-content-recovery.cjs` は固定したweb-bmlのビルド結果に文書遷移のエラー処理を適用します。サブモジュールのソースは変更しません。web-bml更新時に適用箇所が変わった場合はビルドを停止するため、ローダーと `tests/bml_navigation.test.cjs` を併せて確認してください。

@@ -1,3 +1,5 @@
+import { HybridcastHost, type HybridcastIncoming, type HybridcastOutgoing } from "./hybridcast";
+import { BroadcastCertificateCollector, type BroadcastCertificatesMessage } from "./broadcast_certificates";
 import { CommentData, CommentRenderer } from "./comment";
 import { ChannelInfo, ChannelsClient } from "./channels";
 import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
@@ -58,6 +60,7 @@ export class StatusBarIndicator implements Indicator {
         }
     }
     public setUrl(name: string, loading: boolean): void {
+        if (loading) hybridcast.ait.invalidateDocument();
         this.url = name;
         this.loading = loading;
         this.update();
@@ -142,6 +145,7 @@ const epg: EPG = {
 
 let networkEnabled = false;
 let isRecord = false;
+let broadcastTimeKnown = false;
 
 const apiIP: IP = {
     getConnectionType() {
@@ -247,7 +251,18 @@ function X_DPA_startResidentApp(appName: string, showAV: number, returnURI: stri
     return NaN;
 }
 
+let b62Active = false;
+const hybridcast = new HybridcastHost({
+    available: () => networkEnabled && broadcastTimeKnown && !isRecord && !b62Active && !cProfile,
+    post: postMessage,
+    async fetchXMLAIT(uri) {
+        const response = await apiIP.get!(uri);
+        return response.statusCode === 200 && response.response ? new TextDecoder().decode(response.response) : null;
+    },
+});
+
 const bmlBrowser = new BMLBrowser({
+    extension: hybridcast.extension,
     containerElement: contentElement,
     mediaElement: videoContainer,
     indicator: remoteControl,
@@ -328,7 +343,7 @@ bmlBrowser.addEventListener("load", (evt) => {
     }
 });
 
-type FromWebViewMessage = {
+type FromWebViewMessage = BroadcastCertificatesMessage | HybridcastOutgoing | {
     type: "videoChanged",
     left: number,
     top: number,
@@ -486,7 +501,9 @@ let cProfile = false;
 let oneSegLaunched = false;
 let oneSegCaptionOverlay = false;
 
+const broadcastCertificates = new BroadcastCertificateCollector(postMessage);
 function onMessage(msg: ResponseMessage) {
+    broadcastCertificates.accept(msg);
     if (msg.type === "pes") {
         player.push(msg.streamId, Uint8Array.from(msg.data), msg.pts);
     } else if (msg.type === "pcr") {
@@ -520,11 +537,13 @@ function onMessage(msg: ResponseMessage) {
         }
         pmtRetrieved = true;
     } else if (msg.type === "currentTime") {
+        broadcastTimeKnown = true;
         isRecord = new Date().getTime() - msg.timeUnixMillis >= 5 * 60 * 1000;
         b62Application.setBroadcastTime(msg.timeUnixMillis);
     } else if (msg.type === "programInfo") {
         b62Application.setProgramInfo(msg);
     }
+    hybridcast.emit(msg);
     bmlBrowser.emitMessage(msg);
 }
 
@@ -534,7 +553,7 @@ const tsStream = decodeTS({
     parsePES: true,
 });
 
-type ToWebViewMessage = {
+type ToWebViewMessage = HybridcastIncoming | {
     type: "oneSegCaptionConfig",
     overlay: boolean,
 } | {
@@ -685,7 +704,30 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         remoteControlStatusContainer.style.visibility = "hidden";
         remoteControlStatusTimeout = Number.MAX_VALUE;
     }
-    if (data.type === "stream") {
+    if (data.type === "html5Config") {
+        hybridcast.configure(data.enabled, data.autoStartBroadcastAIT, data.residentAppVersion);
+    } else if (data.type === "html5Stopped") {
+        hybridcast.stopped();
+    } else if (data.type === "bmlVisibility") {
+        // Opacity cannot be overridden by BML descendants with visibility:visible.
+        browserElement.style.opacity = data.visible ? (cProfile && !oneSegLaunched ? "0" : "") : "0";
+    } else if (data.type === "html5Replace") {
+        const result = hybridcast.ait.startAITControlledApp(data.organizationId.toString(16), data.applicationId.toString(16), data.aitUrl ?? undefined, null);
+        if (Number.isNaN(result)) postMessage({ type: "killHtml5", reason: "replace" });
+    } else if (data.type === "rpc") {
+        let result: any = null;
+        const p = data.params;
+        switch (data.method) {
+            case "readPersistentArray": result = bmlBrowser.nvram.readPersistentArray(p.filename, p.structure); break;
+            case "writePersistentArray": result = bmlBrowser.nvram.writePersistentArray(p.filename, p.structure, p.data, undefined, true); break;
+            case "getGreg": result = Array.from({ length: 64 }, (_, i) => sessionStorage.getItem(`Greg[${i}]`) ?? ""); break;
+            case "setGreg": if (Number.isInteger(p.index) && p.index >= 0 && p.index < 64) { sessionStorage.setItem(`Greg[${p.index}]`, String(p.value)); result = true; } break;
+            case "getCurrentEvent": result = hybridcast.lastEIT; break;
+            case "getBroadcastAIT": result = hybridcast.ait.getBroadcastAIT(); break;
+            case "isRecord": result = isRecord; break;
+        }
+        reply({ type: "rpcResult", result });
+    } else if (data.type === "stream") {
         if (!oneSegLaunched && cProfile && !oneSegCaptionOverlay) {
             return;
         }
@@ -773,6 +815,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         }
     } else if (data.type === "enableNetwork") {
         networkEnabled = data.enable;
+        if (!networkEnabled) hybridcast.suspend();
+        else hybridcast.refreshAvailability();
     } else if (data.type === "changeInput") {
         changeCallback?.(data.value);
         changeCallback = undefined;
@@ -833,6 +877,8 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
     } else if (data.type === "b62EventMessage") {
         b62Application.pushEventMessage(data);
     } else if (data.type === "b62Application") {
+        b62Active = data.url != null || !!data.loading;
+        if (b62Active) hybridcast.suspend();
         b62Application.update(data.url, data.version);
         remoteControl.setB62ReceivingStatus(data.loading ?? false);
     } else if (data.type === "b62Networking") {

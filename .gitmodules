@@ -4,3 +4,6 @@
 [submodule "TVTDataBroadcastingWV2/thirdparty/dantto4k"]
 	path = TVTDataBroadcastingWV2/thirdparty/dantto4k
 	url = https://github.com/nanamitm/dantto4k.git
+[submodule "web-bml"]
+	path = web-bml
+	url = https://github.com/SomeDena786/web-bml.git

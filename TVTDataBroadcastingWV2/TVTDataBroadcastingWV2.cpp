@@ -63,6 +63,7 @@ using namespace Microsoft::WRL;
 #define WM_APP_B62_CAPTION (WM_APP + 10)
 #define WM_APP_B62_NETWORKING_DONE (WM_APP + 11)
 #define WM_APP_COMMENT_STATUS (WM_APP + 12)
+#define WM_APP_PROXY_DIAGNOSTIC (WM_APP + 13)
 
 // サイドパネル向けメッセージ
 #define WM_APP_ON_PANEL_COLOR_CHANGE (WM_APP + 0)
@@ -129,6 +130,7 @@ struct Status
     std::wstring url;
     bool receiving = false;
     bool loading = false;
+    bool html5 = false;
 };
 
 struct PacketQueue
@@ -414,8 +416,61 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::wstring webView2Directory;
 
     std::atomic<bool> webViewLoaded;
+    std::shared_ptr<BroadcastCertificates::Store> broadcastCertificateStore;
+    void InitBroadcastCertificates();
+    void ReceiveBroadcastCertificates(const nlohmann::json& message);
     PacketQueue packetQueue;
     std::vector<WCHAR> packetsToJsonBuf;
+    // ARIB-HTML5 (Hybridcast/BS4K) アプリケーションエンジン
+    wil::com_ptr<ICoreWebView2Controller> html5Controller;
+    wil::com_ptr<ICoreWebView2> html5WebView;
+    HWND hHtml5WebViewWnd = nullptr;
+    bool html5Enabled = false;
+    bool html5Active = false;
+    bool html5Creating = false;
+    bool html5Pending = false;
+    bool html5PreviousMute = false;
+    bool html5Unmanaged = false;
+    bool html5Layered = false;
+    nlohmann::json html5Launch;
+    std::wstring html5ScriptId;
+    std::string html5RuntimeScript;
+    int html5DocWidth = 1920;
+    int html5DocHeight = 1080;
+    RECT html5Bounds = {};
+    struct
+    {
+        bool red = true, green = true, yellow = true, blue = true, navigation = true, numeric = false, vcr = false, dbutton = true;
+    } html5KeySet;
+    // BML側の映像位置 (HTML5エンジン終了時に戻す)
+    RECT bmlVideoRect = {};
+    bool bmlInvisible = false;
+    std::map<std::string, std::string> html5Storage;
+    bool html5StorageLoaded = false;
+    void InitHtml5();
+    void SendHtml5Config();
+    // ステータスバーに表示するHTML5文書を設定する
+    void SetHtml5Status(LPCWSTR uri, bool loading);
+    void LaunchHtml5(const nlohmann::json& launch);
+    void CreateHtml5WebView();
+    void NavigateHtml5();
+    void StopHtml5(bool reloadBML);
+    void UpdateHtml5Bounds();
+    void OnHtml5WebMessage(const nlohmann::json& message);
+    HRESULT OnHtml5WebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
+    void PostToHtml5(const nlohmann::json& message);
+    bool OnHtml5Command(int ID);
+    std::string BuildHtml5ConfigScript();
+    void TuneToService(int originalNetworkId, int transportStreamId, int serviceId);
+    nlohmann::json HandleHtml5NativeRPC(const std::string& method, const nlohmann::json& params, bool& handled);
+    void LoadHtml5Storage();
+    void SaveHtml5Storage();
+    bool html5Muted = false;
+    nlohmann::json html5LastVideo;
+    double html5Scale = 0;
+    void ApplyHtml5Video();
+
+    AsyncLifetime html5Lifetime;
     // 4K data broadcasting (ARIB STD-B62) carried by BonDriver_dantto4k
     B62::AppReceiver b62Receiver;
     // WebView2がアプリケーションのiframe内のリクエストを横取りできるか
@@ -1145,6 +1200,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                     {
                         pThis->containerRect = rect;
                         pThis->webViewController->put_Bounds(rect);
+                        pThis->UpdateHtml5Bounds();
                     }
                 }
                 if (!pThis->invisible)
@@ -1178,6 +1234,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                     if (memcmp(&prev, &rect, sizeof(prev)))
                     {
                         pThis->webViewController->put_Bounds(rect);
+                        pThis->UpdateHtml5Bounds();
                     }
                 }
             }
@@ -1249,6 +1306,36 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                 auto hr = pThis->webView->PostWebMessageAsJson(buf);
             }
         }
+        break;
+    }
+    case WM_APP_PROXY_DIAGNOSTIC:
+    {
+        auto error = std::unique_ptr<ProxyDiagnostic>(reinterpret_cast<ProxyDiagnostic*>(lParam));
+        std::wstringstream text;
+        text << L"通信エラー: host=" << error->host << L", stage=" << error->stage
+            << L", error=0x" << std::hex << error->error << L", TLS flags=0x" << error->secureFlags;
+        if (error->error == CRYPT_E_REVOKED || error->error == CERT_E_REVOKED || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_REVOKED))
+            text << L" [証明書が失効しています]";
+        else if (error->error == CERT_E_CN_NO_MATCH || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_CN_INVALID))
+            text << L" [証明書の名前と接続先が一致しません]";
+        else if (error->error == CERT_E_EXPIRED || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_DATE_INVALID))
+            text << L" [証明書が有効期間外です]";
+        else if (error->error == CRYPT_E_REVOCATION_OFFLINE || error->error == CRYPT_E_NO_REVOCATION_CHECK ||
+            error->error == CERT_E_REVOCATION_FAILURE || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_REV_FAILED))
+            text << L" [証明書の失効状態を確認できません]";
+        else if (error->error == CERT_E_WRONG_USAGE || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_CERT_WRONG_USAGE))
+            text << L" [証明書の用途がTLSサーバー認証ではありません]";
+        else if (error->error == CERT_E_CHAINING || error->error == CERT_E_UNTRUSTEDROOT || (error->secureFlags & WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA))
+            text << L" [信頼できるルートまで証明書チェーンを構築できません]";
+        WCHAR reason[512]{};
+        if (FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+            error->error, 0, reason, _countof(reason), nullptr)) {
+            std::wstring message(reason);
+            std::replace(message.begin(), message.end(), L'\r', L' ');
+            std::replace(message.begin(), message.end(), L'\n', L' ');
+            text << L" (" << message << L")";
+        }
+        pThis->m_pApp->AddLog(text.str().c_str(), TVTest::LOG_TYPE_ERROR);
         break;
     }
     case WM_APP_RESPONSE:
@@ -1565,7 +1652,7 @@ void CDataBroadcastingWV2::OnFilterGraphInitialized(TVTest::FilterGraphInfo* pIn
                 {
                     continue;
                 }
-                if (hWnd == hWebViewWnd)
+                if (hWnd == hWebViewWnd || hWnd == this->hHtml5WebViewWnd)
                 {
                     continue;
                 }
@@ -1606,6 +1693,7 @@ void CDataBroadcastingWV2::OnFilterGraphFinalize(TVTest::FilterGraphInfo* pInfo)
 
 void CDataBroadcastingWV2::InitWebView2()
 {
+    this->InitHtml5();
     if (!this->hContainerWnd)
     {
         this->deferWebView = true;
@@ -1926,6 +2014,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 if (this->proxySession)
                 {
                     this->UpdateNetworkState();
+                this->SendHtml5Config();
                 }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
@@ -2073,6 +2162,35 @@ static bool DecodeBase64(const std::string& input, std::vector<std::uint8_t>& ou
     return true;
 }
 
+void CDataBroadcastingWV2::InitBroadcastCertificates()
+{
+    if (this->broadcastCertificateStore) return;
+    this->broadcastCertificateStore = std::make_shared<BroadcastCertificates::Store>(
+        std::filesystem::path(this->baseDirectory) / L"broadcast-root-certificates.json");
+    const auto result = this->broadcastCertificateStore->Load();
+    for (const auto& message : result.messages) this->m_pApp->AddLog(message.c_str(), TVTest::LOG_TYPE_WARNING);
+    if (result.changed) this->m_pApp->AddLog(L"保存済み放送ルート証明書を再検証して読み込みました", TVTest::LOG_TYPE_INFORMATION);
+}
+
+void CDataBroadcastingWV2::ReceiveBroadcastCertificates(const nlohmann::json& message)
+{
+    this->InitBroadcastCertificates();
+    const auto& files = message.at("certificates");
+    if (!files.is_array() || files.size() > BroadcastCertificates::kMaxRoots) return;
+    std::vector<BroadcastCertificates::Candidate> candidates;
+    for (const auto& file : files) {
+        const auto& data = file.at("dataBase64");
+        if (!data.is_string() || data.get_ref<const std::string&>().size() > 21848) return;
+        std::vector<BYTE> der;
+        if (!DecodeBase64(data.get_ref<const std::string&>(), der)) return;
+        candidates.push_back({file.at("location").get<std::string>(), message.at("moduleVersion").get<int>(),
+            message.at("dataEventId").get<int>(), std::move(der)});
+    }
+    const auto result = this->broadcastCertificateStore->Update(candidates);
+    for (const auto& text : result.messages) this->m_pApp->AddLog(text.c_str(), TVTest::LOG_TYPE_WARNING);
+    if (result.changed) this->m_pApp->AddLog(L"放送ルート証明書を指紋・自己署名・有効期限で検証し、専用ストアを更新しました", TVTest::LOG_TYPE_INFORMATION);
+}
+
 void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
 {
     auto&& typeValue = a["type"];
@@ -2081,6 +2199,10 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         return;
     }
     auto type = typeValue.get<std::string>();
+    if (type == "broadcastCertificates") { this->ReceiveBroadcastCertificates(a); return; }
+    if (type == "launchHtml5") { this->LaunchHtml5(a); return; }
+    if (type == "killHtml5") { this->StopHtml5(false); return; }
+    if (type == "html5Data") { this->PostToHtml5(a); return; }
     if (type == "captionReset")
     {
         const bool preserveCaption = this->preserveCaptionOnPageReset;
@@ -2152,18 +2274,27 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         r.top = (int)std::floor(top);
         r.bottom = (int)std::ceil(bottom);
 
-        this->invisible = invisible;
-        this->videoRect = r;
-        this->ResizeVideoWindow();
+        this->bmlInvisible = invisible;
+        this->bmlVideoRect = r;
+        if (!this->html5Active) {
+            this->invisible = invisible;
+            this->videoRect = r;
+            this->ResizeVideoWindow();
+        }
     }
     else if (type == "invisible")
     {
         auto invisible = a["invisible"].get<bool>();
-        this->invisible = invisible;
-        this->ResizeVideoWindow();
+        this->bmlInvisible = invisible;
+        if (!this->html5Active) {
+            this->invisible = invisible;
+            this->ResizeVideoWindow();
+        }
     }
     else if (type == "status")
     {
+        if (this->html5Active) return;
+        this->status.html5 = false;
         auto url = utf8StrToWString(a["url"].get<std::string>().c_str());
         auto receiving = a["receiving"].get<bool>();
         auto loading = a["loading"].get<bool>();
@@ -2779,6 +2910,15 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->StopHtml5(false);
+    this->html5Lifetime.Cancel();
+    if (this->html5Controller) this->html5Controller->Close();
+    this->html5WebView.reset();
+    this->html5Controller.reset();
+    this->html5ScriptId.clear();
+    this->hHtml5WebViewWnd = nullptr;
+    this->html5Creating = false;
+    this->html5Layered = false;
     this->preserveCaptionOnPageReset = false;
     this->lastCaptionTime.reset();
     this->oneSegCaptionOverlay.Clear();
@@ -2791,6 +2931,12 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->ServicePendingB62Files(true);
     // Cancel and drain WinHTTP callbacks while their owner and UI window exist.
     this->proxySession.reset();
+    if (this->hMessageWnd) {
+        MSG message;
+        while (PeekMessageW(&message, this->hMessageWnd, WM_APP_PROXY_DIAGNOSTIC, WM_APP_PROXY_DIAGNOSTIC, PM_REMOVE)) {
+            delete reinterpret_cast<ProxyDiagnostic*>(message.lParam);
+        }
+    }
     // 待たせていた通信は503で終わらせる (応答は下で処理する)
     this->ServiceProxyQueue(true);
     if (this->hMessageWnd) {
@@ -2957,6 +3103,12 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
         {
             this->proxySession = std::unique_ptr<ProxySession>(
                 new ProxySession(this->GetIniItem(L"IgnoreCertificateErrors", 0) != 0));
+            this->InitBroadcastCertificates();
+            this->proxySession->SetCertificateStore(this->broadcastCertificateStore);
+            this->proxySession->SetDiagnosticCallback([window = this->hMessageWnd](const ProxyDiagnostic& diagnostic) {
+                auto message = std::make_unique<ProxyDiagnostic>(diagnostic);
+                if (window && PostMessageW(window, WM_APP_PROXY_DIAGNOSTIC, 0, reinterpret_cast<LPARAM>(message.get()))) message.release();
+            });
         }
         {
             auto enableComment = this->GetIniItem(L"EnableComment", 0);
@@ -3016,6 +3168,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
 
 void CDataBroadcastingWV2::Tune()
 {
+    this->StopHtml5(false);
     if (this->webView && this->currentService.ServiceID)
     {
         this->status = {};
@@ -3743,6 +3896,8 @@ void CDataBroadcastingWV2::UpdateNetworkState()
     {
         return;
     }
+    if (!this->enableNetwork) this->StopHtml5(false);
+    this->SendHtml5Config();
     nlohmann::json msg{ { "type", "enableNetwork" }, { "enable", this->enableNetwork } };
     this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
@@ -3785,7 +3940,8 @@ static std::unordered_map<int, CommandInfo> commandList
     { IDC_KEY_7, { 12, UsedKeyType::NumericTuning, L"Channel7" } },
     { IDC_KEY_8, { 13, UsedKeyType::NumericTuning, L"Channel8" } },
     { IDC_KEY_9, { 14, UsedKeyType::NumericTuning, L"Channel9" } },
-    { IDC_KEY_10, { 15, UsedKeyType::NumericTuning, L"Channel10" } },
+    // TV remotes share the 10/0 button. Keep Channel10 as the unused-key fallback.
+    { IDC_KEY_10, { 5, UsedKeyType::NumericTuning, L"Channel10" } },
     { IDC_KEY_11, { 16, UsedKeyType::NumericTuning, L"Channel11" } },
     { IDC_KEY_12, { 17, UsedKeyType::NumericTuning, L"Channel12" } },
 };
@@ -3835,6 +3991,7 @@ void CDataBroadcastingWV2::ShowRemoteControlDialog()
 
 bool CDataBroadcastingWV2::OnCommand(int ID)
 {
+    if (this->html5Active && this->OnHtml5Command(ID)) return true;
     if (this->m_pApp->IsPluginEnabled())
     {
         switch (ID)
@@ -5459,6 +5616,7 @@ void CDataBroadcastingWV2::SendB62Application()
     }
     if (app)
     {
+        this->StopHtml5(false);
         message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
         message["organizationId"] = app->organizationId;
         message["applicationId"] = app->applicationId;
@@ -5824,3 +5982,5 @@ TVTest::CTVTestPlugin* CreatePluginClass()
 {
     return new CDataBroadcastingWV2;
 }
+
+#include "Html5Engine.inl"

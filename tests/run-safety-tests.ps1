@@ -21,6 +21,10 @@ cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTes
 if errorlevel 1 exit /b 1
 "$output\startup.exe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\BroadcastCertificateTests.cpp /Fo:"$output\broadcast-certificates.obj" /Fe:"$output\broadcast-certificates.exe" winhttp.lib ws2_32.lib
+if errorlevel 1 exit /b 1
+"$output\broadcast-certificates.exe" tests\fixtures\broadcast-certificates\Cybertrust-Japan-Private-Root.cer "$output\certificate-cache.json"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption-config" /I"TVTDataBroadcastingWV2" /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption\include" /I"TVTDataBroadcastingWV2\thirdparty\libaribcaption\src" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\OneSegCaptionOverlayTests.cpp TVTDataBroadcastingWV2\OneSegCaptionOverlay.cpp TVTDataBroadcastingWV2\thirdparty\libaribcaption\src\base\aligned_alloc.cpp /Fo:"$output\\" /Fe:"$output\oneseg-caption.exe" user32.lib gdi32.lib
 if errorlevel 1 exit /b 1
 "$output\oneseg-caption.exe"
@@ -39,3 +43,5 @@ if errorlevel 1 exit /b 1
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $batch
 if ($LASTEXITCODE -ne 0) { throw 'Native safety tests failed' }
+node (Join-Path $PSScriptRoot 'broadcast_tls.test.cjs') (Join-Path $output 'broadcast-certificates.exe')
+if ($LASTEXITCODE -ne 0) { throw 'TLS certificate policy tests failed' }

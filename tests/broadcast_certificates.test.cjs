@@ -1,0 +1,26 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const ts = require('../browser/node_modules/typescript');
+const source = fs.readFileSync(require.resolve('../browser/src/broadcast_certificates.ts'), 'utf8');
+const scope = { exports: {} };
+vm.createContext(scope);
+vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, scope);
+const sent = [], collector = new scope.exports.BroadcastCertificateCollector(m => sent.push(m));
+const der = fs.readFileSync(require.resolve('./fixtures/broadcast-certificates/Cybertrust-Japan-Private-Root.cer'));
+const message = { type: 'moduleDownloaded', componentId: 0x40, moduleId: 0xffff, version: 1, dataEventId: 2,
+  files: [{ contentType: { type: 'application', subtype: 'x-arib-rootcertificate' }, contentLocation: '0.3.4', dataBase64: der.toString('base64') }] };
+collector.accept({ ...message, componentId: 0x50 });
+collector.accept({ ...message, moduleId: 1 });
+assert.equal(sent.length, 0, 'only the certificate carousel is forwarded');
+collector.accept(message);
+collector.accept(message);
+assert.equal(sent.length, 1, 'carousel repeats are deduplicated');
+assert.equal(sent[0].certificates[0].dataBase64, der.toString('base64'));
+collector.accept({ ...message, version: 2 });
+assert.equal(sent.length, 2, 'module updates are forwarded');
+collector.accept({ ...message, files: [{ ...message.files[0], contentLocation: '../root' }] });
+collector.accept({ ...message, files: [{ ...message.files[0], dataBase64: 'a'.repeat(21849) }] });
+collector.accept({ ...message, files: Array(9).fill(message.files[0]) });
+assert.equal(sent.length, 2, 'invalid resource names and oversized updates are rejected');
+console.log('Broadcast certificate carousel routing, updates and bounds tests passed');

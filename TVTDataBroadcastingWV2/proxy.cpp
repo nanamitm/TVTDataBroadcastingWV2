@@ -113,10 +113,11 @@ void CALLBACK ProxyRequest::StaticAsyncCallback(HINTERNET hInternet, DWORD_PTR c
     catch (...) { self->Fail(); } // Never unwind through a Windows callback.
 }
 
-void ProxyRequest::Fail()
+void ProxyRequest::Fail(DWORD errorCode, LPCWSTR stage)
 {
     if (!completed) {
         completed = true;
+        try { if (diagnostic && errorCode != ERROR_OPERATION_ABORTED) diagnostic({errorCode, secureFailureFlags, tlsHost, stage}); } catch (...) {}
         callback = nullptr;
         auto error = std::exchange(errorCallback, nullptr);
         try { if (error) error(); } catch (...) {}
@@ -127,13 +128,44 @@ void ProxyRequest::Fail()
 void ProxyRequest::Cancel()
 {
     std::lock_guard lock(mutex);
-    Fail();
+    Fail(ERROR_OPERATION_ABORTED, L"cancel");
 }
 
 void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LPVOID lpvStatusInformation, DWORD dwStatusInformationLength)
 {
     switch (dwInternetStatus)
     {
+    case WINHTTP_CALLBACK_STATUS_SECURE_FAILURE:
+        if (lpvStatusInformation && dwStatusInformationLength == sizeof(DWORD))
+            secureFailureFlags = *static_cast<const DWORD*>(lpvStatusInformation);
+        break;
+    case WINHTTP_CALLBACK_STATUS_REDIRECT:
+    {
+        URL_COMPONENTSW target{sizeof(URL_COMPONENTSW)};
+        target.dwHostNameLength = static_cast<DWORD>(-1);
+        if (!lpvStatusInformation || !WinHttpCrackUrl(static_cast<LPCWSTR>(lpvStatusInformation), 0, 0, &target)) {
+            Fail(ERROR_WINHTTP_INVALID_URL, L"redirect"); return;
+        }
+        tlsHost.assign(target.lpszHostName, target.dwHostNameLength);
+        secure = target.nScheme == INTERNET_SCHEME_HTTPS;
+        break;
+    }
+    case WINHTTP_CALLBACK_STATUS_SENDING_REQUEST:
+    {
+        if (!secure || !certificateTrust) break;
+        PCCERT_CONTEXT raw = nullptr; DWORD size = sizeof(raw);
+        if (!WinHttpQueryOption(hInternet, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &raw, &size)) {
+            const DWORD error = GetLastError();
+            // An HTTPS proxy's CONNECT can precede TLS. A later callback will
+            // supply the certificate before the origin request is transmitted.
+            if (error == ERROR_WINHTTP_INCORRECT_HANDLE_STATE) break;
+            Fail(error, L"TLS/server-certificate"); return;
+        }
+        BroadcastCertificates::Certificate certificate(raw);
+        const DWORD result = certificateTrust->Verify(raw, tlsHost, raw ? raw->hCertStore : nullptr);
+        if (result != ERROR_SUCCESS) { Fail(result, L"TLS/chain-policy"); return; }
+        break;
+    }
     case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
     {
         // 名前解決やリダイレクトの後に実際につながった先を調べる
@@ -244,8 +276,8 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
     }
     case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
     {
-        auto asyncResut = (LPWINHTTP_ASYNC_RESULT*)lpvStatusInformation;
-        Fail();
+        const auto result = static_cast<const WINHTTP_ASYNC_RESULT*>(lpvStatusInformation);
+        Fail(result && dwStatusInformationLength >= sizeof(*result) ? result->dwError : ERROR_WINHTTP_INTERNAL_ERROR, L"WinHTTP");
         break;
     }
     }
@@ -312,6 +344,21 @@ bool ProxyRequest::RequestAsync
         WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
     std::shared_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload), blockPrivateAddresses));
+    preq->tlsHost = hostName;
+    preq->secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+    {
+        std::lock_guard lock(sharedState->mutex);
+        preq->diagnostic = sharedState->diagnostic;
+        if (!session.IgnoreCertificateErrors() && sharedState->certificates)
+            preq->certificateTrust = sharedState->certificates->Snapshot();
+    }
+    if (preq->certificateTrust) {
+        // Only defer the missing public trust anchor to our own verifier.
+        // SENDING_REQUEST runs after TLS and before HTTP headers/payload leave,
+        // as used by Microsoft's WinHttpHandler validation callback.
+        DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
+        if (!WinHttpSetOption(request, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags))) return false;
+    }
     for (auto&& header : headers)
     {
         auto headers = std::wstring(header.first) + L": " + header.second;
@@ -346,7 +393,8 @@ bool ProxyRequest::RequestAsync
         sharedState->requests.emplace(preq.get(), preq);
     }
     if (WinHttpSetStatusCallback(request, StaticAsyncCallback,
-        WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER | WINHTTP_CALLBACK_FLAG_HANDLES,
+        WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER | WINHTTP_CALLBACK_FLAG_HANDLES |
+        WINHTTP_CALLBACK_FLAG_SEND_REQUEST | WINHTTP_CALLBACK_FLAG_REDIRECT | WINHTTP_CALLBACK_FLAG_SECURE_FAILURE,
         0) == WINHTTP_INVALID_STATUS_CALLBACK) {
         preq->Close();
         return false;
@@ -390,6 +438,13 @@ ProxySession::ProxySession(bool ignoreCertificateErrors, ProxyLimits limits)
     // Never share a pooled BML connection with address-restricted B62 traffic.
     state->protectedSession = WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+}
+
+void ProxySession::SetCertificateStore(std::shared_ptr<BroadcastCertificates::Store> store) {
+    std::lock_guard lock(state->mutex); state->certificates = std::move(store);
+}
+void ProxySession::SetDiagnosticCallback(std::function<void(const ProxyDiagnostic&)> callback) {
+    std::lock_guard lock(state->mutex); state->diagnostic = std::move(callback);
 }
 
 bool ProxySession::IgnoreCertificateErrors() const { return ignoreCertificateErrors; }

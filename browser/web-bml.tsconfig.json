@@ -1,0 +1,8 @@
+{
+  "extends": "../web-bml/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../web-bml",
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": ["../web-bml/client/**/*.ts", "../web-bml/server/**/*.ts", "../web-bml/es2/**/*.ts"]
+}

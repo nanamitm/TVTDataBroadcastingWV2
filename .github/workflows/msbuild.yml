@@ -79,7 +79,10 @@ jobs:
 
     - name: install npm packages
       working-directory: ./browser/
-      run: npm ci
+      run: |
+        npm ci --prefix ../web-bml --ignore-scripts --workspaces=false
+        if ($LASTEXITCODE -ne 0) { throw "web-bml dependency installation failed" }
+        npm ci
 
     - name: Build web-bml
       working-directory: ./browser/
@@ -96,6 +99,8 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Comment log tests failed with exit code $LASTEXITCODE" }
         node tests/b62_application.test.cjs
         if ($LASTEXITCODE -ne 0) { throw "B62 application tests failed with exit code $LASTEXITCODE" }
+        node tests/ait_controlled_app.test.cjs
+        if ($LASTEXITCODE -ne 0) { throw "AIT application tests failed with exit code $LASTEXITCODE" }
         node tests/ttml_caption.test.cjs
         if ($LASTEXITCODE -ne 0) { throw "TTML caption tests failed with exit code $LASTEXITCODE" }
         node tests/oneseg_caption.test.cjs

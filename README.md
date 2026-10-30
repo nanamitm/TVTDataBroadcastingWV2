@@ -261,6 +261,10 @@ node browser/node_modules/typescript/bin/tsc --noEmit -p browser/tsconfig.json
 
 ### web-bmlのビルド
 
+通信時は `TVTDataBroadcastingWV2/1.0` をUser-Agentとして送信します。HTTPエラー応答はBMLとして解析せず、文書の取得・解析に失敗した場合はデータ放送画面を閉じてイベント処理を復帰します。ConsoleにはHTTPステータスとクエリを除いた取得先を記録します。
+
+`browser/loaders/bml-content-recovery.cjs` は固定したweb-bmlのビルド結果に文書遷移のエラー処理を適用します。サブモジュールのソースは変更しません。web-bml更新時に適用箇所が変わった場合はビルドを停止するため、ローダーと `tests/bml_navigation.test.cjs` を併せて確認してください。
+
 以下のコマンドでビルド
 
 ```sh

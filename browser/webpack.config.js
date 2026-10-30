@@ -20,6 +20,10 @@ module.exports = {
     module: {
         rules: [
             {
+                test: /[\\/]web-bml[\\/]dist[\\/]client[\\/]content\.js$/,
+                use: path.resolve(__dirname, 'loaders/bml-content-recovery.cjs'),
+            },
+            {
                 test: /\.ts$/,
                 use: 'ts-loader',
             },

@@ -174,6 +174,25 @@ jkcnsl(nanamitm版)の`cache_server_url`を設定すると、ニコニコ実況�
 - 通信機能を有効にすると (`EnableNetwork=1`、または実行中の切り替え)、アプリケーションの http/https の通信もプラグインが代わりに行い、CORS のヘッダーを付けて返します。無効のときはすべて遮断します。
 - 通信で配信されるアプリケーション (MH-AIT の伝送プロトコルが HTTP、BSテレ東4K など) は、通信機能が有効なときだけ起動します。ファイルは配信元のサーバーからプラグインが代わりに取得し、放送で配信されるものと同じオリジンで動かします。
 
+## ハイブリッドキャスト (フォーク独自機能・実験的)
+
+BMLからの `startReceivingAIT` / `getReceivedAIT` / `startAITControlledApp` によるXML-AITの取得・HTML5アプリ起動と、TSのAIT (`table_id=0x74`) によるAUTOSTARTに対応します。HTML5アプリはBMLと別のWebView2で表示し、放送映像の位置、リモコンキー、現在/次の番組情報、イベントメッセージ、BMLのNVRAM/Greg共有、アプリの置換・終了を扱います。
+
+```ini
+[TVTDataBroadcastingWV2]
+EnableNetwork=1
+EnableHybridcast=1
+AutoStartBroadcastAIT=1
+```
+
+`EnableHybridcast` と `AutoStartBroadcastAIT` の既定値は1です。通信機能は従来どおり既定で無効です。通信を無効にするとHTML5アプリも終了します。放送時刻が現在から5分以上古い録画、ワンセグ、BS4Kアプリの受信中・表示中には起動しません。BS4Kは従来のD4KA/TS受信とiframe、TTML字幕・EMT・UTC-NPTの経路を使い続け、`DB4K_*`を持つBonDriverは必要ありません。
+
+HTML5アプリの終了時はBMLに戻ります。AITのKILL/DESTROY/DISABLEDや、放送AITからのアプリ削除でも終了します。`AutoStartBroadcastAIT=0`で放送AITによる自動起動だけを無効にできます。`Html5Debug=1`でHTML5側のコンテキストメニューとログを有効にでき、開発者ツール・再読み込みのコマンドは表示中のHTML5へ送られます。User-Agentは`Html5UserAgent`、キーコードとキー集合は`Html5KeyCodes` / `Html5KeySetValues`で上書きできます。
+
+受信機APIは部分的なエミュレーションです。CASカードIDは取得せず、`getDeviceIdentifier`はnullを返します。VODやスマートデバイス連携、局ごとの実放送での動作を保証するものではありません。
+
+この機能とAIT拡張web-bmlは [SomeDena786/TVTDataBroadcastingHybrid](https://github.com/SomeDena786/TVTDataBroadcastingHybrid) の実装を基にしています (MIT、`LICENSE.Hybrid.txt`)。
+
 ## 制約
 
 おおよそ実装されていますが一部のAPI、イベント、要素は未実装です。
@@ -186,13 +205,21 @@ jkcnsl(nanamitm版)の`cache_server_url`を設定すると、ニコニコ実況�
 
 Visual C++ 2022が必要(2019でもおそらく可能)
 
-サブモジュール（libaribcaptionとdantto4k）を取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
+サブモジュール（libaribcaption、dantto4k、AIT拡張web-bml）を取得し、NuGetパッケージを復元してTVTDataBroadcastingWV2.slnをビルド
 
 ```sh
 git submodule update --init
 ```
 
-dantto4kはTTMLのパーサだけを使うので、その中のサブモジュール (tsduck、asio) は要りません (`--recursive`でも構いませんが、取得に時間がかかります)。browser以下のnpmパッケージとサブモジュールは別々に取得します。
+dantto4kはTTMLのパーサだけを使うので、その中のサブモジュール (tsduck、asio) は要りません (`--recursive`でも構いませんが、取得に時間がかかります)。ブラウザ側は次の順序でビルドします。
+
+```powershell
+npm ci --prefix web-bml --ignore-scripts --workspaces=false
+npm ci --prefix browser
+npm run build --prefix browser
+```
+
+`npm run build`の前処理で、固定したweb-bmlもコンパイルします。webpackではプラグイン側で管理する更新済みXMLパーサを使います。配置時は従来の`TVTDataBroadcastingWV2.js`に加えて、`browser/dist/aribhtml5_runtime.js`も`Plugins/TVTDataBroadcastingWV2/resources/dist/`へコピーしてください。
 
 ビルドの前に`tools/generate-version-header.ps1`が`git describe --tags --always --dirty`の結果 (例: `v20261015e-2-gfe95995`) を`TVTDataBroadcastingWV2Version.h`に書き出します (コミットしないファイルです)。この版はTVTestのプラグインの一覧の説明と、.tvtpのファイルのプロパティ (詳細タブ) で確認できます。gitが無い環境では`unknown`になります。
 

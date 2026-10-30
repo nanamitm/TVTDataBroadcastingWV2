@@ -129,6 +129,7 @@ struct Status
     std::wstring url;
     bool receiving = false;
     bool loading = false;
+    bool html5 = false;
 };
 
 struct PacketQueue
@@ -416,6 +417,56 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     std::atomic<bool> webViewLoaded;
     PacketQueue packetQueue;
     std::vector<WCHAR> packetsToJsonBuf;
+    // ARIB-HTML5 (Hybridcast/BS4K) アプリケーションエンジン
+    wil::com_ptr<ICoreWebView2Controller> html5Controller;
+    wil::com_ptr<ICoreWebView2> html5WebView;
+    HWND hHtml5WebViewWnd = nullptr;
+    bool html5Enabled = false;
+    bool html5Active = false;
+    bool html5Creating = false;
+    bool html5Pending = false;
+    bool html5PreviousMute = false;
+    bool html5Unmanaged = false;
+    bool html5Layered = false;
+    nlohmann::json html5Launch;
+    std::wstring html5ScriptId;
+    std::string html5RuntimeScript;
+    int html5DocWidth = 1920;
+    int html5DocHeight = 1080;
+    RECT html5Bounds = {};
+    struct
+    {
+        bool red = true, green = true, yellow = true, blue = true, navigation = true, numeric = false, vcr = false, dbutton = true;
+    } html5KeySet;
+    // BML側の映像位置 (HTML5エンジン終了時に戻す)
+    RECT bmlVideoRect = {};
+    bool bmlInvisible = false;
+    std::map<std::string, std::string> html5Storage;
+    bool html5StorageLoaded = false;
+    void InitHtml5();
+    void SendHtml5Config();
+    // ステータスバーに表示するHTML5文書を設定する
+    void SetHtml5Status(LPCWSTR uri, bool loading);
+    void LaunchHtml5(const nlohmann::json& launch);
+    void CreateHtml5WebView();
+    void NavigateHtml5();
+    void StopHtml5(bool reloadBML);
+    void UpdateHtml5Bounds();
+    void OnHtml5WebMessage(const nlohmann::json& message);
+    HRESULT OnHtml5WebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
+    void PostToHtml5(const nlohmann::json& message);
+    bool OnHtml5Command(int ID);
+    std::string BuildHtml5ConfigScript();
+    void TuneToService(int originalNetworkId, int transportStreamId, int serviceId);
+    nlohmann::json HandleHtml5NativeRPC(const std::string& method, const nlohmann::json& params, bool& handled);
+    void LoadHtml5Storage();
+    void SaveHtml5Storage();
+    bool html5Muted = false;
+    nlohmann::json html5LastVideo;
+    double html5Scale = 0;
+    void ApplyHtml5Video();
+
+    AsyncLifetime html5Lifetime;
     // 4K data broadcasting (ARIB STD-B62) carried by BonDriver_dantto4k
     B62::AppReceiver b62Receiver;
     // WebView2がアプリケーションのiframe内のリクエストを横取りできるか
@@ -1145,6 +1196,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                     {
                         pThis->containerRect = rect;
                         pThis->webViewController->put_Bounds(rect);
+                        pThis->UpdateHtml5Bounds();
                     }
                 }
                 if (!pThis->invisible)
@@ -1178,6 +1230,7 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
                     if (memcmp(&prev, &rect, sizeof(prev)))
                     {
                         pThis->webViewController->put_Bounds(rect);
+                        pThis->UpdateHtml5Bounds();
                     }
                 }
             }
@@ -1565,7 +1618,7 @@ void CDataBroadcastingWV2::OnFilterGraphInitialized(TVTest::FilterGraphInfo* pIn
                 {
                     continue;
                 }
-                if (hWnd == hWebViewWnd)
+                if (hWnd == hWebViewWnd || hWnd == this->hHtml5WebViewWnd)
                 {
                     continue;
                 }
@@ -1606,6 +1659,7 @@ void CDataBroadcastingWV2::OnFilterGraphFinalize(TVTest::FilterGraphInfo* pInfo)
 
 void CDataBroadcastingWV2::InitWebView2()
 {
+    this->InitHtml5();
     if (!this->hContainerWnd)
     {
         this->deferWebView = true;
@@ -1926,6 +1980,7 @@ void CDataBroadcastingWV2::InitWebView2()
                 if (this->proxySession)
                 {
                     this->UpdateNetworkState();
+                this->SendHtml5Config();
                 }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
@@ -2081,6 +2136,9 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         return;
     }
     auto type = typeValue.get<std::string>();
+    if (type == "launchHtml5") { this->LaunchHtml5(a); return; }
+    if (type == "killHtml5") { this->StopHtml5(false); return; }
+    if (type == "html5Data") { this->PostToHtml5(a); return; }
     if (type == "captionReset")
     {
         const bool preserveCaption = this->preserveCaptionOnPageReset;
@@ -2152,18 +2210,27 @@ void CDataBroadcastingWV2::OnWebMessage(nlohmann::json& a)
         r.top = (int)std::floor(top);
         r.bottom = (int)std::ceil(bottom);
 
-        this->invisible = invisible;
-        this->videoRect = r;
-        this->ResizeVideoWindow();
+        this->bmlInvisible = invisible;
+        this->bmlVideoRect = r;
+        if (!this->html5Active) {
+            this->invisible = invisible;
+            this->videoRect = r;
+            this->ResizeVideoWindow();
+        }
     }
     else if (type == "invisible")
     {
         auto invisible = a["invisible"].get<bool>();
-        this->invisible = invisible;
-        this->ResizeVideoWindow();
+        this->bmlInvisible = invisible;
+        if (!this->html5Active) {
+            this->invisible = invisible;
+            this->ResizeVideoWindow();
+        }
     }
     else if (type == "status")
     {
+        if (this->html5Active) return;
+        this->status.html5 = false;
         auto url = utf8StrToWString(a["url"].get<std::string>().c_str());
         auto receiving = a["receiving"].get<bool>();
         auto loading = a["loading"].get<bool>();
@@ -2779,6 +2846,15 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->StopHtml5(false);
+    this->html5Lifetime.Cancel();
+    if (this->html5Controller) this->html5Controller->Close();
+    this->html5WebView.reset();
+    this->html5Controller.reset();
+    this->html5ScriptId.clear();
+    this->hHtml5WebViewWnd = nullptr;
+    this->html5Creating = false;
+    this->html5Layered = false;
     this->preserveCaptionOnPageReset = false;
     this->lastCaptionTime.reset();
     this->oneSegCaptionOverlay.Clear();
@@ -3016,6 +3092,7 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
 
 void CDataBroadcastingWV2::Tune()
 {
+    this->StopHtml5(false);
     if (this->webView && this->currentService.ServiceID)
     {
         this->status = {};
@@ -3743,6 +3820,8 @@ void CDataBroadcastingWV2::UpdateNetworkState()
     {
         return;
     }
+    if (!this->enableNetwork) this->StopHtml5(false);
+    this->SendHtml5Config();
     nlohmann::json msg{ { "type", "enableNetwork" }, { "enable", this->enableNetwork } };
     this->webView->PostWebMessageAsJson(jsonToWString(msg).c_str());
 }
@@ -3835,6 +3914,7 @@ void CDataBroadcastingWV2::ShowRemoteControlDialog()
 
 bool CDataBroadcastingWV2::OnCommand(int ID)
 {
+    if (this->html5Active && this->OnHtml5Command(ID)) return true;
     if (this->m_pApp->IsPluginEnabled())
     {
         switch (ID)
@@ -5459,6 +5539,7 @@ void CDataBroadcastingWV2::SendB62Application()
     }
     if (app)
     {
+        this->StopHtml5(false);
         message["url"] = wstrToUTF8String(B62::kAppOrigin) + "/" + app->entryPath;
         message["organizationId"] = app->organizationId;
         message["applicationId"] = app->applicationId;
@@ -5824,3 +5905,5 @@ TVTest::CTVTestPlugin* CreatePluginClass()
 {
     return new CDataBroadcastingWV2;
 }
+
+#include "Html5Engine.inl"

@@ -181,6 +181,12 @@ export class AITControlledAppHost implements AITControlledApp {
         this.generation++;
     }
 
+    public invalidateDocument() {
+        this.entries.clear();
+        this.activeDocument = null;
+        this.generation++;
+    }
+
     public getBroadcastAIT(): Html5AIT | null {
         return this.broadcastAIT;
     }

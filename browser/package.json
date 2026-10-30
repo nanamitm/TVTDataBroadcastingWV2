@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "license": "MIT",
   "dependencies": {
+    "fast-xml-parser": "^5.11.2",
     "web-bml": "file:../web-bml",
     "web-bml-fonts": "^1.0.0"
   },
@@ -20,7 +21,7 @@
     "webpack-cli": "^4.10.0"
   },
   "overrides": {
-    "fast-xml-parser": "^5.11.0"
+    "fast-xml-parser": "$fast-xml-parser"
   },
   "private": true
 }

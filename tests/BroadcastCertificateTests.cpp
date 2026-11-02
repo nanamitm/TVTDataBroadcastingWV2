@@ -45,6 +45,16 @@ int wmain(int argc, wchar_t** argv) {
     std::filesystem::remove(path);
     auto cert = Decode(root);
     check(cert && SHA256(cert.get()) == kCybertrustSHA256, "broadcast root matches verified official pin");
+    {
+        Store unpinned(std::filesystem::path(), std::vector<std::string>{});
+        auto rejected = unpinned.Update({{"0.3.4", 1, 2, root}});
+        check(rejected.changed == 0 && rejected.messages.empty() && rejected.notices.size() == 1 && !unpinned.Snapshot(), "unknown fingerprint is noted but never trusted");
+        check(rejected.notices[0].find(L"Subject: ") != std::wstring::npos && rejected.notices[0].find(L"Cybertrust") != std::wstring::npos &&
+            rejected.notices[0].find(std::wstring(kCybertrustSHA256, kCybertrustSHA256 + 64)) != std::wstring::npos, "notice identifies the certificate");
+        auto malformed = root; malformed.push_back(0);
+        auto invalid = unpinned.Update({{"0.3.4", 1, 2, malformed}});
+        check(invalid.messages.size() == 1 && invalid.notices.empty() && !unpinned.Snapshot(), "malformed certificate stays a warning");
+    }
     Store store(path);
     check(!store.Snapshot(), "empty store has no private trust");
     auto accepted = store.Update({{"0.3.4", 1, 2, root}});

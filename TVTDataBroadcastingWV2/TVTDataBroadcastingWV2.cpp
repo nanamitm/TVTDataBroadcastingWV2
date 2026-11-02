@@ -2169,6 +2169,7 @@ void CDataBroadcastingWV2::InitBroadcastCertificates()
         std::filesystem::path(this->baseDirectory) / L"broadcast-root-certificates.json");
     const auto result = this->broadcastCertificateStore->Load();
     for (const auto& message : result.messages) this->m_pApp->AddLog(message.c_str(), TVTest::LOG_TYPE_WARNING);
+    for (const auto& notice : result.notices) this->m_pApp->AddLog(notice.c_str(), TVTest::LOG_TYPE_INFORMATION);
     if (result.changed) this->m_pApp->AddLog(L"保存済み放送ルート証明書を再検証して読み込みました", TVTest::LOG_TYPE_INFORMATION);
 }
 
@@ -2188,6 +2189,7 @@ void CDataBroadcastingWV2::ReceiveBroadcastCertificates(const nlohmann::json& me
     }
     const auto result = this->broadcastCertificateStore->Update(candidates);
     for (const auto& text : result.messages) this->m_pApp->AddLog(text.c_str(), TVTest::LOG_TYPE_WARNING);
+    for (const auto& text : result.notices) this->m_pApp->AddLog(text.c_str(), TVTest::LOG_TYPE_INFORMATION);
     if (result.changed) this->m_pApp->AddLog(L"放送ルート証明書を指紋・自己署名・有効期限で検証し、専用ストアを更新しました", TVTest::LOG_TYPE_INFORMATION);
 }
 

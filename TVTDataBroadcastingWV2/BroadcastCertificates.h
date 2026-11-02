@@ -72,7 +72,7 @@ struct Candidate {
     int dataEventId = 0;
     std::vector<BYTE> der;
 };
-struct UpdateResult { size_t changed = 0; std::vector<std::wstring> messages; };
+struct UpdateResult { size_t changed = 0; std::vector<std::wstring> messages; std::vector<std::wstring> notices; };
 
 class Trust {
     HCERTSTORE roots = nullptr;
@@ -130,7 +130,7 @@ class Store {
     const std::vector<std::string> pins;
     std::map<std::string, Candidate> accepted;
     std::shared_ptr<const Trust> trust;
-    std::string Validate(const Candidate& candidate, std::wstring& error) const {
+    std::string Validate(const Candidate& candidate, std::wstring& error, bool& unpinned) const {
         if (candidate.location.empty() || candidate.location.size() > 64 ||
             candidate.location.find_first_not_of("0123456789.") != std::string::npos ||
             candidate.moduleVersion < 0 || candidate.moduleVersion > 255 || candidate.dataEventId < 0 || candidate.dataEventId > 15) {
@@ -140,7 +140,8 @@ class Store {
         if (!cert) { error = L"DER証明書の形式またはサイズが不正"; return {}; }
         const auto hash = SHA256(cert.get());
         if (std::find(pins.begin(), pins.end(), hash) == pins.end()) {
-            error = L"事前許可されていないルート指紋: " + std::wstring(hash.begin(), hash.end()) +
+            unpinned = true;
+            error = L"指紋: " + std::wstring(hash.begin(), hash.end()) +
                 L" / Subject: " + NameForLog(cert->pCertInfo->Subject) + L" / Issuer: " + NameForLog(cert->pCertInfo->Issuer);
             return {};
         }
@@ -195,7 +196,9 @@ public:
         std::lock_guard lock(mutex);
         for (const auto& c : candidates) {
             std::wstring error;
-            const auto hash = Validate(c, error);
+            bool unpinned = false;
+            const auto hash = Validate(c, error, unpinned);
+            if (unpinned) { result.notices.push_back(L"放送ルート証明書を取得 (未許可のため信頼に使用しません): " + error); continue; }
             if (hash.empty()) { result.messages.push_back(L"放送ルート証明書を拒否: " + error); continue; }
             auto found = accepted.find(hash);
             if (found != accepted.end() && found->second.location == c.location && found->second.moduleVersion == c.moduleVersion && found->second.dataEventId == c.dataEventId) continue;

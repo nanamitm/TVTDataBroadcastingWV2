@@ -128,6 +128,7 @@ jobs:
           copy LICENSE.libaribcaption.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.libaribcaption.txt
           copy LICENSE.dantto4k.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.dantto4k.txt
           copy LICENSE.Hybrid.txt artifact/$dir/TVTDataBroadcastingWV2-LICENSE.Hybrid.txt
+          copy TVTDataBroadcastingWV2/remote/LICENSE artifact/$dir/TVTDataBroadcastingWV2-LICENSE.remote.txt
           copy README.md artifact/$dir/TVTDataBroadcastingWV2-README.txt
           copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp artifact/$dir/ || copy $env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp artifact/$dir/
           mkdir artifact/$dir/TVTDataBroadcastingWV2/resources/dist/

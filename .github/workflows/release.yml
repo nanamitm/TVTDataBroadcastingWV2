@@ -78,7 +78,11 @@ jobs:
 
     - name: Install npm packages
       working-directory: ./browser/
-      run: npm ci
+      run: |
+        npm ci --prefix ../web-bml --ignore-scripts --workspaces=false
+        if ($LASTEXITCODE -ne 0) { throw "web-bml dependency installation failed" }
+        npm ci
+        if ($LASTEXITCODE -ne 0) { throw "browser dependency installation failed" }
 
     - name: Build web-bml
       working-directory: ./browser/
@@ -126,10 +130,13 @@ jobs:
         copy LICENSE.nlohmann.json.txt "$name/TVTDataBroadcastingWV2-LICENSE.json.txt"
         copy LICENSE.libaribcaption.txt "$name/TVTDataBroadcastingWV2-LICENSE.libaribcaption.txt"
         copy LICENSE.dantto4k.txt "$name/TVTDataBroadcastingWV2-LICENSE.dantto4k.txt"
+        copy LICENSE.Hybrid.txt "$name/TVTDataBroadcastingWV2-LICENSE.Hybrid.txt"
+        copy TVTDataBroadcastingWV2/remote/LICENSE "$name/TVTDataBroadcastingWV2-LICENSE.remote.txt"
         copy README.md "$name/TVTDataBroadcastingWV2-README.txt"
         copy -ErrorAction:SilentlyContinue Release/TVTDataBroadcastingWV2.tvtp $name/ || copy "$env:PLATFORM/Release/TVTDataBroadcastingWV2.tvtp" $name/
         mkdir "$name/TVTDataBroadcastingWV2/resources/dist"
         copy browser/dist/TVTDataBroadcastingWV2.js "$name/TVTDataBroadcastingWV2/resources/dist/"
+        copy browser/dist/aribhtml5_runtime.js "$name/TVTDataBroadcastingWV2/resources/dist/"
         copy browser/node_modules/web-bml-fonts/*.woff2 "$name/TVTDataBroadcastingWV2/resources/dist/"
         copy browser/node_modules/web-bml-fonts/LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/fonts-LICENSE.txt"
         copy browser/dist/TVTDataBroadcastingWV2.js.LICENSE.txt "$name/TVTDataBroadcastingWV2/resources/dist/"

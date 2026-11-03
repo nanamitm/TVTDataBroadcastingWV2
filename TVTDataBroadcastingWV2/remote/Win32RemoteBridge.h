@@ -36,7 +36,7 @@ private:
         const auto state = m_state();
         if (state != m_lastState) {
             m_agent.UpdateState(state.value("name", "TVTest"), state.value("channel", ""),
-                state.value("enabled", false), state.value("mode", "bml"));
+                state.value("enabled", false), state.value("mode", "bml"), state.value("targetToken", ""));
             m_lastState = state;
         }
         m_lastRefresh = GetTickCount64();

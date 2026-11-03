@@ -24,11 +24,11 @@ public:
     Agent(const Agent&) = delete;
     Agent& operator=(const Agent&) = delete;
     ~Agent() { Stop(); }
-    void UpdateState(std::string name, std::string channel, bool enabled, std::string mode) {
+    void UpdateState(std::string name, std::string channel, bool enabled, std::string mode, std::string targetToken = {}) {
         std::lock_guard lock(m_mutex);
         m_state = {{"v", 1}, {"type", "state"}, {"name", std::move(name)},
             {"channel", std::move(channel)}, {"enabled", enabled}, {"mode", std::move(mode)},
-            {"pid", GetCurrentProcessId()}};
+            {"pid", GetCurrentProcessId()}, {"targetToken", std::move(targetToken)}};
         ++m_stateVersion;
     }
     bool Start(const std::wstring& name = L"TVTDataBroadcastingRemote-v1") {

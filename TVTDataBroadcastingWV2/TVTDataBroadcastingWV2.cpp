@@ -42,6 +42,7 @@
 #include "B62AppReceiver.h"
 #include "B62Shim.h"
 #include "remote/Win32RemoteBridge.h"
+#include "remote/TargetIdentity.h"
 #include <shellapi.h>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
@@ -1088,11 +1089,16 @@ bool CDataBroadcastingWV2::Initialize()
     }
     if (this->GetIniItem(L"EnableRemoteBridge", 0))
     {
+        std::wstring token;
+        if (!TvtRemote::LoadOrCreateTargetToken(this->iniFile, token))
+            this->m_pApp->AddLog(L"操作先識別トークンを保存・読み込みできません。プラグイン設定を確認してください", TVTest::LOG_TYPE_ERROR);
         const bool started = this->remoteBridge.Start(g_hinstDLL,
             [this]() -> nlohmann::json {
                 auto name = this->GetIniItem(L"RemoteName", L"");
                 if (name.empty()) name = L"TVTest (" + std::to_wstring(GetCurrentProcessId()) + L")";
-                return {{"name", wstrToUTF8String(name.c_str())},
+                auto token = this->GetIniItem(L"RemoteTargetToken", L"");
+                if (!TvtRemote::ValidTargetToken(token)) token.clear();
+                return {{"targetToken", wstrToUTF8String(token.c_str())}, {"name", wstrToUTF8String(name.c_str())},
                     {"channel", wstrToUTF8String(this->currentService.szServiceName)},
                     {"enabled", this->m_pApp->IsPluginEnabled()},
                     {"mode", this->html5Active ? "html5" : (this->currentServiceIsOneSeg ? "oneseg" : "bml")}};
@@ -4469,6 +4475,10 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
     switch (uMsg) {
     case WM_INITDIALOG:
     {
+        std::wstring token;
+        TvtRemote::LoadOrCreateTargetToken(pThis->iniFile, token);
+        SendDlgItemMessageW(hDlg, IDC_EDIT_REMOTE_TARGET_TOKEN, EM_SETLIMITTEXT, 64, 0);
+        SetDlgItemTextW(hDlg, IDC_EDIT_REMOTE_TARGET_TOKEN, token.c_str());
         if (pThis->GetIniItem(L"DisableRemoteControl", 0))
         {
             SendDlgItemMessageW(hDlg, IDC_CHECK_DISABLE_REMOTECON, BM_SETCHECK, BST_CHECKED, 0);
@@ -4503,6 +4513,17 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
         {
             if (LOWORD(wParam) == IDOK)
             {
+                wchar_t token[65]{};
+                GetDlgItemTextW(hDlg, IDC_EDIT_REMOTE_TARGET_TOKEN, token, 65);
+                if (!TvtRemote::ValidTargetToken(token)) {
+                    MessageBoxW(hDlg, L"操作先識別トークンは半角英数字と . _ - の1～64文字で指定してください。", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
+                    SetFocus(GetDlgItem(hDlg, IDC_EDIT_REMOTE_TARGET_TOKEN));
+                    return 1;
+                }
+                if (!pThis->SetIniItem(L"RemoteTargetToken", token)) {
+                    MessageBoxW(hDlg, L"操作先識別トークンを保存できませんでした。", L"TVTDataBroadcastingWV2の設定", MB_ICONERROR | MB_OK);
+                    return 1;
+                }
                 auto disableRemoteControl = SendDlgItemMessageW(hDlg, IDC_CHECK_DISABLE_REMOTECON, BM_GETCHECK, 0, 0);
                 if (!pThis->SetIniItem(L"DisableRemoteControl", disableRemoteControl ? L"1" : L"0"))
                 {

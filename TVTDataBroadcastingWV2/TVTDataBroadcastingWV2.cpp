@@ -41,6 +41,7 @@
 #include "CommentLogReader.h"
 #include "B62AppReceiver.h"
 #include "B62Shim.h"
+#include "remote/Win32RemoteBridge.h"
 #include <shellapi.h>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
@@ -517,6 +518,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     HWND hViewWnd = nullptr;
     HWND hContainerWnd = nullptr;
     HWND hMessageWnd = nullptr;
+    TvtRemote::Win32Bridge remoteBridge;
     HWND hOneSegWnd = nullptr;
     HBRUSH   hbrPanelBack   = nullptr;
     COLORREF panelBackColor = RGB(0xF0, 0xF0, 0xF0);
@@ -1084,11 +1086,40 @@ bool CDataBroadcastingWV2::Initialize()
         this->CreateMessageWindow();
         PostMessageW(this->hMessageWnd, WM_APP_ENABLE_PLUGIN, 0, 0);
     }
+    if (this->GetIniItem(L"EnableRemoteBridge", 0))
+    {
+        const bool started = this->remoteBridge.Start(g_hinstDLL,
+            [this]() -> nlohmann::json {
+                auto name = this->GetIniItem(L"RemoteName", L"");
+                if (name.empty()) name = L"TVTest (" + std::to_wstring(GetCurrentProcessId()) + L")";
+                return {{"name", wstrToUTF8String(name.c_str())},
+                    {"channel", wstrToUTF8String(this->currentService.szServiceName)},
+                    {"enabled", this->m_pApp->IsPluginEnabled()},
+                    {"mode", this->html5Active ? "html5" : (this->currentServiceIsOneSeg ? "oneseg" : "bml")}};
+            },
+            [this](const std::string& key) {
+                static const std::unordered_map<std::string, int> commands = {
+                    {"data", IDC_KEY_D_OR_ENABLE_PLUGIN}, {"up", IDC_KEY_UP}, {"down", IDC_KEY_DOWN},
+                    {"left", IDC_KEY_LEFT}, {"right", IDC_KEY_RIGHT}, {"enter", IDC_KEY_ENTER},
+                    {"back", IDC_KEY_BACK}, {"blue", IDC_KEY_BLUE}, {"red", IDC_KEY_RED},
+                    {"green", IDC_KEY_GREEN}, {"yellow", IDC_KEY_YELLOW}, {"0", IDC_KEY_0},
+                    {"1", IDC_KEY_1}, {"2", IDC_KEY_2}, {"3", IDC_KEY_3}, {"4", IDC_KEY_4},
+                    {"5", IDC_KEY_5}, {"6", IDC_KEY_6}, {"7", IDC_KEY_7}, {"8", IDC_KEY_8},
+                    {"9", IDC_KEY_9}, {"10", IDC_KEY_10}, {"11", IDC_KEY_11}, {"12", IDC_KEY_12}};
+                const auto command = commands.find(key);
+                if (command == commands.end()) return false;
+                if (key != "data" && (!this->m_pApp->IsPluginEnabled()
+                    || (!this->html5Active && (!this->webView || !this->webViewLoaded)))) return false;
+                return this->OnCommand(command->second);
+            }, this->GetIniItem(L"RemotePipeName", L"TVTDataBroadcastingRemote-v1"));
+        if (!started) this->m_pApp->AddLog(L"リモコン中継サーバー用の接続部を初期化できませんでした", TVTest::LOG_TYPE_ERROR);
+    }
     return true;
 }
 
 bool CDataBroadcastingWV2::Finalize()
 {
+    this->remoteBridge.Stop();
     this->Disable(true);
     return true;
 }

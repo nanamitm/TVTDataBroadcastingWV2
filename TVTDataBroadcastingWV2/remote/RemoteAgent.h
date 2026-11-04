@@ -19,16 +19,26 @@
 namespace TvtRemote {
 class Agent {
 public:
-    struct Command { std::string request, key; std::uint64_t generation = 0; std::int64_t expires = 0; };
+    // A key command has `key` set. A control command (0.5.0+) has `control`
+    // (e.g. "caption", "volume", "mute") and its `value` instead.
+    struct Command {
+        std::string request, key, control; nlohmann::json value;
+        std::uint64_t generation = 0; std::int64_t expires = 0;
+    };
     Agent() = default;
     Agent(const Agent&) = delete;
     Agent& operator=(const Agent&) = delete;
     ~Agent() { Stop(); }
-    void UpdateState(std::string name, std::string channel, bool enabled, std::string mode, std::string targetToken = {}) {
+    // `controls` is an object of supported controls and their current values,
+    // e.g. {"caption":true,"volume":40,"mute":false}. The broker forwards only
+    // advertised controls, so omit it if the plugin cannot handle them.
+    void UpdateState(std::string name, std::string channel, bool enabled, std::string mode,
+                     std::string targetToken = {}, nlohmann::json controls = nullptr) {
         std::lock_guard lock(m_mutex);
         m_state = {{"v", 1}, {"type", "state"}, {"name", std::move(name)},
             {"channel", std::move(channel)}, {"enabled", enabled}, {"mode", std::move(mode)},
             {"pid", GetCurrentProcessId()}, {"targetToken", std::move(targetToken)}};
+        if (controls.is_object()) m_state["controls"] = std::move(controls);
         ++m_stateVersion;
     }
     bool Start(const std::wstring& name = L"TVTDataBroadcastingRemote-v1") {
@@ -97,12 +107,23 @@ private:
         if (!o.is_object() || !o.contains("v") || o["v"] != 1 || !o.contains("type") || !o["type"].is_string()) return false;
         const auto type = o["type"].get<std::string>();
         if (type == "registered") return true;
-        if (type != "key" || !o.contains("request") || !o["request"].is_string()
-            || !o.contains("key") || !o["key"].is_string() || !o.contains("expires") || !o["expires"].is_number()) return false;
+        const bool control = type == "control";
+        if ((type != "key" && !control) || !o.contains("request") || !o["request"].is_string()
+            || !o.contains("expires") || !o["expires"].is_number()) return false;
         Command command;
-        command.request = o["request"].get<std::string>(); command.key = o["key"].get<std::string>();
+        if (control) {
+            if (!o.contains("name") || !o["name"].is_string() || !o.contains("value")
+                || !(o["value"].is_boolean() || o["value"].is_number_integer())) return false;
+            command.control = o["name"].get<std::string>(); command.value = o["value"];
+            if (command.control.empty() || command.control.size() > 32) return false;
+        } else {
+            if (!o.contains("key") || !o["key"].is_string()) return false;
+            command.key = o["key"].get<std::string>();
+            if (command.key.size() > 16) return false;
+        }
+        command.request = o["request"].get<std::string>();
         command.expires = o["expires"].get<std::int64_t>();
-        if (command.request.size() > 64 || command.key.size() > 16 || command.expires > Now() + 5000) return false;
+        if (command.request.size() > 64 || command.expires > Now() + 5000) return false;
         std::lock_guard lock(m_mutex);
         if (m_commands.size() >= 16) return false;
         command.generation = m_generation; m_commands.push_back(std::move(command)); return true;

@@ -1101,7 +1101,11 @@ bool CDataBroadcastingWV2::Initialize()
                 return {{"targetToken", wstrToUTF8String(token.c_str())}, {"name", wstrToUTF8String(name.c_str())},
                     {"channel", wstrToUTF8String(this->currentService.szServiceName)},
                     {"enabled", this->m_pApp->IsPluginEnabled()},
-                    {"mode", this->html5Active ? "html5" : (this->currentServiceIsOneSeg ? "oneseg" : "bml")}};
+                    {"mode", this->html5Active ? "html5" : (this->currentServiceIsOneSeg ? "oneseg" : "bml")},
+                    // 字幕・音量はデータ放送の表示状態に関係なく操作できる
+                    {"controls", {{"caption", this->caption},
+                        {"volume", std::clamp(this->m_pApp->GetVolume(), 0, MAX_VOLUME)},
+                        {"mute", this->m_pApp->GetMute()}}}};
             },
             [this](const std::string& key) {
                 static const std::unordered_map<std::string, int> commands = {
@@ -1117,6 +1121,20 @@ bool CDataBroadcastingWV2::Initialize()
                 if (key != "data" && (!this->m_pApp->IsPluginEnabled()
                     || (!this->html5Active && (!this->webView || !this->webViewLoaded)))) return false;
                 return this->OnCommand(command->second);
+            },
+            [this](const std::string& name, const nlohmann::json& value) {
+                if (name == "caption" && value.is_boolean()) {
+                    if (value.get<bool>() != this->caption) this->SetCaptionState(value.get<bool>());
+                    return true;
+                }
+                if (name == "mute" && value.is_boolean())
+                    return this->m_pApp->SetMute(value.get<bool>());
+                if (name == "volume" && value.is_number_integer()) {
+                    const auto volume = value.get<std::int64_t>();
+                    if (volume < 0 || volume > MAX_VOLUME) return false;
+                    return this->m_pApp->SetVolume(static_cast<int>(volume));
+                }
+                return false;
             }, this->GetIniItem(L"RemotePipeName", L"TVTDataBroadcastingRemote-v1"));
         if (!started) this->m_pApp->AddLog(L"リモコン中継サーバー用の接続部を初期化できませんでした", TVTest::LOG_TYPE_ERROR);
     }

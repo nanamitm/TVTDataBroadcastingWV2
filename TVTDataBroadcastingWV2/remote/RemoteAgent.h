@@ -15,14 +15,17 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace TvtRemote {
 class Agent {
 public:
     // A key command has `key` set. A control command (0.5.0+) has `control`
-    // (e.g. "caption", "volume", "mute") and its `value` instead.
+    // (e.g. "caption", "volume", "mute", "channel") and its `value` instead.
+    // A channel-list request (0.6.0+) has `channels` set and is answered with
+    // Reply().
     struct Command {
-        std::string request, key, control; nlohmann::json value;
+        std::string request, key, control; nlohmann::json value; bool channels = false;
         std::uint64_t generation = 0; std::int64_t expires = 0;
     };
     Agent() = default;
@@ -71,7 +74,21 @@ public:
         m_results.push_back({{"v", 1}, {"type", "result"}, {"request", command.request},
             {"status", dispatched ? "dispatched" : "unavailable"}});
     }
+    // Sends `pages` (objects without v/type/request, each under 16 KiB once
+    // encoded) for a request, followed by its result. Nothing is sent when the
+    // pages would overflow the output queue.
+    void Reply(const Command& command, std::vector<nlohmann::json> pages, bool dispatched) {
+        std::lock_guard lock(m_mutex);
+        if (command.generation != m_generation || m_results.size() + pages.size() + 1 > MaxResults) return;
+        for (auto& page : pages) {
+            page["v"] = 1; page["type"] = "channelPage"; page["request"] = command.request;
+            m_results.push_back(std::move(page));
+        }
+        m_results.push_back({{"v", 1}, {"type", "result"}, {"request", command.request},
+            {"status", dispatched ? "dispatched" : "unavailable"}});
+    }
 private:
+    static constexpr std::size_t MaxResults = 64;
     using Json = nlohmann::json;
     static std::int64_t Now() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -108,14 +125,17 @@ private:
         const auto type = o["type"].get<std::string>();
         if (type == "registered") return true;
         const bool control = type == "control";
-        if ((type != "key" && !control) || !o.contains("request") || !o["request"].is_string()
+        const bool channels = type == "channels";
+        if ((type != "key" && !control && !channels) || !o.contains("request") || !o["request"].is_string()
             || !o.contains("expires") || !o["expires"].is_number()) return false;
         Command command;
-        if (control) {
+        if (channels) {
+            command.channels = true;
+        } else if (control) {
             if (!o.contains("name") || !o["name"].is_string() || !o.contains("value")
-                || !(o["value"].is_boolean() || o["value"].is_number_integer())) return false;
+                || !(o["value"].is_boolean() || o["value"].is_number_integer() || o["value"].is_object())) return false;
             command.control = o["name"].get<std::string>(); command.value = o["value"];
-            if (command.control.empty() || command.control.size() > 32) return false;
+            if (command.control.empty() || command.control.size() > 32 || command.value.dump().size() > 512) return false;
         } else {
             if (!o.contains("key") || !o["key"].is_string()) return false;
             command.key = o["key"].get<std::string>();

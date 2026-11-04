@@ -698,6 +698,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SelectAudio(Audio audio);
     Audio GetSelectedAudio();
     void ShowRemoteControlDialog();
+    nlohmann::json RemoteCurrentChannel();
+    nlohmann::json RemoteChannelList();
+    bool RemoteSelectChannel(const nlohmann::json& value);
     void CreateMessageWindow();
     void CreateOneSegWindow();
     void DestroyOneSegWindow();
@@ -1105,7 +1108,8 @@ bool CDataBroadcastingWV2::Initialize()
                     // 字幕・音量はデータ放送の表示状態に関係なく操作できる
                     {"controls", {{"caption", this->caption},
                         {"volume", std::clamp(this->m_pApp->GetVolume(), 0, MAX_VOLUME)},
-                        {"mute", this->m_pApp->GetMute()}}}};
+                        {"mute", this->m_pApp->GetMute()},
+                        {"channel", this->RemoteCurrentChannel()}}}};
             },
             [this](const std::string& key) {
                 static const std::unordered_map<std::string, int> commands = {
@@ -1134,11 +1138,117 @@ bool CDataBroadcastingWV2::Initialize()
                     if (volume < 0 || volume > MAX_VOLUME) return false;
                     return this->m_pApp->SetVolume(static_cast<int>(volume));
                 }
+                if (name == "channel" && value.is_object())
+                    return this->RemoteSelectChannel(value);
                 return false;
-            }, this->GetIniItem(L"RemotePipeName", L"TVTDataBroadcastingRemote-v1"));
+            },
+            [this]() { return this->RemoteChannelList(); },
+            this->GetIniItem(L"RemotePipeName", L"TVTDataBroadcastingRemote-v1"));
         if (!started) this->m_pApp->AddLog(L"リモコン中継サーバー用の接続部を初期化できませんでした", TVTest::LOG_TYPE_ERROR);
     }
     return true;
+}
+
+// リモコンに伝える現在のチャンネル。一覧の位置 (index) はTVTestから得られないので-1とし、
+// アプリはチューニング空間とネットワーク/TS/サービスIDで一覧の項目と照合する。
+nlohmann::json CDataBroadcastingWV2::RemoteCurrentChannel()
+{
+    TVTest::ChannelInfo info = {};
+    if (!this->m_pApp->GetCurrentChannelInfo(&info))
+    {
+        return { {"space", -1}, {"index", -1}, {"serviceId", 0}, {"networkId", 0}, {"transportStreamId", 0} };
+    }
+    // チャンネル設定のサービスではなく、実際に視聴中のサービスを優先する
+    const WORD serviceId = this->currentService.ServiceID ? this->currentService.ServiceID : info.ServiceID;
+    return { {"space", std::clamp(info.Space, -1, 255)}, {"index", -1}, {"serviceId", serviceId},
+        {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
+}
+
+// チューニング空間ごとのチャンネル一覧と、各サービスの現在の番組
+nlohmann::json CDataBroadcastingWV2::RemoteChannelList()
+{
+    nlohmann::json spaces = nlohmann::json::array();
+    int numSpaces = 0;
+    this->m_pApp->GetTuningSpace(&numSpaces);
+    FILETIME now = {};
+    GetSystemTimeAsFileTime(&now);
+    for (int space = 0; space < numSpaces && space <= 255; space++)
+    {
+        WCHAR spaceName[64] = {};
+        this->m_pApp->GetTuningSpaceName(space, spaceName, _countof(spaceName));
+        nlohmann::json channels = nlohmann::json::array();
+        for (int index = 0; index <= 9999; index++)
+        {
+            TVTest::ChannelInfo info = {};
+            if (!this->m_pApp->GetChannelInfo(space, index, &info))
+            {
+                break;
+            }
+            if (info.Flags & TVTest::CHANNEL_FLAG_DISABLED)
+            {
+                continue;
+            }
+            nlohmann::json channel{ {"space", space}, {"index", index}, {"remoteControlKey", info.RemoteControlKeyID},
+                {"name", wstrToUTF8String(info.szChannelName)}, {"serviceId", info.ServiceID},
+                {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
+            if (info.ServiceID != 0)
+            {
+                TVTest::EpgEventQueryInfo query = {};
+                query.NetworkID = info.NetworkID;
+                query.TransportStreamID = info.TransportStreamID;
+                query.ServiceID = info.ServiceID;
+                query.Type = TVTest::EPG_EVENT_QUERY_TIME;
+                query.Time = now;
+                if (auto* event = this->m_pApp->GetEpgEventInfo(&query))
+                {
+                    if (event->pszEventName && event->pszEventName[0])
+                    {
+                        // EPGの開始日時はUTC+9のSYSTEMTIME
+                        FILETIME start = {};
+                        long long startMillis = 0;
+                        if (SystemTimeToFileTime(&event->StartTime, &start))
+                        {
+                            const auto ticks = (static_cast<long long>(start.dwHighDateTime) << 32) | start.dwLowDateTime;
+                            startMillis = (ticks - 116444736000000000LL) / 10000 - 9LL * 3600 * 1000;
+                        }
+                        std::wstring title = event->pszEventName;
+                        if (title.size() > 80) title.resize(80);
+                        channel["program"] = { {"name", wstrToUTF8String(title.c_str())}, {"start", startMillis},
+                            {"duration", event->Duration} };
+                    }
+                    this->m_pApp->FreeEpgEventInfo(event);
+                }
+            }
+            channels.push_back(std::move(channel));
+        }
+        if (!channels.empty())
+        {
+            spaces.push_back({ {"space", space}, {"name", wstrToUTF8String(spaceName)}, {"channels", std::move(channels)} });
+        }
+    }
+    return spaces;
+}
+
+// 一覧の項目に選局する。一覧を取得した後にチャンネル設定が変わっていれば別の局に
+// 選局しないよう、IDが一致する場合だけ選局する。
+bool CDataBroadcastingWV2::RemoteSelectChannel(const nlohmann::json& value)
+{
+    const int space = value.value("space", -1);
+    const int index = value.value("index", -1);
+    const int serviceId = value.value("serviceId", -1);
+    const int networkId = value.value("networkId", -1);
+    const int transportStreamId = value.value("transportStreamId", -1);
+    TVTest::ChannelInfo info = {};
+    if (space < 0 || index < 0 || !this->m_pApp->GetChannelInfo(space, index, &info))
+    {
+        return false;
+    }
+    if ((info.Flags & TVTest::CHANNEL_FLAG_DISABLED) || info.ServiceID != serviceId ||
+        info.NetworkID != networkId || info.TransportStreamID != transportStreamId)
+    {
+        return false;
+    }
+    return this->m_pApp->SetChannel(space, index, static_cast<WORD>(serviceId));
 }
 
 bool CDataBroadcastingWV2::Finalize()

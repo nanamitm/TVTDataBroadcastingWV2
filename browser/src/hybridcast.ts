@@ -25,13 +25,20 @@ export class HybridcastHost {
     private wasAvailable = false;
     constructor(private options: {
         available(): boolean;
+        // 診断用: 利用可否の判定に使う各条件
+        describe?(): Record<string, unknown>;
         post(message: HybridcastOutgoing): void;
         fetchXMLAIT(uri: string): Promise<string | null>;
     }) {
         this.ait = new AITControlledAppHost({
             supportedApplicationTypes: new Set([0x10]),
-            fetchXMLAIT: uri => this.canLaunch() ? options.fetchXMLAIT(uri) : Promise.resolve(null),
+            fetchXMLAIT: uri => {
+                if (this.canLaunch()) return options.fetchXMLAIT(uri);
+                console.warn("[hybridcast] XML-AIT not fetched (unavailable)", uri, { enabled: this.enabled, ...options.describe?.() });
+                return Promise.resolve(null);
+            },
             launch: (app, ait) => this.launch(app, ait),
+            log: (...args: any[]) => console.log("[hybridcast]", ...args),
         });
     }
     private canLaunch() { return this.enabled && this.options.available(); }
@@ -106,7 +113,14 @@ export class HybridcastHost {
             aitControlledApp: this.ait,
             getResidentAppVersion: name => this.canLaunch() ? this.versions[name] ?? null : null,
             getBrowserSupport: (provider, name, args) => {
-                if (provider !== "ARIB" || !this.canLaunch()) return undefined;
+                if (provider !== "ARIB") return undefined;
+                if (!this.canLaunch()) {
+                    // 対応外と答えるとBMLが「TLS1.2以上…」の案内を出すため、理由を残す
+                    if (name === "APIGroup" && args[0] === "AITControlledApp.Start") {
+                        console.warn("[hybridcast] AITControlledApp.Start unavailable", { enabled: this.enabled, ...this.options.describe?.() });
+                    }
+                    return undefined;
+                }
                 if (name === "APIGroup" && args[0] === "AITControlledApp.Start") return 1;
                 if (name === "AITControlledAppEngineFunction") return args[0] === "IPTV-F" && args[1] === "HTML5_ph0" ? 1 : 0;
                 if (["AITTransferMethod", "AITTransportMethod"].includes(name)) return args[0] === "XML" && args[1] === "HTTP" ? 1 : 0;

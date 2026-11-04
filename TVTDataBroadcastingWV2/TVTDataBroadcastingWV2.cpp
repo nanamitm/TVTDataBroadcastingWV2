@@ -2071,6 +2071,14 @@ void CDataBroadcastingWV2::InitWebView2()
                     this->UpdateNetworkState();
                 this->SendHtml5Config();
                 }
+                // 読み込み直したページはTOT (数秒ごと) を受信するまで放送時刻を知らない。
+                // その間にBMLがHybridcastの対応を問い合わせると非対応と答えてしまい、
+                // BMLが結果を覚えて「TLS1.2以上…」の案内を出し続けるため、既知の時刻を渡す。
+                if (const auto broadcastTime = this->packetQueue.getBroadcastTime(); broadcastTime > 0)
+                {
+                    nlohmann::json timeMsg{ { "type", "broadcastTime" }, { "timeUnixMillis", broadcastTime * 1000 } };
+                    this->webView->PostWebMessageAsJson(jsonToWString(timeMsg).c_str());
+                }
                 this->UpdateAudioStream();
                 this->webViewLoaded = true;
                 this->SendOneSegCaptionConfig();

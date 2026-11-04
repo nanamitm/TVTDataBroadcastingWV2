@@ -257,10 +257,14 @@ function X_DPA_startResidentApp(appName: string, showAV: number, returnURI: stri
 let b62Active = false;
 const hybridcast = new HybridcastHost({
     available: () => networkEnabled && broadcastTimeKnown && !isRecord && !b62Active && !cProfile,
+    describe: () => ({ networkEnabled, broadcastTimeKnown, isRecord, b62Active, cProfile }),
     post: postMessage,
     async fetchXMLAIT(uri) {
+        const started = performance.now();
         const response = await apiIP.get!(uri);
-        return response.statusCode === 200 && response.response ? new TextDecoder().decode(response.response) : null;
+        const ok = response.statusCode === 200 && response.response;
+        (ok ? console.log : console.warn)("[hybridcast] XML-AIT fetch", uri, { statusCode: response.statusCode, bytes: response.response?.length, ms: Math.round(performance.now() - started), ok: !!ok });
+        return ok ? new TextDecoder().decode(response.response) : null;
     },
 });
 
@@ -589,6 +593,9 @@ const tsStream = decodeTS({
 });
 
 type ToWebViewMessage = HybridcastIncoming | {
+    type: "broadcastTime",
+    timeUnixMillis: number,
+} | {
     type: "oneSegCaptionConfig",
     overlay: boolean,
 } | {
@@ -869,6 +876,13 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         }
     } else if (data.type === "oneSegCaptionConfig") {
         oneSegCaptionOverlay = data.overlay;
+    } else if (data.type === "broadcastTime") {
+        // 再読み込み直後はTOTを受信するまで放送時刻が分からないため、ホストが知っている時刻を使う
+        if (!broadcastTimeKnown && Number.isFinite(data.timeUnixMillis)) {
+            broadcastTimeKnown = true;
+            isRecord = new Date().getTime() - data.timeUnixMillis >= 5 * 60 * 1000;
+            hybridcast.refreshAvailability();
+        }
     } else if (data.type === "launchOneSeg") {
         oneSegLaunched = true;
         browserElement.style.visibility = "visible";

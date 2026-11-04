@@ -103,7 +103,7 @@ const serviceId = Number(params.get("serviceId")) ?? undefined;
 // BML文書と動画と字幕が入る要素
 const browserElement = document.getElementById("data-broadcasting-browser")!;
 // 4Kデータ放送 (ARIB STD-B62) のアプリケーション
-const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, gainNode), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence(), (keySet) => onB62KeySetChanged(keySet));
+const b62Application = new B62ApplicationFrame(browserElement, () => onResized(), (id) => playRomSound(id, bmlSoundGate), () => postMessage({ type: "b62GetFollowingEvent" }), () => getB62Residence(), (keySet) => onB62KeySetChanged(keySet));
 // 動画が入っている要素
 const videoContainer = browserElement.querySelector(".arib-video-container") as HTMLElement;
 // BML文書が入る要素
@@ -188,6 +188,10 @@ const apiIP: IP = {
 const audioContext = new AudioContext();
 const gainNode = audioContext.createGain();
 gainNode.connect(audioContext.destination);
+// データ放送 (BML/B62) が鳴らす音 (romsound等) の出力先。
+// Hybridcastから戻る際に自動でdボタンを押す間だけ消音する。
+const bmlSoundGate = audioContext.createGain();
+bmlSoundGate.connect(gainNode);
 
 player.setPRAAudioNode(gainNode);
 
@@ -274,7 +278,7 @@ const bmlBrowser = new BMLBrowser({
     videoPlaneModeEnabled: true,
     audioNodeProvider: {
         getAudioDestinationNode() {
-            return gainNode;
+            return bmlSoundGate;
         }
     },
     ip: apiIP,
@@ -362,10 +366,13 @@ if (pendingDataButton) {
                 setTimeout(pressDataButton, 200);
                 return;
             }
+            // 利用者が押したdボタンではないので、データ放送開始の効果音は鳴らさない
+            bmlSoundGate.gain.value = 0;
             if (!b62Application.processKey(20)) {
                 bmlBrowser.content.processKeyDown(20);
                 bmlBrowser.content.processKeyUp(20);
             }
+            setTimeout(() => { bmlSoundGate.gain.value = 1; }, 2000);
         };
         setTimeout(pressDataButton, 300);
     });

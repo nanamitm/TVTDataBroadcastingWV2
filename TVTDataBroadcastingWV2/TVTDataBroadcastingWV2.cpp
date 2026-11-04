@@ -456,7 +456,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void LaunchHtml5(const nlohmann::json& launch);
     void CreateHtml5WebView();
     void NavigateHtml5();
-    void StopHtml5(bool reloadBML);
+    void StopHtml5(bool reloadBML, bool showDataBroadcasting = false);
     void UpdateHtml5Bounds();
     void OnHtml5WebMessage(const nlohmann::json& message);
     HRESULT OnHtml5WebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);

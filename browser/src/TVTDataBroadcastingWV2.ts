@@ -342,6 +342,35 @@ bmlBrowser.addEventListener("load", (evt) => {
     }
 });
 
+// HybridcastのlaunchDataBroadcastingBrowserで再読み込みされた場合、最初のBML文書で
+// dボタンを押した状態にする (選局直後の非表示状態のままだとデータ放送に戻らない)。
+// プラグインが再読み込み前にsessionStorageへフラグを置く。
+const pendingDataButtonKey = "TVTDataBroadcastingWV2.pendingDataButton";
+let pendingDataButton = false;
+try {
+    pendingDataButton = sessionStorage.getItem(pendingDataButtonKey) != null;
+    sessionStorage.removeItem(pendingDataButtonKey);
+} catch { }
+if (pendingDataButton) {
+    bmlBrowser.addEventListener("load", () => {
+        if (!pendingDataButton) return;
+        pendingDataButton = false;
+        // 「データ取得中」の間に渡すと表示途中のデータ放送を閉じてしまうため、取得完了を待つ
+        const deadline = performance.now() + 10000;
+        const pressDataButton = () => {
+            if (remoteControl.isReceiving() && performance.now() < deadline) {
+                setTimeout(pressDataButton, 200);
+                return;
+            }
+            if (!b62Application.processKey(20)) {
+                bmlBrowser.content.processKeyDown(20);
+                bmlBrowser.content.processKeyUp(20);
+            }
+        };
+        setTimeout(pressDataButton, 300);
+    });
+}
+
 type FromWebViewMessage = BroadcastCertificatesMessage | HybridcastOutgoing | {
     type: "videoChanged",
     left: number,

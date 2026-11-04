@@ -487,7 +487,7 @@ void CDataBroadcastingWV2::NavigateHtml5()
     if (FAILED(hr)) this->StopHtml5(false);
 }
 
-void CDataBroadcastingWV2::StopHtml5(bool reloadBML)
+void CDataBroadcastingWV2::StopHtml5(bool reloadBML, bool showDataBroadcasting)
 {
     if (!this->html5Active && !this->html5Pending && !this->html5Creating)
     {
@@ -526,7 +526,22 @@ void CDataBroadcastingWV2::StopHtml5(bool reloadBML)
     {
         this->webView->PostWebMessageAsJson(LR"({"type":"bmlVisibility","visible":true})");
         this->webView->PostWebMessageAsJson(LR"({"type":"html5Stopped"})");
-        if (reloadBML)
+        if (reloadBML && showDataBroadcasting)
+        {
+            // 再読み込み後の最初のBML文書でdボタンを押した状態にする。
+            // フラグはsessionStorage (再読み込みでも残る) に置き、書き込み完了後に再読み込みする。
+            auto webView = this->webView;
+            HRESULT hr = webView->ExecuteScript(L"sessionStorage.setItem('TVTDataBroadcastingWV2.pendingDataButton','1')",
+                Callback<ICoreWebView2ExecuteScriptCompletedHandler>([webView](HRESULT, LPCWSTR) -> HRESULT {
+                    webView->Reload();
+                    return S_OK;
+                }).Get());
+            if (FAILED(hr))
+            {
+                webView->Reload();
+            }
+        }
+        else if (reloadBML)
         {
             // 再選局した直後の状態と同様に動作する
             this->webView->Reload();
@@ -702,7 +717,9 @@ void CDataBroadcastingWV2::OnHtml5WebMessage(const nlohmann::json& a)
     }
     else if (type == "html5LaunchDataBroadcasting")
     {
-        this->StopHtml5(true);
+        // launchDataBroadcastingBrowserはデータ放送を表示させる要求 (dボタン押下後と同じ状態)。
+        // 単に再読み込みすると選局直後の非表示状態に戻り、Hybridcastが終了しただけに見える。
+        this->StopHtml5(true, true);
     }
     else if (type == "html5Replace")
     {
@@ -775,8 +792,8 @@ bool CDataBroadcastingWV2::OnHtml5Command(int ID)
         inKeySet = k.dbutton;
         if (!inKeySet)
         {
-            // dボタン: データ放送 (BML) に戻る
-            this->StopHtml5(true);
+            // dボタン: データ放送 (BML) に戻る (表示した状態で)
+            this->StopHtml5(true, true);
             return true;
         }
         break;

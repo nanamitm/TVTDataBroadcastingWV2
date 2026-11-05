@@ -699,6 +699,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     Audio GetSelectedAudio();
     void ShowRemoteControlDialog();
     nlohmann::json RemoteCurrentChannel();
+    void RemoteRecordState(nlohmann::json& controls);
     std::wstring RemoteCurrentDriver();
     std::vector<std::wstring> RemoteDriverNames();
     nlohmann::json RemoteChannelList(const std::string& driver);
@@ -1103,7 +1104,7 @@ bool CDataBroadcastingWV2::Initialize()
                 if (name.empty()) name = L"TVTest (" + std::to_wstring(GetCurrentProcessId()) + L")";
                 auto token = this->GetIniItem(L"RemoteTargetToken", L"");
                 if (!TvtRemote::ValidTargetToken(token)) token.clear();
-                return {{"targetToken", wstrToUTF8String(token.c_str())}, {"name", wstrToUTF8String(name.c_str())},
+                nlohmann::json state{{"targetToken", wstrToUTF8String(token.c_str())}, {"name", wstrToUTF8String(name.c_str())},
                     {"channel", wstrToUTF8String(this->currentService.szServiceName)},
                     {"enabled", this->m_pApp->IsPluginEnabled()},
                     {"mode", this->html5Active ? "html5" : (this->currentServiceIsOneSeg ? "oneseg" : "bml")},
@@ -1111,7 +1112,10 @@ bool CDataBroadcastingWV2::Initialize()
                     {"controls", {{"caption", this->caption},
                         {"volume", std::clamp(this->m_pApp->GetVolume(), 0, MAX_VOLUME)},
                         {"mute", this->m_pApp->GetMute()},
-                        {"channel", this->RemoteCurrentChannel()}}}};
+                        {"channel", this->RemoteCurrentChannel()},
+                        {"fullscreen", this->m_pApp->GetFullscreen()}}}};
+                this->RemoteRecordState(state["controls"]);
+                return state;
             },
             [this](const std::string& key) {
                 static const std::unordered_map<std::string, int> commands = {
@@ -1140,6 +1144,18 @@ bool CDataBroadcastingWV2::Initialize()
                     if (volume < 0 || volume > MAX_VOLUME) return false;
                     return this->m_pApp->SetVolume(static_cast<int>(volume));
                 }
+                if (name == "fullscreen" && value.is_boolean())
+                {
+                    if (value.get<bool>() == this->m_pApp->GetFullscreen()) return true;
+                    return this->m_pApp->SetFullscreen(value.get<bool>());
+                }
+                if (name == "record" && value.is_boolean())
+                {
+                    TVTest::RecordStatusInfo record = {};
+                    const bool recording = this->m_pApp->GetRecordStatus(&record) && record.Status != TVTest::RECORD_STATUS_NOTRECORDING;
+                    if (value.get<bool>() == recording) return true;
+                    return value.get<bool>() ? this->m_pApp->StartRecord() : this->m_pApp->StopRecord();
+                }
                 if (name == "channel" && value.is_object())
                     return this->RemoteSelectChannel(value);
                 return false;
@@ -1149,6 +1165,21 @@ bool CDataBroadcastingWV2::Initialize()
         if (!started) this->m_pApp->AddLog(L"リモコン中継サーバー用の接続部を初期化できませんでした", TVTest::LOG_TYPE_ERROR);
     }
     return true;
+}
+
+// 録画中か (一時停止中も録画中とみなす) と、録画を始めた時刻 (UTCのUnixエポックミリ秒)
+void CDataBroadcastingWV2::RemoteRecordState(nlohmann::json& controls)
+{
+    TVTest::RecordStatusInfo record = {};
+    const bool recording = this->m_pApp->GetRecordStatus(&record, TVTest::RECORD_STATUS_FLAG_UTC) &&
+        record.Status != TVTest::RECORD_STATUS_NOTRECORDING;
+    controls["record"] = recording;
+    if (recording)
+    {
+        const auto ticks = (static_cast<long long>(record.StartTime.dwHighDateTime) << 32) | record.StartTime.dwLowDateTime;
+        const long long startMillis = (ticks - 116444736000000000LL) / 10000;
+        if (startMillis > 0) controls["recordStart"] = startMillis;
+    }
 }
 
 // 現在のBonDriverのファイル名

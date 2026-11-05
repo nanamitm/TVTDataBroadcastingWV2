@@ -699,7 +699,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     Audio GetSelectedAudio();
     void ShowRemoteControlDialog();
     nlohmann::json RemoteCurrentChannel();
-    nlohmann::json RemoteChannelList();
+    std::wstring RemoteCurrentDriver();
+    std::vector<std::wstring> RemoteDriverNames();
+    nlohmann::json RemoteChannelList(const std::string& driver);
     bool RemoteSelectChannel(const nlohmann::json& value);
     void CreateMessageWindow();
     void CreateOneSegWindow();
@@ -1142,95 +1144,201 @@ bool CDataBroadcastingWV2::Initialize()
                     return this->RemoteSelectChannel(value);
                 return false;
             },
-            [this]() { return this->RemoteChannelList(); },
+            [this](const std::string& driver) { return this->RemoteChannelList(driver); },
             this->GetIniItem(L"RemotePipeName", L"TVTDataBroadcastingRemote-v1"));
         if (!started) this->m_pApp->AddLog(L"リモコン中継サーバー用の接続部を初期化できませんでした", TVTest::LOG_TYPE_ERROR);
     }
     return true;
 }
 
+// 現在のBonDriverのファイル名
+std::wstring CDataBroadcastingWV2::RemoteCurrentDriver()
+{
+    WCHAR name[MAX_PATH] = {};
+    this->m_pApp->GetDriverName(name, _countof(name));
+    return name;
+}
+
+// チャンネルが設定されているBonDriver (チャンネルファイルの無いものは選局できないので除く)
+std::vector<std::wstring> CDataBroadcastingWV2::RemoteDriverNames()
+{
+    std::vector<std::wstring> names;
+    for (int i = 0; i < 64; i++)
+    {
+        WCHAR name[MAX_PATH] = {};
+        if (this->m_pApp->EnumDriver(i, name, _countof(name)) <= 0)
+        {
+            break;
+        }
+        TVTest::DriverTuningSpaceList list = {};
+        if (!this->m_pApp->GetDriverTuningSpaceList(name, &list))
+        {
+            continue;
+        }
+        bool hasChannels = false;
+        for (DWORD space = 0; space < list.NumSpaces && !hasChannels; space++)
+        {
+            hasChannels = list.SpaceList[space] && list.SpaceList[space]->NumChannels > 0;
+        }
+        this->m_pApp->FreeDriverTuningSpaceList(&list);
+        if (hasChannels)
+        {
+            names.push_back(name);
+        }
+    }
+    return names;
+}
+
 // リモコンに伝える現在のチャンネル。一覧の位置 (index) はTVTestから得られないので-1とし、
-// アプリはチューニング空間とネットワーク/TS/サービスIDで一覧の項目と照合する。
+// アプリはBonDriver・チューニング空間・ネットワーク/TS/サービスIDで一覧の項目と照合する。
 nlohmann::json CDataBroadcastingWV2::RemoteCurrentChannel()
 {
     TVTest::ChannelInfo info = {};
+    nlohmann::json channel;
     if (!this->m_pApp->GetCurrentChannelInfo(&info))
     {
-        return { {"space", -1}, {"index", -1}, {"serviceId", 0}, {"networkId", 0}, {"transportStreamId", 0} };
+        channel = { {"space", -1}, {"index", -1}, {"serviceId", 0}, {"networkId", 0}, {"transportStreamId", 0} };
     }
-    // チャンネル設定のサービスではなく、実際に視聴中のサービスを優先する
-    const WORD serviceId = this->currentService.ServiceID ? this->currentService.ServiceID : info.ServiceID;
-    return { {"space", std::clamp(info.Space, -1, 255)}, {"index", -1}, {"serviceId", serviceId},
-        {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
+    else
+    {
+        // チャンネル設定のサービスではなく、実際に視聴中のサービスを優先する
+        const WORD serviceId = this->currentService.ServiceID ? this->currentService.ServiceID : info.ServiceID;
+        channel = { {"space", std::clamp(info.Space, -1, 255)}, {"index", -1}, {"serviceId", serviceId},
+            {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
+    }
+    const auto driver = this->RemoteCurrentDriver();
+    if (!driver.empty() && driver.size() <= 128)
+    {
+        channel["driver"] = wstrToUTF8String(driver.c_str());
+    }
+    return channel;
 }
 
-// チューニング空間ごとのチャンネル一覧と、各サービスの現在の番組
-nlohmann::json CDataBroadcastingWV2::RemoteChannelList()
+// 一覧の1項目 (現在の番組をEPGから付ける)
+static nlohmann::json RemoteChannelEntry(TVTest::CTVTestApp* app, int space, int index, const TVTest::ChannelInfo& info, const FILETIME& now)
 {
+    nlohmann::json channel{ {"space", space}, {"index", index}, {"remoteControlKey", info.RemoteControlKeyID},
+        {"name", wstrToUTF8String(info.szChannelName)}, {"serviceId", info.ServiceID},
+        {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
+    if (info.ServiceID == 0)
+    {
+        return channel;
+    }
+    TVTest::EpgEventQueryInfo query = {};
+    query.NetworkID = info.NetworkID;
+    query.TransportStreamID = info.TransportStreamID;
+    query.ServiceID = info.ServiceID;
+    query.Type = TVTest::EPG_EVENT_QUERY_TIME;
+    query.Time = now;
+    if (auto* event = app->GetEpgEventInfo(&query))
+    {
+        if (event->pszEventName && event->pszEventName[0])
+        {
+            // EPGの開始日時はUTC+9のSYSTEMTIME
+            FILETIME start = {};
+            long long startMillis = 0;
+            if (SystemTimeToFileTime(&event->StartTime, &start))
+            {
+                const auto ticks = (static_cast<long long>(start.dwHighDateTime) << 32) | start.dwLowDateTime;
+                startMillis = (ticks - 116444736000000000LL) / 10000 - 9LL * 3600 * 1000;
+            }
+            std::wstring title = event->pszEventName;
+            if (title.size() > 80) title.resize(80);
+            channel["program"] = { {"name", wstrToUTF8String(title.c_str())}, {"start", startMillis},
+                {"duration", event->Duration} };
+        }
+        app->FreeEpgEventInfo(event);
+    }
+    return channel;
+}
+
+// 指定したBonDriver (空なら現在のもの) のチューニング空間ごとのチャンネル一覧と、各サービスの現在の番組。
+// 選局できるBonDriverの一覧も付ける。
+nlohmann::json CDataBroadcastingWV2::RemoteChannelList(const std::string& requestedDriver)
+{
+    const auto current = this->RemoteCurrentDriver();
+    const auto drivers = this->RemoteDriverNames();
+    const auto requested = utf8StrToWString(requestedDriver.c_str());
+    std::wstring listed = current;
+    if (!requested.empty() && _wcsicmp(requested.c_str(), current.c_str()) != 0)
+    {
+        // 列挙したBonDriverの名前だけを受け付ける (任意のパスのDLLを開かせない)
+        listed.clear();
+        for (const auto& name : drivers)
+        {
+            if (_wcsicmp(name.c_str(), requested.c_str()) == 0) listed = name;
+        }
+    }
+    nlohmann::json names = nlohmann::json::array();
+    for (const auto& name : drivers)
+    {
+        if (name.size() <= 128) names.push_back(wstrToUTF8String(name.c_str()));
+    }
     nlohmann::json spaces = nlohmann::json::array();
-    int numSpaces = 0;
-    this->m_pApp->GetTuningSpace(&numSpaces);
     FILETIME now = {};
     GetSystemTimeAsFileTime(&now);
-    for (int space = 0; space < numSpaces && space <= 255; space++)
+    if (!listed.empty() && _wcsicmp(listed.c_str(), current.c_str()) == 0)
     {
-        WCHAR spaceName[64] = {};
-        this->m_pApp->GetTuningSpaceName(space, spaceName, _countof(spaceName));
-        nlohmann::json channels = nlohmann::json::array();
-        for (int index = 0; index <= 9999; index++)
+        // 現在のBonDriverはTVTestのチャンネル一覧 (無効にしたチャンネルを除く) をそのまま使う
+        int numSpaces = 0;
+        this->m_pApp->GetTuningSpace(&numSpaces);
+        for (int space = 0; space < numSpaces && space <= 255; space++)
         {
-            TVTest::ChannelInfo info = {};
-            if (!this->m_pApp->GetChannelInfo(space, index, &info))
+            WCHAR spaceName[64] = {};
+            this->m_pApp->GetTuningSpaceName(space, spaceName, _countof(spaceName));
+            nlohmann::json channels = nlohmann::json::array();
+            for (int index = 0; index <= 9999; index++)
             {
-                break;
-            }
-            if (info.Flags & TVTest::CHANNEL_FLAG_DISABLED)
-            {
-                continue;
-            }
-            nlohmann::json channel{ {"space", space}, {"index", index}, {"remoteControlKey", info.RemoteControlKeyID},
-                {"name", wstrToUTF8String(info.szChannelName)}, {"serviceId", info.ServiceID},
-                {"networkId", info.NetworkID}, {"transportStreamId", info.TransportStreamID} };
-            if (info.ServiceID != 0)
-            {
-                TVTest::EpgEventQueryInfo query = {};
-                query.NetworkID = info.NetworkID;
-                query.TransportStreamID = info.TransportStreamID;
-                query.ServiceID = info.ServiceID;
-                query.Type = TVTest::EPG_EVENT_QUERY_TIME;
-                query.Time = now;
-                if (auto* event = this->m_pApp->GetEpgEventInfo(&query))
+                TVTest::ChannelInfo info = {};
+                if (!this->m_pApp->GetChannelInfo(space, index, &info))
                 {
-                    if (event->pszEventName && event->pszEventName[0])
-                    {
-                        // EPGの開始日時はUTC+9のSYSTEMTIME
-                        FILETIME start = {};
-                        long long startMillis = 0;
-                        if (SystemTimeToFileTime(&event->StartTime, &start))
-                        {
-                            const auto ticks = (static_cast<long long>(start.dwHighDateTime) << 32) | start.dwLowDateTime;
-                            startMillis = (ticks - 116444736000000000LL) / 10000 - 9LL * 3600 * 1000;
-                        }
-                        std::wstring title = event->pszEventName;
-                        if (title.size() > 80) title.resize(80);
-                        channel["program"] = { {"name", wstrToUTF8String(title.c_str())}, {"start", startMillis},
-                            {"duration", event->Duration} };
-                    }
-                    this->m_pApp->FreeEpgEventInfo(event);
+                    break;
+                }
+                if (!(info.Flags & TVTest::CHANNEL_FLAG_DISABLED))
+                {
+                    channels.push_back(RemoteChannelEntry(this->m_pApp, space, index, info, now));
                 }
             }
-            channels.push_back(std::move(channel));
-        }
-        if (!channels.empty())
-        {
-            spaces.push_back({ {"space", space}, {"name", wstrToUTF8String(spaceName)}, {"channels", std::move(channels)} });
+            if (!channels.empty())
+            {
+                spaces.push_back({ {"space", space}, {"name", wstrToUTF8String(spaceName)}, {"channels", std::move(channels)} });
+            }
         }
     }
-    return spaces;
+    else if (!listed.empty())
+    {
+        // 使っていないBonDriverはチャンネルファイルから一覧を得る (選局時に切り替える)
+        TVTest::DriverTuningSpaceList list = {};
+        if (this->m_pApp->GetDriverTuningSpaceList(listed.c_str(), &list))
+        {
+            for (DWORD space = 0; space < list.NumSpaces && space <= 255; space++)
+            {
+                const auto* info = list.SpaceList[space];
+                if (!info) continue;
+                nlohmann::json channels = nlohmann::json::array();
+                for (DWORD index = 0; index < info->NumChannels && index <= 9999; index++)
+                {
+                    const auto* channel = info->ChannelList[index];
+                    if (channel && !(channel->Flags & TVTest::CHANNEL_FLAG_DISABLED))
+                    {
+                        channels.push_back(RemoteChannelEntry(this->m_pApp, space, index, *channel, now));
+                    }
+                }
+                if (!channels.empty())
+                {
+                    spaces.push_back({ {"space", space}, {"name", wstrToUTF8String(info->pInfo ? info->pInfo->szName : L"")},
+                        {"channels", std::move(channels)} });
+                }
+            }
+            this->m_pApp->FreeDriverTuningSpaceList(&list);
+        }
+    }
+    return { {"driver", wstrToUTF8String(listed.c_str())}, {"current", wstrToUTF8String(current.c_str())},
+        {"drivers", std::move(names)}, {"spaces", std::move(spaces)} };
 }
 
-// 一覧の項目に選局する。一覧を取得した後にチャンネル設定が変わっていれば別の局に
-// 選局しないよう、IDが一致する場合だけ選局する。
+// 一覧の項目に選局する。BonDriverが指定されていて現在と違えば先に切り替える (録画中は切り替えない)。
+// 一覧を取得した後にチャンネル設定が変わっていても別の局に選局しないよう、IDが一致する項目だけを選ぶ。
 bool CDataBroadcastingWV2::RemoteSelectChannel(const nlohmann::json& value)
 {
     const int space = value.value("space", -1);
@@ -1238,17 +1346,53 @@ bool CDataBroadcastingWV2::RemoteSelectChannel(const nlohmann::json& value)
     const int serviceId = value.value("serviceId", -1);
     const int networkId = value.value("networkId", -1);
     const int transportStreamId = value.value("transportStreamId", -1);
+    if (space < 0 || index < 0)
+    {
+        return false;
+    }
+    if (value.contains("driver") && value["driver"].is_string())
+    {
+        const auto requested = utf8StrToWString(value["driver"].get<std::string>().c_str());
+        if (_wcsicmp(requested.c_str(), this->RemoteCurrentDriver().c_str()) != 0)
+        {
+            TVTest::RecordStatusInfo record = {};
+            if (this->m_pApp->GetRecordStatus(&record) && record.Status != TVTest::RECORD_STATUS_NOTRECORDING)
+            {
+                this->m_pApp->AddLog(L"録画中のため、リモコンからのBonDriverの切り替えを行いませんでした", TVTest::LOG_TYPE_WARNING);
+                return false;
+            }
+            std::wstring driver;
+            for (const auto& name : this->RemoteDriverNames())
+            {
+                if (_wcsicmp(name.c_str(), requested.c_str()) == 0) driver = name;
+            }
+            if (driver.empty() || !this->m_pApp->SetDriverName(driver.c_str()))
+            {
+                return false;
+            }
+        }
+    }
+    auto matches = [&](const TVTest::ChannelInfo& info) {
+        return !(info.Flags & TVTest::CHANNEL_FLAG_DISABLED) && info.ServiceID == serviceId &&
+            info.NetworkID == networkId && info.TransportStreamID == transportStreamId;
+    };
     TVTest::ChannelInfo info = {};
-    if (space < 0 || index < 0 || !this->m_pApp->GetChannelInfo(space, index, &info))
+    int target = -1;
+    if (this->m_pApp->GetChannelInfo(space, index, &info) && matches(info))
     {
-        return false;
+        target = index;
     }
-    if ((info.Flags & TVTest::CHANNEL_FLAG_DISABLED) || info.ServiceID != serviceId ||
-        info.NetworkID != networkId || info.TransportStreamID != transportStreamId)
+    else
     {
-        return false;
+        // チャンネルファイルとTVTestの一覧で位置がずれる場合に備え、同じ空間をIDで探す
+        for (int i = 0; i <= 9999; i++)
+        {
+            TVTest::ChannelInfo candidate = {};
+            if (!this->m_pApp->GetChannelInfo(space, i, &candidate)) break;
+            if (matches(candidate)) { target = i; break; }
+        }
     }
-    return this->m_pApp->SetChannel(space, index, static_cast<WORD>(serviceId));
+    return target >= 0 && this->m_pApp->SetChannel(space, target, static_cast<WORD>(serviceId));
 }
 
 bool CDataBroadcastingWV2::Finalize()

@@ -23,7 +23,7 @@ public:
     // A key command has `key` set. A control command (0.5.0+) has `control`
     // (e.g. "caption", "volume", "mute", "channel") and its `value` instead.
     // A channel-list request (0.6.0+) has `channels` set and is answered with
-    // Reply().
+    // Reply(); since 0.7.0 `value` may hold the requested BonDriver file name.
     struct Command {
         std::string request, key, control; nlohmann::json value; bool channels = false;
         std::uint64_t generation = 0; std::int64_t expires = 0;
@@ -81,7 +81,8 @@ public:
         std::lock_guard lock(m_mutex);
         if (command.generation != m_generation || m_results.size() + pages.size() + 1 > MaxResults) return;
         for (auto& page : pages) {
-            page["v"] = 1; page["type"] = "channelPage"; page["request"] = command.request;
+            page["v"] = 1; page["request"] = command.request;
+            if (!page.contains("type")) page["type"] = "channelPage";
             m_results.push_back(std::move(page));
         }
         m_results.push_back({{"v", 1}, {"type", "result"}, {"request", command.request},
@@ -131,6 +132,11 @@ private:
         Command command;
         if (channels) {
             command.channels = true;
+            // Optional BonDriver file name whose list is requested (0.7.0).
+            if (o.contains("driver")) {
+                if (!o["driver"].is_string() || o["driver"].get<std::string>().size() > 512) return false;
+                command.value = o["driver"];
+            }
         } else if (control) {
             if (!o.contains("name") || !o["name"].is_string() || !o.contains("value")
                 || !(o["value"].is_boolean() || o["value"].is_number_integer() || o["value"].is_object())) return false;

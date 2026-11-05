@@ -18,6 +18,10 @@ public:
     // [{"space":0,"name":"UHF","channels":[{...}, ...]}, ...]. Spaces without
     // channels are omitted from the reply. Advertise "channel" in controls.
     using ChannelList = std::function<nlohmann::json()>;
+    // BonDriver-aware channel list (0.7.0). `driver` is the requested BonDriver
+    // file name (empty for the current one). Return either the array above or
+    // {"driver":"<listed>","current":"<in use>","drivers":["...",...],"spaces":[...]}.
+    using DriverChannelList = std::function<nlohmann::json(const std::string& driver)>;
     ~Win32Bridge() { Stop(); }
     bool Start(HINSTANCE module, State state, Dispatch dispatch,
                const std::wstring& pipe = L"TVTDataBroadcastingRemote-v1") {
@@ -28,6 +32,12 @@ public:
         return Start(module, std::move(state), std::move(dispatch), std::move(control), ChannelList{}, pipe);
     }
     bool Start(HINSTANCE module, State state, Dispatch dispatch, Control control, ChannelList channels,
+               const std::wstring& pipe = L"TVTDataBroadcastingRemote-v1") {
+        DriverChannelList list;
+        if (channels) list = [channels = std::move(channels)](const std::string&) { return channels(); };
+        return Start(module, std::move(state), std::move(dispatch), std::move(control), std::move(list), pipe);
+    }
+    bool Start(HINSTANCE module, State state, Dispatch dispatch, Control control, DriverChannelList channels,
                const std::wstring& pipe = L"TVTDataBroadcastingRemote-v1") {
         Stop(); m_module = module; m_state = std::move(state); m_dispatch = std::move(dispatch);
         m_control = std::move(control); m_channels = std::move(channels);
@@ -71,6 +81,23 @@ public:
         }
         return pages;
     }
+    // Builds the reply for a channel list: the BonDriver list (when given)
+    // followed by the pages, each tagged with the listed BonDriver.
+    static std::vector<nlohmann::json> ChannelReply(const nlohmann::json& list) {
+        if (!list.is_object()) return PaginateChannels(list);
+        std::vector<nlohmann::json> messages;
+        const auto driver = list.value("driver", std::string());
+        nlohmann::json drivers = nlohmann::json::array();
+        if (list.contains("drivers") && list["drivers"].is_array())
+            for (const auto& name : list["drivers"]) if (name.is_string() && drivers.size() < 64) drivers.push_back(name);
+        messages.push_back({{"type", "channelDrivers"}, {"drivers", drivers}, {"driver", driver},
+            {"current", list.value("current", std::string())}});
+        for (auto& page : PaginateChannels(list.contains("spaces") ? list["spaces"] : nlohmann::json::array())) {
+            if (!driver.empty()) page["driver"] = driver;
+            messages.push_back(std::move(page));
+        }
+        return messages;
+    }
 private:
     void Refresh() {
         const auto state = m_state();
@@ -90,7 +117,7 @@ private:
             if (command.channels) {
                 std::vector<nlohmann::json> pages;
                 bool listed = false;
-                try { if (m_channels) { pages = PaginateChannels(m_channels()); listed = true; } }
+                try { if (m_channels) { pages = ChannelReply(m_channels(command.value.is_string() ? command.value.get<std::string>() : std::string())); listed = true; } }
                 catch (...) { OutputDebugStringW(L"[TVTRemote] Channel list failed\n"); }
                 m_agent.Reply(command, std::move(pages), listed);
                 continue;
@@ -126,7 +153,7 @@ private:
     State m_state;
     Dispatch m_dispatch;
     Control m_control;
-    ChannelList m_channels;
+    DriverChannelList m_channels;
     nlohmann::json m_lastState;
     ULONGLONG m_lastRefresh = 0;
 };

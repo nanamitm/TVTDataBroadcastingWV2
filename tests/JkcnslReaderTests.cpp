@@ -113,6 +113,74 @@ static void CheckEntityDecoding()
         throw std::runtime_error("Raw chat tag for the logfile must stay encoded");
 }
 
+// 混合接続では過去コメントの受信状態をニコニコと避難所で別々に持つ(NicoJK同様)。
+// 片方が過去コメントを送っている間も、もう片方の新しいコメントは過去扱いにしない。
+static void CheckPastChatTracking()
+{
+    PastChatTracker t;
+    t.OnLine("-<x_past_chat_begin refuge=\"1\" />");
+    if (!t.IsPast(true) || t.IsPast(false))
+        throw std::runtime_error("Refuge backfill marked niconico comments as past");
+    t.OnLine("-<x_past_chat_begin />");
+    t.OnLine("-<x_past_chat_end refuge=\"1\" />");
+    if (t.IsPast(true) || !t.IsPast(false))
+        throw std::runtime_error("Ending refuge backfill ended niconico backfill");
+    // 片方だけの切断でその接続先の状態を戻す
+    t.OnLine("-<x_disconnect status=\"1\" />");
+    if (t.IsPast(false)) throw std::runtime_error("x_disconnect did not reset niconico backfill");
+    // chat本文に制御タグ名が含まれていても状態を変えない
+    t.OnLine("-<chat date=\"1\">&lt;x_past_chat_begin&gt;</chat>");
+    t.OnLine("-<chat date=\"1\"><x_past_chat_begin /></chat>");
+    if (t.IsPast(false) || t.IsPast(true)) throw std::runtime_error("A chat body changed the backfill state");
+    t.OnLine("-<x_past_chat_begin refuge=\"1\" />");
+    t.Reset();
+    if (t.IsPast(true)) throw std::runtime_error("Reset kept the backfill state");
+}
+
+// 接続先ごとの<x_room>/<x_disconnect>を、NicoJKの状態行に必要な情報まで読む。
+static void CheckRoomLines()
+{
+    JkcnslReader::RoomEvent e;
+    if (!JkcnslReader::ParseRoomLine("-<x_room refuge=\"1\" is_logged_in=\"1\" nickname=\"a&amp;b\" />", e) ||
+        e.disconnect || !e.refuge || !e.loggedIn || e.nickname != "a&b")
+        throw std::runtime_error("Refuge x_room was not parsed");
+    if (!JkcnslReader::ParseRoomLine("-<x_room nickname=\"\" />", e) || e.refuge || e.loggedIn || !e.nickname.empty())
+        throw std::runtime_error("niconico x_room was not parsed");
+    if (!JkcnslReader::ParseRoomLine("-<x_disconnect status=\"2\" refuge=\"1\" />", e) ||
+        !e.disconnect || !e.refuge || e.status != 2)
+        throw std::runtime_error("x_disconnect was not parsed");
+    // x_refuge属性やchat本文の文字列を接続先や制御タグと取り違えない
+    if (!JkcnslReader::ParseRoomLine("-<x_room x_refuge=\"1\" />", e) || e.refuge)
+        throw std::runtime_error("x_refuge was taken as refuge");
+    if (JkcnslReader::ParseRoomLine("-<chat date=\"1\"><x_room refuge=\"1\" /></chat>", e) ||
+        JkcnslReader::ParseRoomLine("-<x_roomy />", e) || JkcnslReader::ParseRoomLine("*opened", e))
+        throw std::runtime_error("A non-room line was parsed as a room event");
+}
+
+// 子プロセス経由でも、各コメントの接続先に応じた過去フラグが付く。
+static void CheckPastFlagsFromStream(const std::wstring& executable)
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<Comment> got;
+    JkcnslReader reader;
+    reader.SetCallback([&](std::vector<Comment> comments) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto& c : comments) got.push_back(std::move(c));
+        changed.notify_one();
+    });
+    if (!reader.Start(executable, "Lmixpast")) throw std::runtime_error("Start failed");
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return got.size() >= 3; }))
+            throw std::runtime_error("Mixed backfill comments timed out");
+    }
+    reader.Stop();
+    // refugeの過去コメント / その間に届いたnicoの新しいコメント / 終了後のrefugeの新しいコメント
+    if (!(got[0].refuge && got[0].past) || got[1].refuge || got[1].past || !got[2].refuge || got[2].past)
+        throw std::runtime_error("Past flags were not tracked per source");
+}
+
 int main(int argc, char**)
 {
     if (argc > 1) {
@@ -124,6 +192,12 @@ int main(int argc, char**)
         else {
             // Repeated open/data markers must not create repeated connection logs.
             std::cout << "*opened\r\n*opened\r\n-data\r\n" << std::flush;
+            if (command == "Lmixpast")
+                std::cout << "-<x_past_chat_begin refuge=\"1\" />\r\n"
+                             "-<chat date=\"100\" user_id=\"5ch:a\" x_refuge=\"1\">old</chat>\r\n"
+                             "-<chat date=\"101\" user_id=\"a:b\">live</chat>\r\n"
+                             "-<x_past_chat_end refuge=\"1\" />\r\n"
+                             "-<chat date=\"102\" user_id=\"5ch:c\" x_refuge=\"1\">new</chat>\r\n" << std::flush;
             if (command == "Lcomment")
                 std::cout << "-<chat date=\"101\" user_id=\"test\">comment</chat>\r\n" << std::flush;
             if (command == "Lclose") std::cout << ".\r\n" << std::flush;
@@ -145,6 +219,9 @@ int main(int argc, char**)
         CheckQueuedCommentsAfterSwitch(path);
         CheckStatusLogThrottling();
         CheckEntityDecoding();
+        CheckPastChatTracking();
+        CheckRoomLines();
+        CheckPastFlagsFromStream(path);
         std::cout << "JkcnslReader status tests passed\n";
         return 0;
     } catch (const std::exception& error) {

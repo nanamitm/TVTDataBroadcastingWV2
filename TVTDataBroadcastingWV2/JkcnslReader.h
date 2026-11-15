@@ -8,6 +8,23 @@
 #include <string>
 #include <thread>
 
+// 接続直後にjkcnslが送る過去コメント(<x_past_chat_begin>..<x_past_chat_end>)の
+// 受信中かどうか。NicoJKと同じくニコニコと避難所で別々に覚え、混合接続で片方の
+// 過去コメントがもう片方の新しいコメントを巻き込まないようにする。
+class PastChatTracker
+{
+public:
+    // jkcnslの1行(行頭マーカー付きでよい)を見て状態を更新する。
+    // 制御タグはrefuge="1"の有無で、chatタグはx_refuge/nx_jikkyoで接続先を区別する。
+    void OnLine(const std::string& line);
+    bool IsPast(bool refuge) const { return refuge ? m_refuge : m_nico; }
+    void Reset() { m_nico = m_refuge = false; }
+
+private:
+    bool m_nico = false;
+    bool m_refuge = false;
+};
+
 class JkcnslReader
 {
 public:
@@ -45,6 +62,21 @@ public:
     using StatusCallback = std::function<void(Status)>;
     void SetStatusCallback(StatusCallback cb) { m_statusCallback = std::move(cb); }
 
+    // jkcnslが接続先ごとに出す<x_room>(接続した)と<x_disconnect>(混合接続で片方が
+    // 切断または接続失敗した)。NicoJKと同じく接続先を名指しした状態行に使う。
+    struct RoomEvent
+    {
+        bool disconnect = false; // false=<x_room>、true=<x_disconnect>
+        bool refuge = false;     // 避難所側 (refuge="1")
+        bool loggedIn = false;   // <x_room is_logged_in="1">
+        std::string nickname;    // <x_room nickname="..."> (実体参照は戻し済み)
+        int status = 0;          // <x_disconnect status="...">
+    };
+    using RoomCallback = std::function<void(const RoomEvent&)>;
+    void SetRoomCallback(RoomCallback cb) { m_roomCallback = std::move(cb); }
+    // jkcnslの1行(行頭マーカー付きでよい)が<x_room>/<x_disconnect>なら解釈する
+    static bool ParseRoomLine(const std::string& line, RoomEvent& out);
+
     // 実況ログに残す価値のある状態変化かを返す。lastは直前に残した状態 (まだ
     // 何も残していなければ空)。つながらないままだとウォッチドッグが20秒ごとに
     // 張り直すので、同じ状態の繰り返しと、失敗したまま再試行している間の接続
@@ -62,6 +94,7 @@ private:
     Callback m_callback;
     ConnectionCallback m_connCallback;
     StatusCallback m_statusCallback;
+    RoomCallback m_roomCallback;
     HANDLE m_hProcess    = nullptr;
     HANDLE m_hStdinWrite = nullptr;
     HANDLE m_hStdoutRead = nullptr; // overlapped read end
@@ -71,7 +104,7 @@ private:
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_connected{ false };
     std::atomic<bool> m_streamOpen{ false };
-    bool m_inPastChat = false; // inside an x_past_chat range (worker thread only)
+    PastChatTracker m_pastChat; // x_past_chat range state (worker thread only)
     std::string m_channel;
 
     void ReadLoop();

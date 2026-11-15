@@ -129,6 +129,47 @@ void JkcnslReader::CloseStream(bool failed)
         m_statusCallback(failed ? Status::Failed : Status::Disconnected);
 }
 
+/*static*/ bool JkcnslReader::ParseRoomLine(const std::string& line, RoomEvent& out)
+{
+    const size_t lt = line.find('<');
+    if (lt == std::string::npos) return false;
+    auto isTag = [&](const char* name) {
+        const size_t n = strlen(name);
+        return line.compare(lt + 1, n, name) == 0 && lt + 1 + n < line.size() && line[lt + 1 + n] == ' ';
+    };
+    const bool disconnect = isTag("x_disconnect");
+    if (!disconnect && !isTag("x_room")) return false;
+    const size_t gt = line.find('>', lt);
+    const std::string tag = line.substr(lt, gt == std::string::npos ? std::string::npos : gt - lt);
+    out = RoomEvent{};
+    out.disconnect = disconnect;
+    out.refuge = GetXmlAttr(tag, "refuge") == "1";
+    if (disconnect) {
+        out.status = atoi(GetXmlAttr(tag, "status").c_str());
+    } else {
+        out.loggedIn = GetXmlAttr(tag, "is_logged_in") == "1";
+        out.nickname = DecodeEntityReference(GetXmlAttr(tag, "nickname"));
+    }
+    return true;
+}
+
+void PastChatTracker::OnLine(const std::string& line)
+{
+    const size_t lt = line.find('<');
+    if (lt == std::string::npos) return;
+    auto isTag = [&](const char* name) {
+        const size_t n = strlen(name);
+        return line.compare(lt + 1, n, name) == 0 &&
+               lt + 1 + n < line.size() && (line[lt + 1 + n] == ' ' || line[lt + 1 + n] == '/' || line[lt + 1 + n] == '>');
+    };
+    bool begin = isTag("x_past_chat_begin");
+    // 混合接続で片方だけ切断したときも、その接続先の受信状態を戻す(NicoJK同様)
+    if (!begin && !isTag("x_past_chat_end") && !isTag("x_disconnect")) return;
+    const size_t gt = line.find('>', lt);
+    const std::string tag = line.substr(lt, gt == std::string::npos ? std::string::npos : gt - lt);
+    (tag.find(" refuge=\"1\"") != std::string::npos ? m_refuge : m_nico) = begin;
+}
+
 void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineBuf)
 {
     for (DWORD i = 0; i < size; i++) {
@@ -144,14 +185,16 @@ void JkcnslReader::ProcessBuffer(const char* buf, DWORD size, std::string& lineB
                     // jkcnsl closed the stream; the process stays alive waiting
                     // for a new command, so mark the stream dead for the watchdog.
                     CloseStream(c0 != '.');
+                    m_pastChat.Reset();
                 }
             }
-            // Past comments are backfilled inside <x_past_chat_begin>..<end>.
-            if (lineBuf.find("x_past_chat_begin") != std::string::npos)      m_inPastChat = true;
-            else if (lineBuf.find("x_past_chat_end") != std::string::npos)   m_inPastChat = false;
+            // Past comments are backfilled inside <x_past_chat_begin>..<end>, per source.
+            m_pastChat.OnLine(lineBuf);
+            RoomEvent room;
+            if (m_roomCallback && ParseRoomLine(lineBuf, room)) m_roomCallback(room);
             Comment c;
             if (ParseChatLine(lineBuf, c) && m_callback) {
-                c.past = m_inPastChat;
+                c.past = m_pastChat.IsPast(c.refuge);
                 std::vector<Comment> batch;
                 batch.push_back(std::move(c));
                 m_callback(std::move(batch));
@@ -314,7 +357,7 @@ bool JkcnslReader::Start(const std::wstring& jkcnslPath, const std::string& stre
     CloseHandle(pi.hThread);
     m_hProcess = pi.hProcess;
     m_channel  = streamCommand;
-    m_inPastChat = false;
+    m_pastChat.Reset();
     m_running  = true;
     m_streamOpen = true;
 

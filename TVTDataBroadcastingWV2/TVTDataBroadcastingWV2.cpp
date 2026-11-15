@@ -98,6 +98,8 @@ struct CommentStatusNotification
 {
     JkcnslReader::Status status;
     long long date;
+    std::string text;                                // 空でなければ既定の文言の代わりに使う
+    std::optional<JkcnslReader::RoomEvent> room;     // 接続先ごとの接続/切断 (statusは使わない)
 };
 
 #define IDT_SHOW_EVR_WINDOW 1
@@ -603,7 +605,9 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     // 直前に実況ログへ残した接続状況 (UIスレッドからのみ触る)
     std::optional<JkcnslReader::Status> m_lastLoggedCommentStatus;
     void AppendCommentLog(const nlohmann::json& items);
-    void QueueCommentStatus(JkcnslReader::Status status);
+    void QueueCommentStatus(JkcnslReader::Status status, std::string text = {},
+                            std::optional<JkcnslReader::RoomEvent> room = std::nullopt);
+    std::string m_refugeName = "避難所"; // 状態行での避難所の呼び名 (NX-Jikkyoなら"NX-Jikkyo")
     JkcnslLogin    m_jkcnslLogin;
     std::thread    m_authThread;
     std::mutex     m_authMutex;
@@ -1862,18 +1866,33 @@ LRESULT CDataBroadcastingWV2::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_APP_COMMENT_STATUS:
     {
         auto notification = std::unique_ptr<CommentStatusNotification>(reinterpret_cast<CommentStatusNotification*>(wParam));
-        // つながらないままだと20秒ごとに張り直すので、繰り返しは残さない。
-        const auto status = notification->status;
-        if (!JkcnslReader::ShouldLogStatus(pThis->m_lastLoggedCommentStatus, status)) break;
-        pThis->m_lastLoggedCommentStatus = status;
-        const char* text = "";
-        switch (status)
+        std::string text;
+        if (notification->room)
         {
-        case JkcnslReader::Status::Connecting: text = "コメントサーバーに接続開始しました。"; break;
-        case JkcnslReader::Status::Connected: text = "コメントサーバーに接続しました。"; break;
-        case JkcnslReader::Status::Disconnected: text = "コメントサーバーとの接続を終了しました。"; break;
-        case JkcnslReader::Status::Failed: text = "コメントサーバーとの通信に失敗しました。再接続を待ちます。"; break;
+            // NicoJKと同じく接続先を名指しする。<x_room>は接続先ごとに1回なので間引かない。
+            const auto& room = *notification->room;
+            const std::string target = room.refuge ? pThis->m_refugeName : "ニコニコ実況";
+            text = room.disconnect
+                ? target + "から切断または接続に失敗しました(status=" + std::to_string(room.status) + ")。"
+                : target + "に接続しました(" + (room.loggedIn ? "login=" : "") + room.nickname + ")。";
         }
+        else
+        {
+            // つながらないままだと20秒ごとに張り直すので、繰り返しは残さない。
+            const auto status = notification->status;
+            if (!JkcnslReader::ShouldLogStatus(pThis->m_lastLoggedCommentStatus, status)) break;
+            pThis->m_lastLoggedCommentStatus = status;
+            switch (status)
+            {
+            case JkcnslReader::Status::Connecting: text = "コメントサーバーに接続開始しました。"; break;
+            // 接続できたことは接続先ごとの<x_room>で知らせる(NicoJK同様)
+            case JkcnslReader::Status::Connected: break;
+            case JkcnslReader::Status::Disconnected: text = "コメントサーバーとの接続を終了しました。"; break;
+            case JkcnslReader::Status::Failed: text = "コメントサーバーとの通信に失敗しました。再接続を待ちます。"; break;
+            }
+            if (!notification->text.empty()) text = notification->text;
+        }
+        if (text.empty()) break;
         pThis->AppendCommentLog(nlohmann::json::array({
             { { "text", text }, { "date", notification->date }, { "system", true } }
         }));
@@ -3503,6 +3522,9 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 this->m_jkcnslReader.SetStatusCallback([this](JkcnslReader::Status status) {
                     this->QueueCommentStatus(status);
                 });
+                this->m_jkcnslReader.SetRoomCallback([this](const JkcnslReader::RoomEvent& room) {
+                    this->QueueCommentStatus(JkcnslReader::Status::Connected, {}, room);
+                });
                 this->m_jkcnslLogin.SetCallback([this](JkcnslLogin::Event ev, std::string msg) {
                     auto payload = std::make_unique<JkcnslLoginEvent>(JkcnslLoginEvent{ ev, std::move(msg) });
                     if (PostMessageW(this->hMessageWnd, WM_APP_LOGIN,
@@ -3695,8 +3717,9 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
                 }
             }
         }
-        // Past (backfilled) comments go to the log only, never flow on the canvas.
-        if (!c.past && !c.abone && !this->m_commentNg.IsNG(c))
+        // NicoJKと同じく、接続直後に届く過去コメントも流す(ログファイルには記録しない)。
+        // 流さないと、過去コメントを受け終えて新しいコメントが届くまで弾幕が始まらない。
+        if (!c.abone && !this->m_commentNg.IsNG(c))
         {
             arr.push_back({
                 { "text",       c.text       },
@@ -3732,7 +3755,8 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
     this->AppendCommentLog(logArr);
 }
 
-void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
+void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status, std::string text,
+                                              std::optional<JkcnslReader::RoomEvent> room)
 {
     // 接続処理とワーカースレッドの通知を同じキューに載せ、発生順に表示する。
     // ウィンドウがないときに投げるとスレッドメッセージになって誰も拾わないので、
@@ -3745,7 +3769,8 @@ void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status)
     const long long broadcast = this->packetQueue.getBroadcastTime();
     // 無効化直後などPostMessageに失敗した場合はここで解放する
     auto payload = std::make_unique<CommentStatusNotification>(CommentStatusNotification{
-        status, broadcast != 0 ? broadcast : static_cast<long long>(std::time(nullptr))
+        status, broadcast != 0 ? broadcast : static_cast<long long>(std::time(nullptr)),
+        std::move(text), std::move(room)
     });
     if (PostMessageW(this->hMessageWnd, WM_APP_COMMENT_STATUS,
                      reinterpret_cast<WPARAM>(payload.get()), 0))
@@ -4099,7 +4124,14 @@ void CDataBroadcastingWV2::UpdateCommentChannel(bool fromWatchdog)
     this->m_jkcnslReader.SetConnectionCallback([notify](bool connected) {
         notify({}, connected);
     });
-    this->QueueCommentStatus(JkcnslReader::Status::Connecting);
+    // NicoJKと同じく接続先を名指しする。Rコマンドは避難所(混合ならニコニコ実況も)、
+    // Lコマンドはニコニコ実況だけにつなぐ。
+    this->m_refugeName = this->GetIniItem(L"RefugeUri", L"").find(L"nx-jikkyo") != std::wstring::npos
+        ? "NX-Jikkyo" : "避難所";
+    std::string connectingText = cmd[0] == 'R'
+        ? std::string(isMix ? "ニコニコ実況と" : "") + this->m_refugeName + "に接続開始しました。"
+        : "ニコニコ実況に接続開始しました。";
+    this->QueueCommentStatus(JkcnslReader::Status::Connecting, std::move(connectingText));
     if (!this->m_jkcnslReader.Start(this->GetJkcnslPath(), cmd))
         this->QueueCommentStatus(JkcnslReader::Status::Failed);
     this->PushAuthState(); // reflect the new post target colour

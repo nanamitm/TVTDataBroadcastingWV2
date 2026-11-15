@@ -159,7 +159,7 @@ BMLおよびB62のネイティブ中継通信は、通常のWindowsの信頼設�
 
 ### 接続先
 
-INI `[TVTDataBroadcastingWV2]`の`RefugeUri`(NX-Jikkyo等の避難所URI)、`chatStreamID`(通常のニコニコ実況のID)、`RefugeMixing`(両方を同時取得して混合表示)、`PostToRefuge`(投稿先選択)で接続方式を切り替えます。
+INI `[TVTDataBroadcastingWV2]`の`RefugeUri`(NX-Jikkyo等の避難所URI)、`RefugeMixing`(両方を同時取得して混合表示)、`PostToRefuge`(投稿先選択)で接続方式を切り替えます。実況ID(jk番号)ごとのニコニコ実況のストリームID(`chatStreamID`)と避難所側のID(`refugeChatStreamID`)は`[ChatStreams]`セクションに`{jkID}={chatStreamID}[,{refugeChatStreamID}]`の形式で書きます。内蔵テーブルに上書きマージされるため、内蔵テーブルにあるチャンネルは書かなくても接続できます。書式の詳細はINIのコメントを参照してください。
 
 ### キャッシュサーバー経由の接続
 

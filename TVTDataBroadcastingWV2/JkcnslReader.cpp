@@ -27,6 +27,37 @@ static void JkDbg(const char* msg)
     return "";
 }
 
+// NicoJKのDecodeEntityReference(Util.cpp)と同じ参照だけを1回だけ戻す。
+// "&amp;gt;" は "&gt;" になる(二重に戻さない)。知らない参照はそのまま残す。
+/*static*/ std::string JkcnslReader::DecodeEntityReference(const std::string& s)
+{
+    static const struct { char ch; const char* ref; size_t len; } kRefs[] = {
+        { '<',  "lt;",   3 },
+        { '>',  "gt;",   3 },
+        { '&',  "amp;",  4 },
+        { '"',  "quot;", 5 },
+        { '\'', "apos;", 5 },
+        { '\n', "#10;",  4 },
+        { '\r', "#13;",  4 },
+    };
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (c == '&') {
+            for (const auto& r : kRefs) {
+                if (s.compare(i + 1, r.len, r.ref) == 0) {
+                    c = r.ch;
+                    i += r.len;
+                    break;
+                }
+            }
+        }
+        out += c;
+    }
+    return out;
+}
+
 /*static*/ bool JkcnslReader::ParseChatXml(const std::string& xml, Comment& out)
 {
     if (xml.compare(0, 5, "<chat") != 0) return false;
@@ -43,7 +74,9 @@ static void JkDbg(const char* msg)
     if (dateStr.empty()) return false;
     try { out.date = std::stoll(dateStr); } catch (...) { return false; }
 
-    out.text = xml.substr(contentStart + 1, contentEnd - contentStart - 1);
+    // jkcnslは本文の & < > と改行を実体参照にして渡してくる。NicoJKのProcessChatTagと
+    // 同じく、ここで元の文字に戻す(戻さないと ">>38" が "&gt;&gt;38" と流れる)。
+    out.text = DecodeEntityReference(xml.substr(contentStart + 1, contentEnd - contentStart - 1));
 
     out.userId = GetXmlAttr(attrs, "user_id");
     out.mail   = GetXmlAttr(attrs, "mail");

@@ -55,6 +55,8 @@ public:
     // jkcnslの行頭マーカーを除いた "<chat ...>...</chat>" 単体を解釈する。
     // ParseChatLineと違い本文が空でも成功する([CustomReplace]の置換結果用)。
     static bool ParseChatXml(const std::string& xml, Comment& out);
+    // chat本文の実体参照(&lt; &gt; &amp; &quot; &apos; &#10; &#13;)を文字に戻す。
+    static std::string DecodeEntityReference(const std::string& s);
 
 private:
     Callback m_callback;

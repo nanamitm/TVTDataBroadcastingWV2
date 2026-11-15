@@ -75,6 +75,12 @@ private:
     // Find the smallest free numeric index for keyPrefix (e.g. "User") in [NG].
     int NextFreeIndex(const wchar_t* keyPrefix) const;
 
+public:
+    // NG の正規表現を当てるための NFKC 正規化(全角英数→半角、半角カナ→全角など)。
+    // 正規化できなければ text をそのまま返す。
+    static std::string NormalizeForMatch(const std::string& text);
+
+private:
     static std::vector<std::string> SplitMailTokens(const std::string& mail);
     static std::string  WideToUtf8(const std::wstring& w);
     static std::wstring Utf8ToWide(const std::string& s);

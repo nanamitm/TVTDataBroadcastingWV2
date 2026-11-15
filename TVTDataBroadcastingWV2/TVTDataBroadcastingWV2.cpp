@@ -998,6 +998,22 @@ bool CDataBroadcastingWV2::SaveCaptionSettings(const NativeCaptionSettings& sett
            setInt(L"OneSegCaptionOverlay", settings.oneSegCaptionOverlay);
 }
 
+// WritePrivateProfileStringW は BOM のない新規ファイルを ANSI (CP932) で作るため、
+// 手書きの UTF-8 と混在して文字化けする。INI が無いときは UTF-16 LE の BOM だけを書いた
+// 空ファイルを先に作り、以降の読み書きを Unicode にする。既存ファイルには触れない。
+static void EnsureUnicodeIniFile(const std::wstring& path)
+{
+    wil::unique_hfile file(CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                       FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!file)
+    {
+        return;
+    }
+    static const BYTE bom[] = { 0xFF, 0xFE };
+    DWORD written = 0;
+    WriteFile(file.get(), bom, sizeof(bom), &written, nullptr);
+}
+
 bool CDataBroadcastingWV2::Initialize()
 {
     auto filename = wil::GetModuleFileNameW<std::wstring>(g_hinstDLL);
@@ -1009,6 +1025,7 @@ bool CDataBroadcastingWV2::Initialize()
     webView2Directory = path / L"WebView2";
     path.replace_extension(L".ini");
     this->iniFile = path;
+    EnsureUnicodeIniFile(this->iniFile);
     m_pApp->SetEventCallback(EventCallback, this);
     m_pApp->RegisterCommand(IDC_KEY_D, L"DataButton", L"dボタン");
     m_pApp->RegisterCommand(IDC_KEY_D_OR_ENABLE_PLUGIN, L"DataButtonOrEnablePlugin", L"プラグイン有効/dボタン");

@@ -184,14 +184,40 @@ bool CommentNG::IsNGExceptUser(const Comment& c) const
             }
         }
     }
+    if (m_regexes.empty()) return false;
+    // 「ａ」「ｱ」のような全角・半角の書き換えで NG ワードをよけられないよう、NFKC で
+    // そろえた本文にも当てる。元の本文にも当てるので、全角で書いた既存パターンも効く。
+    std::string normalized = NormalizeForMatch(c.text);
     for (const auto& r : m_regexes) {
         try {
             if (std::regex_search(c.text, r.re)) return true;
+            if (normalized != c.text && std::regex_search(normalized, r.re)) return true;
         } catch (const std::regex_error&) {
             // Ignore at match time as well.
         }
     }
     return false;
+}
+
+std::string CommentNG::NormalizeForMatch(const std::string& text)
+{
+    // ASCII だけなら NFKC で変わらない。コメントの多くはここで終わる。
+    if (std::all_of(text.begin(), text.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x80; }))
+        return text;
+    std::wstring w = Utf8ToWide(text);
+    int len = NormalizeString(NormalizationKC, w.c_str(), static_cast<int>(w.size()), nullptr, 0);
+    // 返る長さは見積もりなので、足りなければ言われた長さで取り直す。
+    for (int tries = 0; len > 0 && tries < 3; ++tries) {
+        std::wstring out(len, L'\0');
+        int n = NormalizeString(NormalizationKC, w.c_str(), static_cast<int>(w.size()), &out[0], len);
+        if (n > 0) {
+            out.resize(n);
+            return WideToUtf8(out);
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) break;
+        len = -n;
+    }
+    return text; // 不正な文字などで正規化できなければ元の本文だけで判定する
 }
 
 bool CommentNG::HasUser(const std::string& userId) const

@@ -97,6 +97,22 @@ static void CheckStatusLogThrottling()
         throw std::runtime_error("A reconnect after a clean disconnect was dropped");
 }
 
+// jkcnslが実体参照にした本文は、NicoJKと同じく元の文字に戻して流す。
+static void CheckEntityDecoding()
+{
+    Comment c;
+    if (!JkcnslReader::ParseChatLine(
+            "-<chat date=\"1\" user_id=\"5ch:x\">&gt;&gt;38 a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos;&#10;f&#13;</chat>", c))
+        throw std::runtime_error("Entity chat line was not parsed");
+    if (c.text != ">>38 a&b <c> \"d\" 'e'\nf\r")
+        throw std::runtime_error("Entity references were not decoded");
+    // 1回だけ戻す。&amp;gt; は &gt; のまま、知らない参照や裸の & は残す。
+    if (JkcnslReader::DecodeEntityReference("&amp;gt; &nbsp; & &") != "&gt; &nbsp; & &")
+        throw std::runtime_error("Entity references were decoded more than once");
+    if (c.raw.find("&gt;&gt;38") == std::string::npos)
+        throw std::runtime_error("Raw chat tag for the logfile must stay encoded");
+}
+
 int main(int argc, char**)
 {
     if (argc > 1) {
@@ -128,6 +144,7 @@ int main(int argc, char**)
         CheckStream(path, "Lwait", { Status::Connected, Status::Disconnected }, true);
         CheckQueuedCommentsAfterSwitch(path);
         CheckStatusLogThrottling();
+        CheckEntityDecoding();
         std::cout << "JkcnslReader status tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -2351,7 +2351,23 @@ void CDataBroadcastingWV2::InitWebView2()
                     if (!this->GetIniItem(L"CommentEnabled", 1)) opacityPct = 0;
                     int durationMs = this->GetIniItem(L"CommentDuration", 4000);
                     durationMs = std::max(1000, std::min(5000, durationMs));
-                    std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"rgba(0,0,0,0.7)");
+                    // CommentShadowColorを書いたときは従来どおり全コメントをその1色で影付けする。
+                    // 書いていなければNicoJKと同じく接続先(ニコニコ/避難所)と文字色で影の色を選ぶ。
+                    std::wstring shadowColorW = this->GetIniItem(L"CommentShadowColor", L"");
+                    nlohmann::json targetShadow = nullptr;
+                    if (shadowColorW.empty())
+                    {
+                        auto col = [this](const wchar_t* key, const wchar_t* def) {
+                            return wstrToUTF8String(this->GetIniItem(key, def).c_str());
+                        };
+                        targetShadow = {
+                            { "nico_light",   col(L"NicoLightShadowColor",   L"white")   },
+                            { "nico_dark",    col(L"NicoDarkShadowColor",    L"black")   },
+                            { "refuge_light", col(L"RefugeLightShadowColor", L"pink")    },
+                            { "refuge_dark",  col(L"RefugeDarkShadowColor",  L"#990000") },
+                        };
+                        shadowColorW = L"rgba(0,0,0,0.7)";
+                    }
                     std::string shadowColor = wstrToUTF8String(shadowColorW.c_str());
                     bool shadowEnabled  = this->GetIniItem(L"CommentShadow",  1) != 0;
                     bool outlineEnabled = this->GetIniItem(L"CommentOutline", 0) != 0;
@@ -2362,6 +2378,7 @@ void CDataBroadcastingWV2::InitWebView2()
                         { "opacity",           opacityPct / 100.0 },
                         { "duration_ms",       durationMs         },
                         { "shadow_color",      shadowColor        },
+                        { "target_shadow",     targetShadow       },
                         { "shadow_enabled",    shadowEnabled      },
                         { "outline_enabled",   outlineEnabled     },
                         { "font_size_medium",  fontSizeMedium     },
@@ -3690,6 +3707,7 @@ void CDataBroadcastingWV2::SendComments(std::vector<Comment> comments)
                 { "align",      c.align      },
                 { "insertLast", c.insertLast },
                 { "yourpost",   c.yourpost   },
+                { "refuge",     c.refuge     },
             });
         }
         // nb = NG by regex/command (fixed); user NG is applied live in the panel.
@@ -5192,7 +5210,7 @@ LR"HTML(#lb:hover{background:var(--hov)}
 .le:hover{background:var(--hov)}
 .le .lt{flex:0 0 auto;opacity:.55;font-size:8pt;font-variant-numeric:tabular-nums}
 .le .lm{flex:0 0 auto;font-size:8pt;font-family:monospace;opacity:.85}
-.le .lm.rf{color:#c33}.le .lm.nc{color:#36c}
+.le .lm.rf{color:var(--mrf,#c33)}.le .lm.nc{color:var(--mnc,#36c)}
 .le .lx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .le.ng{opacity:.4}.le.ng .lx{text-decoration:line-through}
 .le.past{opacity:.65;font-style:italic}
@@ -5436,6 +5454,11 @@ function _update(m){
     if(m.sys)s.setProperty('--sys',m.sys);
     document.body.style.background=m.bg;
   }
+  else if(m.type==='marker'){
+    const s=document.documentElement.style;
+    if(m.nico)s.setProperty('--mnc',m.nico);
+    if(m.refuge)s.setProperty('--mrf',m.refuge);
+  }
 }
 </script></body></html>)HTML";
 
@@ -5581,6 +5604,16 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                                 this->momentumWebView->ExecuteScript(jsonToUpdateScript(log).c_str(), nullptr);
                             }
                             this->SendMomentumTheme();
+                            // ログのユーザーID欄の色 (NicoJKのnicoMarkerColor/refugeMarkerColor相当)。
+                            // 未設定ならパネルのCSSの既定色のまま
+                            {
+                                nlohmann::json mj{
+                                    { "type",   "marker" },
+                                    { "nico",   wstrToUTF8String(this->GetIniItem(L"NicoMarkerColor",   L"").c_str()) },
+                                    { "refuge", wstrToUTF8String(this->GetIniItem(L"RefugeMarkerColor", L"").c_str()) },
+                                };
+                                this->momentumWebView->ExecuteScript(jsonToUpdateScript(mj).c_str(), nullptr);
+                            }
                             // Restore the saved sort order before sending channels.
                             {
                                 int col = this->GetIniItem(L"MomentumSortColumn", 2);

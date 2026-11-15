@@ -1,6 +1,6 @@
 import { HybridcastHost, type HybridcastIncoming, type HybridcastOutgoing } from "./hybridcast";
 import { BroadcastCertificateCollector, type BroadcastCertificatesMessage } from "./broadcast_certificates";
-import { CommentData, CommentRenderer } from "./comment";
+import { CommentData, CommentRenderer, TargetShadowColors } from "./comment";
 import { ChannelInfo, ChannelsClient } from "./channels";
 import type { ComponentPMT, ResponseMessage } from "web-bml/protocol";
 import { BMLBrowser, BMLBrowserFontFace, EPG, Indicator, IP, InputApplication, InputCancelReason, InputCharacterType, playRomSound } from "web-bml";
@@ -662,6 +662,8 @@ type ToWebViewMessage = HybridcastIncoming | {
     opacity: number,
     duration_ms?: number,
     shadow_color?: string,
+    // nullなら接続先別の影を使わず、shadow_colorの1色で影付けする
+    target_shadow?: TargetShadowColors | null,
     shadow_enabled?: boolean,
     outline_enabled?: boolean,
     font_size_medium?: number,
@@ -898,6 +900,9 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         }
         if (data.shadow_color !== undefined) {
             commentRenderer.setShadowColor(data.shadow_color);
+        }
+        if (data.target_shadow !== undefined) {
+            commentRenderer.setTargetShadow(data.target_shadow);
         }
         if (data.shadow_enabled !== undefined) {
             commentRenderer.setShadowEnabled(data.shadow_enabled);

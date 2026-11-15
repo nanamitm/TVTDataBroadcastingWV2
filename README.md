@@ -196,6 +196,8 @@ jkcnsl(nanamitm版)の`cache_server_url`を設定すると、ニコニコ実況�
 
 設定ダイアログから`CommentOpacity`(コメント透過率、0-100、既定100)と`CommentDuration`(コメント表示時間、1000-5000ms、既定4000)を変更できます。
 
+コメントの影はNicoJKと同様に、接続先(ニコニコ/避難所)ごとの色の組から文字色の明るさに応じて選びます(`NicoLightShadowColor`/`NicoDarkShadowColor`/`RefugeLightShadowColor`/`RefugeDarkShadowColor`、既定は白/黒/ピンク/`#990000`)。`CommentShadowColor`を書くと従来どおり全コメントをその1色で影付けします。「ログ」タブのユーザーID欄の色は`NicoMarkerColor`/`RefugeMarkerColor`で変えられます。
+
 ### チャンネル対応
 
 放送のNetworkID/ServiceIDからニコニコ実況chへの対応付けは、本プラグイン自身のINI `[Channels]`を優先し、未設定のキーのみ既存の`NicoJK.ini`の`[Channels]`セクション(配置先の2階層上)へフォールバックします。BS/CS/プレミアム等は実際のNetworkID、地上波は`0xF`をキーの先頭に使います。

@@ -7,6 +7,15 @@ export interface CommentData {
     align?: "left" | "right" | "";  // ue/shitaコメの寄せ。既定は中央
     insertLast?: boolean;           // 直前のコメントの隣のレーンに積む
     yourpost?: boolean;             // 背景を敷いて強調表示する
+    refuge?: boolean;               // 避難所から届いたコメント
+}
+
+// NicoJKの接続先別の影の色。light/darkは文字色の明るさで選ぶ
+export interface TargetShadowColors {
+    nico_light: string;
+    nico_dark: string;
+    refuge_light: string;
+    refuge_dark: string;
 }
 
 interface ActiveComment {
@@ -20,6 +29,7 @@ interface ActiveComment {
     laneKey: string;
     lane: number;
     yourpost: boolean;
+    shadowColor: string | null;  // nullなら全体のshadowColorを使う
     createdAt: number;
 }
 
@@ -51,6 +61,7 @@ export class CommentRenderer {
     private durationMs = DEFAULT_DURATION_MS;
     private fontSize: Record<string, number> = { ...DEFAULT_FONT_SIZE };
     private shadowColor = DEFAULT_SHADOW_COLOR;
+    private targetShadow: TargetShadowColors | null = null;
     private shadowEnabled = true;
     private outlineEnabled = true;
     // レーンごとの「次にコメントを追加できる時刻」(画面の高さに応じて伸ばす)
@@ -129,6 +140,7 @@ export class CommentRenderer {
             laneKey,
             lane,
             yourpost: data.yourpost === true,
+            shadowColor: this.pickShadowColor(color, data.refuge === true),
             createdAt: now,
         });
     }
@@ -141,6 +153,22 @@ export class CommentRenderer {
             }
         }
         return -1;
+    }
+
+    // NicoJKと同じく、文字色と暗色の影との輝度の差が小さいときは明色の影を使う
+    private pickShadowColor(color: string, refuge: boolean): string | null {
+        const t = this.targetShadow;
+        if (t === null) return null;
+        const light = refuge ? t.refuge_light : t.nico_light;
+        const dark = refuge ? t.refuge_dark : t.nico_dark;
+        return this.brightness(color) - this.brightness(dark) < 255 ? light : dark;
+    }
+
+    // NicoJKのGetBrightnessと同じ重み付け (0〜2550)
+    private brightness(color: string): number {
+        const m = /rgba\((\d+),(\d+),(\d+)/.exec(this.toRgba(color, 1).replace(/\s/g, ""));
+        if (m === null) return 0;
+        return 3 * Number(m[1]) + 6 * Number(m[2]) + Number(m[3]);
     }
 
     // 任意のCSS色をrgba()に正規化する(yourpostの背景を半透明にするため)
@@ -189,6 +217,10 @@ export class CommentRenderer {
         this.shadowColor = color;
     }
 
+    setTargetShadow(colors: TargetShadowColors | null) {
+        this.targetShadow = colors;
+    }
+
     setShadowEnabled(enabled: boolean) {
         this.shadowEnabled = enabled;
     }
@@ -219,6 +251,7 @@ export class CommentRenderer {
             }
 
             ctx.font = `bold ${c.fontSize}px sans-serif`;
+            const shadowColor = c.shadowColor ?? this.shadowColor;
             if (c.yourpost) {
                 // 自分の投稿は背景を敷いて目立たせる(NicoJKのbackOpacity相当)
                 const offset = Math.max(1, c.fontSize / 15);
@@ -226,13 +259,13 @@ export class CommentRenderer {
                 const h = c.fontSize * 1.2 + offset + 3;
                 const grad = ctx.createLinearGradient(0, top, 0, top + h);
                 grad.addColorStop(0, this.toRgba(c.color, YOURPOST_BACK_ALPHA));
-                grad.addColorStop(1, this.toRgba(this.shadowColor, YOURPOST_BACK_ALPHA));
+                grad.addColorStop(1, this.toRgba(shadowColor, YOURPOST_BACK_ALPHA));
                 ctx.fillStyle = grad;
                 ctx.fillRect(x - 1, top, c.textWidth + offset + 3, h);
             }
             if (this.shadowEnabled) {
                 const shadowOffset = Math.max(1, c.fontSize / 15);
-                ctx.fillStyle = this.shadowColor;
+                ctx.fillStyle = shadowColor;
                 ctx.fillText(c.text, x + shadowOffset, c.y + shadowOffset);
             }
             if (this.outlineEnabled) {

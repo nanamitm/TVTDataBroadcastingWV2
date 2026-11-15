@@ -16,8 +16,8 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # 同梱するjkcnsl (コメント機能が使う外部ツール)。NicoJKのリリースと同じ版・同じzipを使う
-  JKCNSL_VERSION: v20261018a
-  JKCNSL_SHA256: 351c846bc4ba59f6c1e476e0c513715d9d9a1b5ba3a15c8d019b5de91cd9b137
+  JKCNSL_VERSION: v20261115
+  JKCNSL_SHA256: b33cc5fb8616cdb07d3fd7b441067504f1a4748b31b7d3e9eefd426c377fd597
 
 jobs:
   build:

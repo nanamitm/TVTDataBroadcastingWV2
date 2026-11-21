@@ -9,6 +9,7 @@
 #define IDD_MOMENTUM_PANEL              107
 #define IDD_SETTING_CAPTION             108
 #define IDD_SETTING_CACHE               109
+#define IDD_SETTING_COMMENT_LOG         110
 #define IDC_TOGGLE_COMMENT              1055
 #define IDC_KEY_D                       1000
 #define IDC_KEY_LEFT                    1001
@@ -79,15 +80,21 @@
 #define IDC_CHECK_TTML_CAPTION          1072
 #define IDC_CHECK_ONESEG_CAPTION_OVERLAY 1073
 #define IDC_EDIT_REMOTE_TARGET_TOKEN    1074
+#define IDC_BUTTON_COMMENT_LOG_SETTING  1075
+#define IDC_CHECK_COMMENT_LOG           1076
+#define IDC_EDIT_COMMENT_LOG_FOLDER     1077
+#define IDC_EDIT_COMMENT_LOG_DAYS       1078
+#define IDC_EDIT_COMMENT_LOG_TOTAL      1079
+#define IDC_EDIT_COMMENT_LOG_FILE       1080
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        110
+#define _APS_NEXT_RESOURCE_VALUE        111
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1075
+#define _APS_NEXT_CONTROL_VALUE         1081
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

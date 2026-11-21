@@ -20,6 +20,8 @@
 #include <deque>
 #include <functional>
 #include <optional>
+#include <climits>
+#include <string_view>
 #include <wil/stl.h>
 #include <wil/win32_helpers.h>
 #include "NVRAMSettingsDialog.h"
@@ -666,6 +668,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     bool EnsureNativeCaptionRenderer();
     NativeCaptionSettings LoadCaptionSettings();
     bool SaveCaptionSettings(const NativeCaptionSettings& settings);
+    CommentLogLimits LoadCommentLogLimits();
+    void ReloadCommentLogSettings();
     void UpdateVolume();
     std::wstring GetIniItem(const wchar_t* key, const wchar_t* def);
     INT GetIniItem(const wchar_t* key, INT def);
@@ -738,6 +742,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void SendMomentumChannels();
     static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static INT_PTR CALLBACK CacheSettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
+    static INT_PTR CALLBACK CommentLogSettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData);
     static BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
     static LRESULT CALLBACK MessageWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -951,6 +956,64 @@ INT CDataBroadcastingWV2::GetIniItem(const wchar_t* key, INT def)
 bool CDataBroadcastingWV2::SetIniItem(const wchar_t* key, const wchar_t* data)
 {
     return WritePrivateProfileStringW(L"TVTDataBroadcastingWV2", key, data, this->iniFile.c_str());
+}
+
+namespace {
+constexpr struct {
+    const wchar_t* key;
+    int control;
+    unsigned int CommentLogLimits::* value;
+} kCommentLogLimitFields[] = {
+    { L"LogfileRetentionDays", IDC_EDIT_COMMENT_LOG_DAYS, &CommentLogLimits::retentionDays },
+    { L"LogfileMaxTotalMiB", IDC_EDIT_COMMENT_LOG_TOTAL, &CommentLogLimits::totalMiB },
+    { L"LogfileMaxFileMiB", IDC_EDIT_COMMENT_LOG_FILE, &CommentLogLimits::fileMiB },
+};
+
+std::optional<unsigned int> ParseCommentLogLimit(std::wstring_view text)
+{
+    if (text.empty() || text.size() > 10) return std::nullopt;
+    unsigned long long value = 0;
+    for (const wchar_t c : text) {
+        if (c < L'0' || c > L'9') return std::nullopt;
+        value = value * 10 + (c - L'0');
+    }
+    if (value > INT_MAX) return std::nullopt;
+    return static_cast<unsigned int>(value);
+}
+}
+
+CommentLogLimits CDataBroadcastingWV2::LoadCommentLogLimits()
+{
+    CommentLogLimits limits;
+    for (const auto& field : kCommentLogLimitFields) {
+        limits.*(field.value) = ParseCommentLogLimit(this->GetIniItem(field.key, L"0")).value_or(0);
+    }
+    return limits;
+}
+
+void CDataBroadcastingWV2::ReloadCommentLogSettings()
+{
+    auto folder = this->GetIniItem(L"LogfileFolder", L"");
+    const bool folderChanged = folder != this->m_logFolder;
+    this->m_logFolder = std::move(folder);
+    this->m_logWriter.Configure(this->m_logFolder, this->GetIniItem(L"LogfileMode", 0) != 0,
+                                this->LoadCommentLogLimits());
+    if (!this->m_commentSessionEnabled) return;
+
+    if (!this->m_logFolder.empty()) {
+        SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
+    } else {
+        KillTimer(this->hMessageWnd, IDT_PLAYBACK);
+    }
+    if (folderChanged && this->m_playbackActive) {
+        this->m_logReader.Configure(this->m_logFolder, this->m_currentJkID);
+        this->m_playbackLastT = 0;
+        this->ClearOnScreenComments();
+        if (this->m_logFolder.empty()) {
+            this->m_playbackActive = false;
+            this->UpdateCommentChannel();
+        }
+    }
 }
 
 // キー名と既定値はTVCaption3に合わせている
@@ -3540,18 +3603,8 @@ bool CDataBroadcastingWV2::OnPluginEnable(bool fEnable)
                 // (nanamitm版)がこの設定を用意している目的そのものであり、
                 // NicoJKと共有するjkcnsl.jsonの利用者設定を勝手に消さない。
                 this->m_chTable.Load(this->iniFile);
-                // Comment log recording (NicoJK-compatible). Use a folder
-                // separate from NicoJK's to avoid conflicts.
-                {
-                    bool logEnabled = this->GetIniItem(L"LogfileMode", 0) != 0;
-                    this->m_logFolder = this->GetIniItem(L"LogfileFolder", L"");
-                    this->m_logWriter.Configure(this->m_logFolder, logEnabled);
-                }
-                // Playback sync: poll TOT and feed recorded comments during file
-                // playback. Needs a log folder.
                 this->m_commentSessionEnabled = true;
-                if (!this->m_logFolder.empty())
-                    SetTimer(this->hMessageWnd, IDT_PLAYBACK, 250, nullptr);
+                this->ReloadCommentLogSettings();
                 // コメントサーバ切断の定期チェック。
                 SetTimer(this->hMessageWnd, IDT_JK_WATCHDOG, JK_WATCHDOG_INTERVAL, nullptr);
                 this->RefreshAuthState();
@@ -4847,6 +4900,67 @@ INT_PTR CALLBACK CDataBroadcastingWV2::CacheSettingsDlgProc(HWND hDlg, UINT uMsg
     return 0;
 }
 
+INT_PTR CALLBACK CDataBroadcastingWV2::CommentLogSettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM, void* pClientData)
+{
+    auto* pThis = static_cast<CDataBroadcastingWV2*>(pClientData);
+    if (uMsg == WM_INITDIALOG) {
+        CheckDlgButton(hDlg, IDC_CHECK_COMMENT_LOG,
+                       pThis->GetIniItem(L"LogfileMode", 0) ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemTextW(hDlg, IDC_EDIT_COMMENT_LOG_FOLDER, pThis->GetIniItem(L"LogfileFolder", L"").c_str());
+        const auto limits = pThis->LoadCommentLogLimits();
+        for (const auto& field : kCommentLogLimitFields) {
+            SetDlgItemInt(hDlg, field.control, limits.*(field.value), FALSE);
+        }
+        return TRUE;
+    }
+    if (uMsg == WM_CLOSE || (uMsg == WM_COMMAND && LOWORD(wParam) == IDCANCEL)) {
+        EndDialog(hDlg, IDCANCEL);
+        return TRUE;
+    }
+    if (uMsg != WM_COMMAND || LOWORD(wParam) != IDOK) return FALSE;
+
+    CommentLogLimits limits;
+    for (const auto& field : kCommentLogLimitFields) {
+        wchar_t text[12]{};
+        const auto value = ParseCommentLogLimit({ text, static_cast<size_t>(GetDlgItemTextW(hDlg, field.control, text, _countof(text))) });
+        if (!value) {
+            MessageBoxW(hDlg, L"上限は0～2147483647の整数で指定してください。0は無制限です。",
+                        L"コメントログの設定", MB_ICONWARNING | MB_OK);
+            SetFocus(GetDlgItem(hDlg, field.control));
+            return TRUE;
+        }
+        limits.*(field.value) = *value;
+    }
+
+    const HWND folderEdit = GetDlgItem(hDlg, IDC_EDIT_COMMENT_LOG_FOLDER);
+    std::wstring folder(GetWindowTextLengthW(folderEdit) + 1, L'\0');
+    folder.resize(GetWindowTextW(folderEdit, folder.data(), static_cast<int>(folder.size())));
+    const bool enabled = IsDlgButtonChecked(hDlg, IDC_CHECK_COMMENT_LOG) == BST_CHECKED;
+    const auto first = folder.find_first_not_of(L" \t");
+    if (first == std::wstring::npos) folder.clear();
+    else folder = folder.substr(first, folder.find_last_not_of(L" \t") - first + 1);
+    if (enabled && folder.empty()) {
+        MessageBoxW(hDlg, L"コメントを保存する場合は保存先フォルダーを指定してください。",
+                    L"コメントログの設定", MB_ICONWARNING | MB_OK);
+        SetFocus(folderEdit);
+        return TRUE;
+    }
+
+    bool saved = pThis->SetIniItem(L"LogfileFolder", folder.c_str());
+    for (const auto& field : kCommentLogLimitFields) {
+        saved = saved && pThis->SetIniItem(field.key, std::to_wstring(limits.*(field.value)).c_str());
+    }
+    saved = saved && pThis->SetIniItem(L"LogfileMode", enabled ? L"1" : L"0");
+    if (!saved) {
+        MessageBoxW(hDlg, L"コメントログの設定を保存できませんでした。",
+                    L"コメントログの設定", MB_ICONERROR | MB_OK);
+        return TRUE;
+    }
+    pThis->ReloadCommentLogSettings();
+    EndDialog(hDlg, IDOK);
+    return TRUE;
+}
+
 INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, void* pClientData)
 {
     CDataBroadcastingWV2* pThis = static_cast<CDataBroadcastingWV2*>(pClientData);
@@ -5010,6 +5124,17 @@ INT_PTR CALLBACK CDataBroadcastingWV2::SettingsDlgProc(HWND hDlg, UINT uMsg, WPA
                     pThis->SendOneSegCaptionConfig();
                 }
             }
+        }
+        else if (LOWORD(wParam) == IDC_BUTTON_COMMENT_LOG_SETTING)
+        {
+            TVTest::ShowDialogInfo Info;
+            Info.Flags = 0;
+            Info.hinst = g_hinstDLL;
+            Info.pszTemplate = MAKEINTRESOURCE(IDD_SETTING_COMMENT_LOG);
+            Info.pMessageFunc = CommentLogSettingsDlgProc;
+            Info.pClientData = pThis;
+            Info.hwndOwner = hDlg;
+            pThis->m_pApp->ShowDialog(&Info);
         }
         else if (LOWORD(wParam) == IDC_BUTTON_CACHE_SETTING)
         {

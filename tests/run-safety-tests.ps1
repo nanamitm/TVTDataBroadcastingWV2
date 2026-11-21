@@ -41,6 +41,10 @@ cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcasti
 if errorlevel 1 exit /b 1
 "$output\comment-log-reader.exe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\CommentLogWriterTests.cpp TVTDataBroadcastingWV2\CommentLogWriter.cpp /Fo:"$output\\" /Fe:"$output\comment-log-writer.exe"
+if errorlevel 1 exit /b 1
+"$output\comment-log-writer.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"TVTDataBroadcastingWV2" /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\CommentNGTests.cpp TVTDataBroadcastingWV2\CommentNG.cpp /Fo:"$output\\" /Fe:"$output\comment-ng.exe"
 if errorlevel 1 exit /b 1
 "$output\comment-ng.exe"

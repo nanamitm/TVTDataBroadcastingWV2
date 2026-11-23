@@ -23,6 +23,17 @@ int main() {
         Check(Allowed(Permission(L"https://example.test/", nlohmann::json::array(), false), "readPersistentArray"), "Absent descriptor compatibility lost");
         Check(!Allowed(0x1fff, "unknownMethod") && !Allowed(-1, "isRecord"), "Unknown or unmanaged method allowed");
         Check(Permission(L"https://example.test/app/", nlohmann::json::array({42}), false) < 0, "Malformed boundary accepted");
+        for (const auto* body : {"[]", "null", "{", R"({"method":123})", R"({"method":"storageGet","params":[]})",
+            R"({"method":"storageGet"})", R"({"method":"storageSet","params":{"key":"_common0","value":false}})",
+            R"({"method":"setGreg","params":{"index":18446744073709551615,"value":"x"}})",
+            R"({"method":"readPersistentArray","params":{"filename":false}})",
+            R"({"method":"writePersistentArray","params":{"filename":"nvram://x","structure":"U:1B","data":42}})"}) {
+            Check(!ParseRequest(body), "Malformed RPC request was accepted");
+        }
+        Check(ParseRequest(R"({"method":"getCurrentEvent","params":null})").has_value(), "Null no-argument params rejected");
+        Check(ParseRequest(R"({"method":"storageGet","params":{"key":"_common0"}})").has_value(), "Storage request rejected");
+        Check(ParseRequest(R"({"method":"readPersistentArray","params":{"filename":"nvram://receiverinfo/zipcode"}})").has_value(), "Optional structure rejected");
+        Check(ParseRequest(R"({"method":"writePersistentArray","params":{"filename":"nvram://x","structure":"U:1B","data":[1]}})").has_value(), "Valid array write rejected");
         std::cout << "HTML5 native RPC authorization tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

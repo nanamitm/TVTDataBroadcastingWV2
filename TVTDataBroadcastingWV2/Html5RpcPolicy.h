@@ -8,6 +8,29 @@
 #include "thirdparty/json.hpp"
 
 namespace Html5RpcPolicy {
+struct Request {
+    std::string method;
+    nlohmann::json params;
+};
+inline std::optional<Request> ParseRequest(std::string_view body) {
+    auto json = nlohmann::json::parse(body, nullptr, false);
+    if (!json.is_object() || !json.contains("method") || !json["method"].is_string()) return std::nullopt;
+    Request request{json["method"].get<std::string>(), json.value("params", nlohmann::json())};
+    if (request.method.empty() || request.method.size() > 64
+        || (!request.params.is_null() && !request.params.is_object())) return std::nullopt;
+    const auto& p = request.params;
+    auto string = [&](const char* key) { return p.is_object() && p.contains(key) && p[key].is_string(); };
+    if (request.method == "storageGet" || request.method == "storageSet" || request.method == "storageRemove") {
+        if (!string("key") || (request.method == "storageSet" && !string("value"))) return std::nullopt;
+    } else if (request.method == "setGreg") {
+        if (!string("value") || !p.contains("index") || !p["index"].is_number_integer()
+            || p["index"] < 0 || p["index"] > 63) return std::nullopt;
+    } else if (request.method == "readPersistentArray" || request.method == "writePersistentArray") {
+        if (!string("filename") || (p.contains("structure") && !p["structure"].is_null() && !string("structure"))) return std::nullopt;
+        if (request.method == "writePersistentArray" && (!string("structure") || !p.contains("data") || !p["data"].is_array())) return std::nullopt;
+    }
+    return request;
+}
 struct Url {
     INTERNET_SCHEME scheme;
     INTERNET_PORT port;

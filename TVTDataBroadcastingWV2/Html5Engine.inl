@@ -355,7 +355,9 @@ void CDataBroadcastingWV2::CreateHtml5WebView()
         this->html5WebView->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         this->html5WebView->add_WebResourceRequested(Callback<ICoreWebView2WebResourceRequestedEventHandler>(
             [this](ICoreWebView2* sender, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
-            return this->OnHtml5WebResourceRequested(args);
+            try { return this->OnHtml5WebResourceRequested(args); }
+            catch (const nlohmann::json::exception&) { return this->RespondWithError(args, 400, L"Bad Request"); }
+            catch (...) { return this->RespondWithError(args, 500, L"Internal Server Error"); }
         }).Get(), &token);
         this->html5WebView->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [this](ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
@@ -1014,19 +1016,12 @@ HRESULT CDataBroadcastingWV2::OnHtml5WebResourceRequested(ICoreWebView2WebResour
                 body.resize(read);
             }
         }
-        nlohmann::json req;
-        try
-        {
-            req = nlohmann::json::parse(body);
-        }
-        catch (...)
-        {
-            req = nlohmann::json::object();
-        }
-        auto rpcMethod = req.value("method", std::string());
+        auto req = Html5RpcPolicy::ParseRequest(body);
+        if (!req) return this->RespondWithError(args, 400, L"Bad Request");
+        const auto& rpcMethod = req->method;
         if (!Html5RpcPolicy::Allowed(permission, rpcMethod))
             return this->RespondWithError(args, 403, L"Forbidden");
-        auto params = req.contains("params") ? req["params"] : nlohmann::json();
+        const auto& params = req->params;
         bool handled = false;
         auto result = this->HandleHtml5NativeRPC(rpcMethod, params, handled);
         if (handled || !this->webView || !this->html5Active)

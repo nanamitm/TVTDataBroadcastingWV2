@@ -899,8 +899,7 @@ nlohmann::json CDataBroadcastingWV2::HandleHtml5NativeRPC(const std::string& met
         if (method == "storageSet")
         {
             auto value = params.value("value", std::string());
-            // TR-B39 表10-8 (greg/ureg: 512B)
-            if ((key.starts_with("greg") || key.starts_with("ureg")) && value.size() > 512 * 3)
+            if (value.size() > Html5RpcPolicy::StorageValueLimit(key))
             {
                 return "quota";
             }

@@ -32,6 +32,18 @@ int main() {
         }
         Check(ParseRequest(R"({"method":"getCurrentEvent","params":null})").has_value(), "Null no-argument params rejected");
         Check(ParseRequest(R"({"method":"storageGet","params":{"key":"_common0"}})").has_value(), "Storage request rejected");
+        for (const auto* key : {"greg0", "ureg63", "_common255", "_wlocal10", "_local0", "_zipcode"}) {
+            const auto body = nlohmann::json{{"method", "storageSet"}, {"params", {{"key", key}, {"value", "x"}}}}.dump();
+            Check(ParseRequest(body).has_value(), "Valid storage key rejected");
+        }
+        for (const auto* key : {"", "greg64", "greg01", "ureg", "_common256", "_common-1", "_local1a", "_other0", "foo", "_prefecture", "_regioncode"}) {
+            const auto body = nlohmann::json{{"method", "storageSet"}, {"params", {{"key", key}, {"value", "x"}}}}.dump();
+            Check(!ParseRequest(body), "Invalid or read-only storage key accepted");
+        }
+        Check(ParseRequest(R"({"method":"storageGet","params":{"key":"_prefecture"}})").has_value(), "Residence information not readable");
+        Check(!ParseRequest(R"({"method":"storageRemove","params":{"key":"_regioncode"}})"), "Residence information removable");
+        Check(!ParseRequest(R"({"method":"storageGet","params":{"key":"arbitrary"}})"), "Arbitrary storage key readable");
+        Check(StorageValueLimit("greg1") == 512 * 3 && StorageValueLimit("_common0") == kMaxStorageValue, "Storage value limit");
         Check(ParseRequest(R"({"method":"readPersistentArray","params":{"filename":"nvram://receiverinfo/zipcode"}})").has_value(), "Optional structure rejected");
         Check(ParseRequest(R"({"method":"writePersistentArray","params":{"filename":"nvram://x","structure":"U:1B","data":[1]}})").has_value(), "Valid array write rejected");
         std::cout << "HTML5 native RPC authorization tests passed\n";

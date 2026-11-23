@@ -12,6 +12,32 @@ struct Request {
     std::string method;
     nlohmann::json params;
 };
+// Reserved localStorage keys (TR-B39 10.1), mirroring the runtime's valid() rule.
+inline bool StorageKey(std::string_view key) {
+    if (key == "_prefecture" || key == "_regioncode" || key == "_zipcode") return true;
+    auto index = [](std::string_view digits, int max) {
+        if (digits.empty() || digits.size() > 3 || (digits.size() > 1 && digits[0] == '0')) return false;
+        int value = 0;
+        for (char c : digits) { if (c < '0' || c > '9') return false; value = value * 10 + (c - '0'); }
+        return value <= max;
+    };
+    for (std::string_view prefix : {"greg", "ureg"})
+        if (key.starts_with(prefix)) return index(key.substr(prefix.size()), 63);
+    for (std::string_view prefix : {"_common", "_wlocal", "_local"})
+        if (key.starts_with(prefix)) return index(key.substr(prefix.size()), 255);
+    return false;
+}
+// Receiver-owned residence information is read-only for applications.
+inline bool StorageWritable(std::string_view key) {
+    return StorageKey(key) && key != "_prefecture" && key != "_regioncode";
+}
+// greg/ureg: TR-B39 表10-8 (512 bytes, up to 3 UTF-8 bytes per character).
+// Other areas are capped so a page cannot grow the persisted store without bound.
+constexpr size_t kMaxRegisterValue = 512 * 3;
+constexpr size_t kMaxStorageValue = 64 * 1024;
+inline size_t StorageValueLimit(std::string_view key) {
+    return key.starts_with("greg") || key.starts_with("ureg") ? kMaxRegisterValue : kMaxStorageValue;
+}
 inline std::optional<Request> ParseRequest(std::string_view body) {
     auto json = nlohmann::json::parse(body, nullptr, false);
     if (!json.is_object() || !json.contains("method") || !json["method"].is_string()) return std::nullopt;
@@ -22,6 +48,8 @@ inline std::optional<Request> ParseRequest(std::string_view body) {
     auto string = [&](const char* key) { return p.is_object() && p.contains(key) && p[key].is_string(); };
     if (request.method == "storageGet" || request.method == "storageSet" || request.method == "storageRemove") {
         if (!string("key") || (request.method == "storageSet" && !string("value"))) return std::nullopt;
+        const auto key = p["key"].get<std::string>();
+        if (request.method == "storageGet" ? !StorageKey(key) : !StorageWritable(key)) return std::nullopt;
     } else if (request.method == "setGreg") {
         if (!string("value") || !p.contains("index") || !p["index"].is_number_integer()
             || p["index"] < 0 || p["index"] > 63) return std::nullopt;

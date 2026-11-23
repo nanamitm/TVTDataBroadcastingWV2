@@ -206,6 +206,12 @@ private:
 
     // CRC_32 of the last section seen per key, to skip unchanged repeats.
     std::map<SectionKey, uint32_t> sectionCrcs;
+    // A complete MH-AIT replaces application signalling atomically. Keep the
+    // published version separate so its repeats cannot interrupt a new table.
+    std::optional<std::pair<uint16_t, uint8_t>> mhAitPublished;
+    std::optional<std::pair<uint16_t, uint8_t>> mhAitPrevious;
+    std::optional<std::tuple<uint16_t, uint8_t, uint8_t>> mhAitPending;
+    std::map<uint8_t, std::optional<Application>> mhAitSections;
     std::map<SectionKey, std::map<std::pair<uint16_t, uint32_t>, DamtMpu>> damtSections;
     std::map<SectionKey, DdmtSection> ddmtSections;
     // (table_id << 16) | table_id_extension

@@ -8,6 +8,7 @@
 
 #include <fstream>
 #include <map>
+#include "Html5RpcPolicy.h"
 
 static const wchar_t* HTML5_RPC_URL = L"https://tvtdatabroadcastingwv2-api.invalid/html5rpc";
 
@@ -354,7 +355,9 @@ void CDataBroadcastingWV2::CreateHtml5WebView()
         this->html5WebView->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         this->html5WebView->add_WebResourceRequested(Callback<ICoreWebView2WebResourceRequestedEventHandler>(
             [this](ICoreWebView2* sender, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
-            return this->OnHtml5WebResourceRequested(args);
+            try { return this->OnHtml5WebResourceRequested(args); }
+            catch (const nlohmann::json::exception&) { return this->RespondWithError(args, 400, L"Bad Request"); }
+            catch (...) { return this->RespondWithError(args, 500, L"Internal Server Error"); }
         }).Get(), &token);
         this->html5WebView->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [this](ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
@@ -896,8 +899,7 @@ nlohmann::json CDataBroadcastingWV2::HandleHtml5NativeRPC(const std::string& met
         if (method == "storageSet")
         {
             auto value = params.value("value", std::string());
-            // TR-B39 表10-8 (greg/ureg: 512B)
-            if ((key.starts_with("greg") || key.starts_with("ureg")) && value.size() > 512 * 3)
+            if (value.size() > Html5RpcPolicy::StorageValueLimit(key))
             {
                 return "quota";
             }
@@ -985,6 +987,9 @@ HRESULT CDataBroadcastingWV2::OnHtml5WebResourceRequested(ICoreWebView2WebResour
         auto appUrl = B62Navigation::SplitUrl(source.get());
         if (!appUrl || _wcsicmp(appUrl->first.c_str(), origin.get()))
             return this->RespondWithError(args, 403, L"Forbidden");
+        const auto permission = Html5RpcPolicy::Permission(source.get(),
+            this->html5Launch.value("boundaries", nlohmann::json::array()), this->html5Unmanaged);
+        if (permission < 0) return this->RespondWithError(args, 403, L"Forbidden");
         wil::unique_cotaskmem_string method;
         request->get_Method(method.put());
         if (_wcsicmp(method.get(), L"POST"))
@@ -1010,17 +1015,12 @@ HRESULT CDataBroadcastingWV2::OnHtml5WebResourceRequested(ICoreWebView2WebResour
                 body.resize(read);
             }
         }
-        nlohmann::json req;
-        try
-        {
-            req = nlohmann::json::parse(body);
-        }
-        catch (...)
-        {
-            req = nlohmann::json::object();
-        }
-        auto rpcMethod = req.value("method", std::string());
-        auto params = req.contains("params") ? req["params"] : nlohmann::json();
+        auto req = Html5RpcPolicy::ParseRequest(body);
+        if (!req) return this->RespondWithError(args, 400, L"Bad Request");
+        const auto& rpcMethod = req->method;
+        if (!Html5RpcPolicy::Allowed(permission, rpcMethod))
+            return this->RespondWithError(args, 403, L"Forbidden");
+        const auto& params = req->params;
         bool handled = false;
         auto result = this->HandleHtml5NativeRPC(rpcMethod, params, handled);
         if (handled || !this->webView || !this->html5Active)

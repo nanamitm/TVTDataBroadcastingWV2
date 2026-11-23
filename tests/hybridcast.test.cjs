@@ -86,3 +86,11 @@ try {
   assert.throws(() => outside.w.__aribHtml5.receiverDevice.getDeviceIdentifier(5, () => {}), e => String(e).includes('Not authorized'));
 } finally { outside.close(); }
 console.log('HTML5 runtime ownership, boundaries, replacement and remote key tests passed');
+const otherPort = runtime('https://example.test:8443/app/', [{ managedURLs: ['https://example.test/app/'], permissionBitmaps: [0x1fff] }]);
+try {
+  assert.equal(otherPort.w.navigator.applicationManager, undefined, 'a different port is outside the managed origin');
+} finally { otherPort.close(); }
+const defaultPort = runtime('https://example.test:443/app/', [{ managedURLs: ['https://example.test/app/'], permissionBitmaps: [0x1fff] }]);
+try {
+  assert.ok(defaultPort.w.navigator.applicationManager, 'explicit default ports match');
+} finally { defaultPort.close(); }

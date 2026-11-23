@@ -215,6 +215,10 @@ void AppReceiver::ResetLocked()
 void AppReceiver::ResetApplicationLocked()
 {
     this->sectionCrcs.clear();
+    this->mhAitPublished.reset();
+    this->mhAitPrevious.reset();
+    this->mhAitPending.reset();
+    this->mhAitSections.clear();
     this->damtSections.clear();
     this->ddmtSections.clear();
     this->pendingItems.clear();
@@ -533,6 +537,9 @@ void AppReceiver::OnAppSection(const uint8_t* section, size_t size)
         return;
     }
 
+    // MH-AIT handles versioning itself. Generic CRC suppression could discard
+    // sections needed to finish a table after an interrupted reception.
+    if (tableId == kTableMhAit) { this->OnMhAit(section, size); return; }
     const SectionKey key{ tableId, static_cast<uint16_t>((section[3] << 8) | section[4]), section[6] };
     const uint32_t crc = (section[size - 4] << 24) | (section[size - 3] << 16) | (section[size - 2] << 8) | section[size - 1];
     auto [it, inserted] = this->sectionCrcs.try_emplace(key, crc);
@@ -547,9 +554,6 @@ void AppReceiver::OnAppSection(const uint8_t* section, size_t size)
 
     switch (tableId)
     {
-    case kTableMhAit:
-        this->OnMhAit(section, size);
-        break;
     case kTableDdmt:
         this->OnDdmt(key, section, size);
         break;
@@ -593,10 +597,14 @@ static std::optional<std::pair<std::string, std::string>> SplitHttpUrl(const std
 void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
 {
     Reader r(section + 3, size - 7);
-    r.U16(); // application_type
-    const uint8_t version = (r.U8() >> 1) & 0x1F;
-    r.U8(); // section_number
-    r.U8(); // last_section_number
+    const uint16_t type = r.U16();
+    const uint8_t flags = r.U8();
+    const uint8_t version = (flags >> 1) & 0x1F;
+    const uint8_t number = r.U8();
+    const uint8_t last = r.U8();
+    if (!(flags & 1) || number > last) return;
+    const auto identity = std::make_pair(type, version);
+    if (this->mhAitPublished == identity || this->mhAitPrevious == identity) return;
     r.Skip(r.U16() & 0x0FFF); // common descriptors
     Reader loop = r.Sub(r.U16() & 0x0FFF);
 
@@ -644,7 +652,9 @@ void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
             {
                 initialPath = body.String(body.Left());
             }
+            if (body.Failed()) return;
         }
+        if (descriptors.Failed()) return;
         if (loop.Failed() || initialPath.empty())
         {
             continue;
@@ -656,10 +666,20 @@ void AppReceiver::OnMhAit(const uint8_t* section, size_t size)
             selected = app;
         }
     }
-    if (!loop.Failed())
-    {
-        this->application = selected;
+    if (r.Failed() || loop.Failed() || loop.Left() != 0) return;
+    const auto key = std::make_tuple(type, version, last);
+    if (this->mhAitPending != key) {
+        this->mhAitPending = key;
+        this->mhAitSections.clear();
     }
+    this->mhAitSections[number] = std::move(selected);
+    if (this->mhAitSections.size() != static_cast<size_t>(last) + 1) return;
+    this->application.reset();
+    for (const auto& [_, app] : this->mhAitSections) if (app) { this->application = app; break; }
+    this->mhAitPrevious = this->mhAitPublished;
+    this->mhAitPublished = identity;
+    this->mhAitPending.reset();
+    this->mhAitSections.clear();
 }
 
 void AppReceiver::OnDdmt(const SectionKey& key, const uint8_t* section, size_t size)

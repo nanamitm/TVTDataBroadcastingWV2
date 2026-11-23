@@ -13,6 +13,10 @@ set "PATH=$(Split-Path $vswhere);%PATH%"
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
 cd /d "$repo"
+cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\B62AppReceiverTests.cpp TVTDataBroadcastingWV2\B62AppReceiver.cpp TVTDataBroadcastingWV2\ZlibInflate.cpp /Fo:"$output\\" /Fe:"$output\b62-receiver.exe"
+if errorlevel 1 exit /b 1
+"$output\b62-receiver.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\Html5RpcPolicyTests.cpp /Fo:"$output\html5-rpc.obj" /Fe:"$output\html5-rpc.exe" winhttp.lib
 if errorlevel 1 exit /b 1
 "$output\html5-rpc.exe"

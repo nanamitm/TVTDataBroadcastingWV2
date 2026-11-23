@@ -8,6 +8,7 @@
 
 #include <fstream>
 #include <map>
+#include "Html5RpcPolicy.h"
 
 static const wchar_t* HTML5_RPC_URL = L"https://tvtdatabroadcastingwv2-api.invalid/html5rpc";
 
@@ -985,6 +986,9 @@ HRESULT CDataBroadcastingWV2::OnHtml5WebResourceRequested(ICoreWebView2WebResour
         auto appUrl = B62Navigation::SplitUrl(source.get());
         if (!appUrl || _wcsicmp(appUrl->first.c_str(), origin.get()))
             return this->RespondWithError(args, 403, L"Forbidden");
+        const auto permission = Html5RpcPolicy::Permission(source.get(),
+            this->html5Launch.value("boundaries", nlohmann::json::array()), this->html5Unmanaged);
+        if (permission < 0) return this->RespondWithError(args, 403, L"Forbidden");
         wil::unique_cotaskmem_string method;
         request->get_Method(method.put());
         if (_wcsicmp(method.get(), L"POST"))
@@ -1020,6 +1024,8 @@ HRESULT CDataBroadcastingWV2::OnHtml5WebResourceRequested(ICoreWebView2WebResour
             req = nlohmann::json::object();
         }
         auto rpcMethod = req.value("method", std::string());
+        if (!Html5RpcPolicy::Allowed(permission, rpcMethod))
+            return this->RespondWithError(args, 403, L"Forbidden");
         auto params = req.contains("params") ? req["params"] : nlohmann::json();
         bool handled = false;
         auto result = this->HandleHtml5NativeRPC(rpcMethod, params, handled);

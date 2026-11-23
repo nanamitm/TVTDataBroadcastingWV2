@@ -286,6 +286,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="StartupPolicy.h" />
     <ClInclude Include="AsyncLifetime.h" />
+    <ClInclude Include="Html5RpcPolicy.h" />
     <ClInclude Include="ProxyPolicy.h" />
     <ClInclude Include="B62Navigation.h" />
     <ClInclude Include="B62RomSound.h" />

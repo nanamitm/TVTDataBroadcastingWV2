@@ -146,6 +146,10 @@ declare global {
         if (m.protocol !== url.protocol && /^https?:\/\//i.test(managed)) {
             return -1;
         }
+        const authority = (/^(?:https?:\/\/)?([^/?#]+)/i.exec(managed)?.[1] ?? "");
+        const explicitPort = authority.startsWith("[") ? authority.includes("]:") : authority.includes(":");
+        if ((/^https?:\/\//i.test(managed) || explicitPort)
+            && (m.port || (m.protocol === "https:" ? "443" : "80")) !== (url.port || (url.protocol === "https:" ? "443" : "80"))) return -1;
         const hasPath = m.pathname !== "/" || /^https?:\/\/[^/]+\//i.test(managed);
         if (hasPath) {
             if (url.hostname !== m.hostname) {
@@ -542,6 +546,7 @@ declare global {
         scheduleToRecord() { requirePermission(PERM.RESERVE); raise("MISC_ERR"); },
         unscheduleToRecord() { requirePermission(PERM.RESERVE); },
         confirmIPNetwork(destination: string, confirmType: number, timeout?: number): boolean {
+            requirePermission(PERM.CONFIRM_IP);
             const r = rpc("confirmIPNetwork", { destination, confirmType, timeout: timeout ?? 5000 });
             return !!r;
         },

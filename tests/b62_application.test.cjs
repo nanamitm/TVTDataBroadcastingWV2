@@ -44,4 +44,21 @@ app.pushEventMessage({ ...message, timeSeconds: 200 });
 app.onFrameMessage({ origin, source: app.frame.contentWindow, data: { source: 'b62Application', type: 'destroy' } });
 assert.equal(app.nptPending.length, 0, 'application destroy clears pending event');
 assert.equal(app.frame, null, 'application frame destroyed');
-console.log('B62 application lifecycle tests passed: 10 checks');
+
+// Overlay rectangles come from the application; disjointRects() is cubic in their count.
+const many = Array.from({ length: 5000 }, (_, i) => ({ left: i, top: i, width: 2, height: 2 }));
+const overlays = context.exports.sanitizeVideoOverlays([...many, { left: NaN, top: 0, width: 1, height: 1 }]);
+assert.equal(overlays.length, context.exports.maxVideoOverlays, 'overlay count is capped');
+// Objects created in the vm context have its own prototypes; compare them as JSON.
+const json = value => JSON.stringify(value);
+assert.equal(json(context.exports.sanitizeVideoOverlays([{ left: 0, top: 0, width: -1, height: 1 }, { left: '1', top: 0, width: 1, height: 1 },
+    { left: 1e12, top: 0, width: 1, height: 1 }, { left: 1, top: 2, width: 3, height: 4 }])),
+    json([{ left: 1, top: 2, width: 3, height: 4 }]), 'invalid overlay rectangles are dropped');
+assert.equal(json(context.exports.sanitizeVideoOverlays('x')), '[]', 'non-array overlays are ignored');
+app.update(origin + '/video.html', 1);
+app.onFrameMessage({ origin, source: app.frame.contentWindow, data: { source: 'b62Application', type: 'videoRect',
+    rect: { left: 'x' }, above: many, viewport: { width: 1e9, height: 1e9 } } });
+assert.equal(app.videoRect, null, 'malformed video rectangle is ignored');
+assert.equal(app.videoOverlays.length, context.exports.maxVideoOverlays, 'frame message overlays are capped');
+assert.equal(json(app.appSize), json({ width: 3840, height: 2160 }), 'oversized viewport is ignored');
+console.log('B62 application lifecycle tests passed: 16 checks');

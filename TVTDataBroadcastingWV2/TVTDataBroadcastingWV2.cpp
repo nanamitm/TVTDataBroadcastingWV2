@@ -269,7 +269,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void NavigateHtml5();
     void StopHtml5(bool reloadBML, bool showDataBroadcasting = false);
     void UpdateHtml5Bounds();
-    void OnHtml5WebMessage(const nlohmann::json& message);
+    // permission: the sender document's permission_bitmap (Html5RpcPolicy::Permission)
+    void OnHtml5WebMessage(const nlohmann::json& message, int permission);
     HRESULT OnHtml5WebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
     void PostToHtml5(const nlohmann::json& message);
     bool OnHtml5Command(int ID);

@@ -206,6 +206,39 @@ function toBinary4(value: number): string {
 // アプリケーションの文書 (3840x2160) 上の映像オブジェクトの位置
 type VideoRect = { left: number, top: number, width: number, height: number };
 
+// アプリケーションから届く矩形は信用できない。disjointRects()は件数の3乗に比例するので
+// 件数を抑え、有限の数値だけ使う (B62Shim.hは映像に重なる要素を数個しか送らない)
+export const maxVideoOverlays = 64;
+// 文書の解像度の上限 (ARIB TR-B39 10.8.1.2の最大は7680x4320)
+const maxAppDimension = 7680 * 2;
+
+function toVideoRect(value: unknown): VideoRect | null {
+    if (value == null || typeof value !== "object") {
+        return null;
+    }
+    const { left, top, width, height } = value as Record<string, unknown>;
+    const values = [left, top, width, height];
+    if (!values.every(v => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= maxAppDimension) ||
+        (width as number) < 0 || (height as number) < 0) {
+        return null;
+    }
+    return { left: left as number, top: top as number, width: width as number, height: height as number };
+}
+
+export function sanitizeVideoOverlays(value: unknown): VideoRect[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    const rects: VideoRect[] = [];
+    for (const item of value.slice(0, maxVideoOverlays)) {
+        const rect = toVideoRect(item);
+        if (rect != null) {
+            rects.push(rect);
+        }
+    }
+    return rects;
+}
+
 // web-bmlのprogramInfoのうち使うもの
 export type B62ProgramInfo = {
     serviceId: number | null,
@@ -715,14 +748,15 @@ export class B62ApplicationFrame {
             const viewport = message.viewport;
             if (viewport != null && Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
                 viewport.width > 0 && viewport.height > 0 &&
+                viewport.width <= maxAppDimension && viewport.height <= maxAppDimension &&
                 (viewport.width !== this.appSize.width || viewport.height !== this.appSize.height)) {
                 this.appSize = { width: viewport.width, height: viewport.height };
                 this.frame.style.width = `${this.appSize.width}px`;
                 this.frame.style.height = `${this.appSize.height}px`;
                 this.resize();
             }
-            this.videoRect = message.rect;
-            this.videoOverlays = message.above ?? [];
+            this.videoRect = toVideoRect(message.rect);
+            this.videoOverlays = sanitizeVideoOverlays(message.above);
             this.updateVideoHole();
             this.onVideoChanged();
         } else if (message.type === "destroy") {

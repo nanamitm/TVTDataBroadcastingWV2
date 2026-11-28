@@ -81,6 +81,26 @@ int main() {
         Check(receiver.GetApplication() && receiver.GetApplication()->applicationId == 5, "Version wrap failed");
         Initialize(receiver); cc=0; feed(Ait(1,2,2,0));
         Check(!receiver.GetApplication(), "Reset retained incomplete table state");
+        Check(!receiver.HasFile("index.html"), "A file was reported before any item arrived");
+
+        // Decoded files are cached within a byte budget (raw item + decoded data).
+        using Cache = B62::AppReceiver::FileCache;
+        auto file = [](size_t size) { return B62::AppReceiver::File{ "text/html", Bytes(size, 'x') }; };
+        Cache cache(100);
+        cache.Store("a", Bytes(10, 1), file(30));
+        cache.Store("b", Bytes(10, 2), file(30));
+        Check(cache.Size() == 2 && cache.Bytes() == 80, "Cache did not count raw and decoded bytes");
+        Check(cache.Find("a", Bytes(10, 1)).has_value() && !cache.Find("a", Bytes(10, 9)), "Cache ignored a changed item");
+        cache.Store("c", Bytes(10, 3), file(30));
+        Check(cache.Bytes() <= 100 && !cache.Find("a", Bytes(10, 1)) && cache.Find("c", Bytes(10, 3)), "Cache did not drop the oldest file");
+        cache.Store("huge", Bytes(10, 4), file(200));
+        Check(!cache.Find("huge", Bytes(10, 4)) && cache.Bytes() <= 100, "A file larger than the budget was cached");
+        cache.Store("b", Bytes(5, 2), file(5));
+        Check(cache.Find("b", Bytes(5, 2)).has_value() && cache.Bytes() == 50, "Replacing a path did not release its old bytes");
+        cache.EraseIf([](const std::string& path) { return path != "c"; });
+        Check(!cache.Find("c", Bytes(10, 3)) && cache.Size() == 1 && cache.Bytes() == 10, "EraseIf did not release bytes");
+        for (int i = 0; i < 1000; ++i) cache.Store("f" + std::to_string(i), Bytes(1, 0), file(9));
+        Check(cache.Bytes() <= 100 && cache.Size() <= 10, "Many small files grew the cache past its budget");
         std::cout << "B62 multi-section MH-AIT lifecycle tests passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

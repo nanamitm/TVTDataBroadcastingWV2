@@ -315,6 +315,8 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
         B62::AppReceiver::Application app;
     };
     static constexpr ULONGLONG kB62PendingFileTimeoutMs = 15000;
+    // 待たせる要求の上限 (それぞれWebViewのdeferralを持つ)
+    static constexpr size_t kMaxB62PendingFiles = 128;
     std::vector<PendingB62File> b62PendingFiles;
     void ServicePendingB62Files(bool finish = false);
     bool HasB62File(LPCWSTR path);
@@ -6202,7 +6204,8 @@ static std::string DecodeB62Path(LPCWSTR path)
 
 bool CDataBroadcastingWV2::HasB62File(LPCWSTR path)
 {
-    return this->b62Receiver.GetFile(DecodeB62Path(path)).has_value();
+    // 有無だけを調べる (GetFileは圧縮されたファイルを展開してしまう)
+    return this->b62Receiver.HasFile(DecodeB62Path(path));
 }
 
 // アプリケーションがiframeを外部のページへ移動させようとしたら、同じパスの
@@ -6311,6 +6314,11 @@ HRESULT CDataBroadcastingWV2::ServeB62File(ICoreWebView2WebResourceRequestedEven
     {
         auto app = this->b62Receiver.GetApplication();
         wil::com_ptr<ICoreWebView2Deferral> deferral;
+        // アプリケーションが存在しないファイルを大量に要求しても、待たせる要求を際限なく持たない
+        if (this->b62PendingFiles.size() >= kMaxB62PendingFiles)
+        {
+            return this->RespondWithError(args, 503, L"Service Unavailable");
+        }
         if (app && this->hMessageWnd && SUCCEEDED(args->GetDeferral(deferral.put())))
         {
             this->b62PendingFiles.push_back(PendingB62File{

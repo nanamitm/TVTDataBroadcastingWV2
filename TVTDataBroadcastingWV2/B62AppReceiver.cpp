@@ -234,7 +234,7 @@ void AppReceiver::ResetApplicationLocked()
     this->pathIndexDirty = true;
     this->filesGeneration++;
     this->pathIndex.clear();
-    this->fileCache.clear();
+    this->fileCache.Clear();
 }
 
 void AppReceiver::FeedPacket(const uint8_t* packet)
@@ -971,7 +971,7 @@ void AppReceiver::OnItem(const std::vector<uint8_t>& body)
         // Something is not being pruned; start over rather than grow forever.
         this->items.clear();
         this->itemBytes = 0;
-        this->fileCache.clear();
+        this->fileCache.Clear();
     }
 }
 
@@ -1084,7 +1084,7 @@ void AppReceiver::RebuildPathIndexLocked()
             it = this->items.erase(it);
         }
     }
-    std::erase_if(this->fileCache, [&](const auto& entry) { return !this->pathIndex.contains(entry.first); });
+    this->fileCache.EraseIf([&](const std::string& path) { return this->pathIndex.contains(path); });
 }
 
 bool AppReceiver::IsServableLocked(const std::string& path)
@@ -1145,42 +1145,110 @@ bool AppReceiver::IsApplicationLoading() const
     return this->IsApplicationLoadingLocked();
 }
 
+std::optional<AppReceiver::File> AppReceiver::FileCache::Find(const std::string& path, const std::vector<uint8_t>& raw) const
+{
+    auto it = this->entries.find(path);
+    if (it == this->entries.end() || it->second.raw != raw)
+    {
+        return std::nullopt;
+    }
+    return it->second.file;
+}
+
+void AppReceiver::FileCache::Erase(const std::string& path)
+{
+    auto it = this->entries.find(path);
+    if (it != this->entries.end())
+    {
+        this->bytes -= it->second.raw.size() + it->second.file.data.size();
+        this->entries.erase(it);
+    }
+}
+
+void AppReceiver::FileCache::Store(const std::string& path, std::vector<uint8_t> raw, File file)
+{
+    if (this->entries.contains(path))
+    {
+        this->Erase(path);
+        std::erase(this->order, path);
+    }
+    const size_t cost = raw.size() + file.data.size();
+    // A file that alone exceeds the budget is decoded again on each request.
+    if (cost > this->limit)
+    {
+        return;
+    }
+    size_t oldest = 0;
+    while (this->bytes + cost > this->limit && oldest < this->order.size())
+    {
+        this->Erase(this->order[oldest++]);
+    }
+    this->order.erase(this->order.begin(), this->order.begin() + oldest);
+    this->bytes += cost;
+    this->entries.emplace(path, Entry{ std::move(raw), std::move(file) });
+    this->order.push_back(path);
+}
+
 std::optional<AppReceiver::File> AppReceiver::GetFile(const std::string& path)
 {
-    std::lock_guard<std::mutex> lock(this->mutex);
-    this->RebuildPathIndexLocked();
-    auto entry = this->pathIndex.find(JoinPath({ path }));
-    if (entry == this->pathIndex.end())
+    std::string key;
+    PathEntry entry;
+    std::vector<uint8_t> raw;
     {
-        return std::nullopt;
-    }
-    auto item = this->items.find(entry->second.key);
-    if (item == this->items.end())
-    {
-        return std::nullopt;
+        std::lock_guard<std::mutex> lock(this->mutex);
+        this->RebuildPathIndexLocked();
+        auto found = this->pathIndex.find(JoinPath({ path }));
+        if (found == this->pathIndex.end())
+        {
+            return std::nullopt;
+        }
+        auto item = this->items.find(found->second.key);
+        if (item == this->items.end())
+        {
+            return std::nullopt;
+        }
+        if (auto cached = this->fileCache.Find(found->first, item->second))
+        {
+            return cached;
+        }
+        key = found->first;
+        entry = found->second;
+        raw = item->second;
     }
 
-    auto cached = this->fileCache.find(entry->first);
-    if (cached != this->fileCache.end() && cached->second.first == item->second)
+    // Decode without the lock: the TS thread feeds packets under it, and an
+    // item can inflate to kMaxFileSize.
+    File file{ entry.mimeType, {} };
+    if (entry.zlib)
     {
-        return cached->second.second;
-    }
-
-    File file{ entry->second.mimeType, {} };
-    if (entry->second.zlib)
-    {
-        const size_t limit = entry->second.originalSize ? std::min<size_t>(entry->second.originalSize, kMaxFileSize) : kMaxFileSize;
-        if (!zlibInflate(item->second, file.data, limit))
+        const size_t limit = entry.originalSize ? std::min<size_t>(entry.originalSize, kMaxFileSize) : kMaxFileSize;
+        if (!zlibInflate(raw, file.data, limit))
         {
             return std::nullopt;
         }
     }
     else
     {
-        file.data = item->second;
+        file.data = raw;
     }
-    this->fileCache[entry->first] = { item->second, file };
+
+    std::lock_guard<std::mutex> lock(this->mutex);
+    // Cache only if the path still names the same item with the same content;
+    // otherwise the tables or the item changed while decoding.
+    auto current = this->pathIndex.find(key);
+    auto item = this->items.find(entry.key);
+    if (current != this->pathIndex.end() && current->second.key == entry.key &&
+        item != this->items.end() && item->second == raw)
+    {
+        this->fileCache.Store(key, std::move(raw), file);
+    }
     return file;
+}
+
+bool AppReceiver::HasFile(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return this->IsServableLocked(path);
 }
 
 std::vector<std::pair<std::string, std::string>> AppReceiver::ListFileVersions()

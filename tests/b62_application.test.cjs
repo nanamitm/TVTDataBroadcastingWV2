@@ -61,4 +61,21 @@ app.onFrameMessage({ origin, source: app.frame.contentWindow, data: { source: 'b
 assert.equal(app.videoRect, null, 'malformed video rectangle is ignored');
 assert.equal(app.videoOverlays.length, context.exports.maxVideoOverlays, 'frame message overlays are capped');
 assert.equal(json(app.appSize), json({ width: 3840, height: 2160 }), 'oversized viewport is ignored');
-console.log('B62 application lifecycle tests passed: 16 checks');
+
+// Waiting messages are bounded even if no NPT reference or due time ever arrives.
+const limit = context.exports.maxQueuedMessages;
+// Leaving the application drops the service's NPT references, so NPT-timed
+// messages have to wait for a new one.
+app.update(null);
+app.update(origin + '/queues.html', 1);
+for (let i = 0; i < limit * 3; ++i) app.pushEventMessage({ ...message, messageId: i, privateData: `npt-${i}` });
+assert.equal(app.nptPending.length, limit, 'NPT-timed messages waiting for a reference are capped');
+assert.equal(app.nptPending.at(-1).privateData, `npt-${limit * 3 - 1}`, 'the newest NPT-timed message is kept');
+app.update(origin + '/queues.html', 2);
+app.setBroadcastTime(1000000);
+for (let i = 0; i < limit * 3; ++i) {
+    // time_mode 1 (UTC) one hour ahead stays queued until due
+    app.pushEventMessage({ ...message, timeMode: 1, timeSeconds: 2208988800 + 1000 + 3600, messageId: i, privateData: `utc-${i}` });
+}
+assert.equal(app.eventQueue.length, limit, 'future event messages are capped');
+console.log('B62 application lifecycle tests passed: 19 checks');

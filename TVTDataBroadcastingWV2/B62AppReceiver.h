@@ -29,6 +29,39 @@ public:
         std::vector<uint8_t> data;
     };
 
+    // Decoded files by path, with the raw item each was decoded from. Broadcast
+    // data can map many paths to small items that inflate to large files, so the
+    // retained bytes (raw and decoded) are capped; older entries are dropped first.
+    class FileCache
+    {
+    public:
+        static constexpr size_t kDefaultLimit = 64 * 1024 * 1024;
+        explicit FileCache(size_t limit = kDefaultLimit) : limit(limit) {}
+        std::optional<File> Find(const std::string& path, const std::vector<uint8_t>& raw) const;
+        void Store(const std::string& path, std::vector<uint8_t> raw, File file);
+        template<typename Predicate> void EraseIf(Predicate keep)
+        {
+            for (auto it = order.begin(); it != order.end();)
+            {
+                if (keep(*it)) { ++it; continue; }
+                Erase(*it);
+                it = order.erase(it);
+            }
+        }
+        void Clear() { entries.clear(); order.clear(); bytes = 0; }
+        size_t Bytes() const { return bytes; }
+        size_t Size() const { return entries.size(); }
+
+    private:
+        struct Entry { std::vector<uint8_t> raw; File file; };
+        void Erase(const std::string& path);
+        size_t limit;
+        size_t bytes = 0;
+        std::unordered_map<std::string, Entry> entries;
+        // Paths from oldest to newest.
+        std::vector<std::string> order;
+    };
+
     struct Application
     {
         // Path of the first page, relative to the application root.
@@ -111,7 +144,11 @@ public:
     // received. The application changed callback is called when this changes too.
     bool IsApplicationLoading() const;
     // path is relative to the application root, e.g. "sh4/40/001/startup/html/index.html".
+    // Inflating a file can take a while, so it runs without the lock that
+    // FeedPacket (the TS thread) needs.
     std::optional<File> GetFile(const std::string& path);
+    // Whether GetFile(path) has a received item to serve, without decoding it.
+    bool HasFile(const std::string& path);
     std::vector<std::string> ListFiles();
     // Every file that can be served, with a version that changes when the file
     // is replaced (its MPU and item), for the applications' cache events.
@@ -235,8 +272,7 @@ private:
     bool pathIndexDirty = true;
     uint64_t filesGeneration = 0;
     std::map<std::string, PathEntry> pathIndex;
-    // path -> (raw item size, decoded file)
-    std::unordered_map<std::string, std::pair<std::vector<uint8_t>, File>> fileCache;
+    FileCache fileCache;
 };
 
 }

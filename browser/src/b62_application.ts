@@ -133,6 +133,16 @@ const maxEventLeadMillis = 24 * 60 * 60 * 1000;
 const clockPeriodMillis = 2 ** 33 / 90;
 // これより先の字幕は時刻がおかしいとみなしてすぐに渡す
 const maxCaptionLeadMillis = 60 * 1000;
+// 発火を待たせる字幕・イベントメッセージの上限。NPTの参照が届かない間や、最大24時間先の
+// メッセージが続いても際限なく溜めない (古いものから捨てる)
+export const maxQueuedMessages = 256;
+
+function pushBounded<T>(queue: T[], item: T) {
+    if (queue.length >= maxQueuedMessages) {
+        queue.splice(0, queue.length - maxQueuedMessages + 1);
+    }
+    queue.push(item);
+}
 
 function wrapMillis(diff: number): number {
     diff %= clockPeriodMillis;
@@ -392,7 +402,7 @@ export class B62ApplicationFrame {
         // TMDが1111 (時刻制御なし) ならbeginは無視する (ARIB TR-B39 8.5.9.2)
         const begin = caption.dataType === 0 && caption.tmd !== 0b1111 ? firstBeginMillis(caption.data) : 0;
         const due = caption.pts / 90 + begin + caption.delay;
-        this.captionQueue.push({ due, caption });
+        pushBounded(this.captionQueue, { due, caption });
         this.flushCaptions();
     }
 
@@ -452,10 +462,10 @@ export class B62ApplicationFrame {
         const reference = this.latestNptReference();
         const due = reference != null ? nptToUtcMillis(reference, npt) : null;
         if (due == null) {
-            this.nptPending.push(message);
+            pushBounded(this.nptPending, message);
             return;
         }
-        this.eventQueue.push({ due, message, npt });
+        pushBounded(this.eventQueue, { due, message, npt });
     }
 
     // アプリケーションのUTC-NPTのAPI (getUTCNPTなど) のために、参照と放送の時刻を渡す
@@ -504,7 +514,7 @@ export class B62ApplicationFrame {
         } else if (message.timeMode === 2) {
             // NPTの参照が届くまで待つ
             if (this.broadcastNow() == null) {
-                this.nptPending.push(message);
+                pushBounded(this.nptPending, message);
                 return;
             }
             this.queueNptEventMessage(message, message.timeSeconds + message.timeFraction / 2 ** 32);
@@ -518,7 +528,7 @@ export class B62ApplicationFrame {
             this.deliverEventMessage(message);
             return;
         }
-        this.eventQueue.push({ due, message });
+        pushBounded(this.eventQueue, { due, message });
         this.flushEventMessages();
     }
 

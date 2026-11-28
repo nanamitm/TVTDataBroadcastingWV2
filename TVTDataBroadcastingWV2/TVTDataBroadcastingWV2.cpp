@@ -14,6 +14,7 @@
 #include "StartupPolicy.h"
 #include "AsyncLifetime.h"
 #include "ProxyPolicy.h"
+#include "ProxyQueue.h"
 #include "B62Navigation.h"
 #include "B62RomSound.h"
 #include <queue>
@@ -682,16 +683,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     void EnablePanelItems(bool enable);
     HRESULT Proxy(ICoreWebView2WebResourceRequestedEventArgs* args, LPCWSTR proxyUrl, LPCWSTR allowOrigin = nullptr);
     // 同時に通信できる数 (ProxySessionの上限) を超えて待たせている通信。WebViewのスレッドでのみ触る
-    struct QueuedProxyRequest
-    {
-        std::wstring url;
-        std::wstring method;
-        std::vector<BYTE> payload;
-        std::vector<std::pair<std::wstring, std::wstring>> headers;
-        std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> respond;
-        bool blockPrivateAddresses = false;
-    };
-    std::deque<QueuedProxyRequest> proxyQueue;
+    ProxyQueue proxyQueue;
     void StartProxyRequest(QueuedProxyRequest request);
     void ServiceProxyQueue(bool finish = false);
     HRESULT ProxyB62(ICoreWebView2WebResourceRequestedEventArgs* args, ICoreWebView2WebResourceRequest* request, LPCWSTR uri);
@@ -3284,8 +3276,11 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     }
     else
     {
-        this->proxyQueue.push_back(std::move(queued));
-        if (this->hMessageWnd)
+        if (!this->proxyQueue.TryPush(std::move(queued), GetTickCount64()))
+        {
+            postResponse(503, L"Service Unavailable", L"", 0, nullptr);
+        }
+        else if (this->hMessageWnd)
         {
             SetTimer(this->hMessageWnd, IDT_PROXY_QUEUE, 50, nullptr);
         }
@@ -3293,9 +3288,14 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
     return S_OK;
 }
 
-// 待たせていた通信を始める。始められなければ (無効化中、接続の準備に失敗など) 502を返す
+// 待たせていた通信を始める。無効化中は503、接続の準備に失敗した場合は502を返す。
 void CDataBroadcastingWV2::StartProxyRequest(QueuedProxyRequest request)
 {
+    if (!this->enableNetwork || !this->proxySession)
+    {
+        request.respond(503, L"Service Unavailable", L"", 0, nullptr);
+        return;
+    }
     std::vector<std::pair<LPCWSTR, LPCWSTR>> headers;
     for (const auto& [name, value] : request.headers)
     {
@@ -3312,22 +3312,12 @@ void CDataBroadcastingWV2::StartProxyRequest(QueuedProxyRequest request)
 }
 
 // 同時に通信できる数が空いたら、待たせていた通信を順に始める。finishなら (無効化するとき)
-// 残りをすべて503で終わらせる。
+// 残りをすべて503で終わらせる。待機期限を超えた要求は空き枠がなくても504で終わらせる。
 void CDataBroadcastingWV2::ServiceProxyQueue(bool finish)
 {
-    while (!this->proxyQueue.empty() && (finish || !this->proxySession || this->proxySession->HasCapacity()))
-    {
-        auto request = std::move(this->proxyQueue.front());
-        this->proxyQueue.pop_front();
-        if (finish || !this->proxySession)
-        {
-            request.respond(503, L"Service Unavailable", L"", 0, nullptr);
-        }
-        else
-        {
-            this->StartProxyRequest(std::move(request));
-        }
-    }
+    this->proxyQueue.Service(this->enableNetwork && this->proxySession != nullptr, finish, GetTickCount64(),
+        [this] { return this->proxySession && this->proxySession->HasCapacity(); },
+        [this](QueuedProxyRequest request) { this->StartProxyRequest(std::move(request)); });
     if (this->proxyQueue.empty() && this->hMessageWnd)
     {
         KillTimer(this->hMessageWnd, IDT_PROXY_QUEUE);
@@ -4349,6 +4339,11 @@ void CDataBroadcastingWV2::UpdateNetworkToggleButton(HWND hWnd)
 void CDataBroadcastingWV2::SetNetworkState(bool enable)
 {
     this->enableNetwork = enable;
+    if (!enable)
+    {
+        this->ServiceProxyQueue(true);
+        if (this->proxySession) this->proxySession->CancelPendingRequests();
+    }
     if (this->hRemoteWnd)
     {
         this->UpdateNetworkToggleButton(this->hRemoteWnd);

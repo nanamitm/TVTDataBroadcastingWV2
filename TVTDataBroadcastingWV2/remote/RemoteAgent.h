@@ -191,10 +191,47 @@ private:
             WaitForSingleObject(m_stop, 20);
         }
     }
+public:
+    // Pipe names are global across sessions and users, so another account could
+    // create this pipe before the broker. Talk only to a server process that runs
+    // as the same Windows user (the broker restricts its pipe to that user too).
+    static bool ServerIsCurrentUser(HANDLE pipe) {
+        ULONG pid = 0;
+        if (!GetNamedPipeServerProcessId(pipe, &pid) || pid == 0) return false;
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!process) return false;
+        HANDLE serverToken = nullptr, ownToken = nullptr;
+        bool same = false;
+        if (OpenProcessToken(process, TOKEN_QUERY, &serverToken) &&
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &ownToken)) {
+            std::vector<BYTE> serverUser, ownUser;
+            const PSID serverSid = TokenUserSid(serverToken, serverUser);
+            const PSID ownSid = TokenUserSid(ownToken, ownUser);
+            same = serverSid && ownSid && EqualSid(serverSid, ownSid);
+        }
+        if (serverToken) CloseHandle(serverToken);
+        if (ownToken) CloseHandle(ownToken);
+        CloseHandle(process);
+        return same;
+    }
+private:
+    static PSID TokenUserSid(HANDLE token, std::vector<BYTE>& buffer) {
+        DWORD size = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+        if (size < sizeof(TOKEN_USER)) return nullptr;
+        buffer.resize(size);
+        if (!GetTokenInformation(token, TokenUser, buffer.data(), size, &size)) return nullptr;
+        return reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid;
+    }
     void Run() noexcept {
         while (!Stopped()) {
             HANDLE pipe = CreateFileW(m_pipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                 OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+            if (pipe != INVALID_HANDLE_VALUE && !ServerIsCurrentUser(pipe)) {
+                OutputDebugStringW(L"[TVTRemote] Pipe server is not the current user; disconnecting\n");
+                CloseHandle(pipe);
+                pipe = INVALID_HANDLE_VALUE;
+            }
             if (pipe != INVALID_HANDLE_VALUE) {
                 try { Session(pipe); } catch (...) { /* disconnect malformed or failed sessions */ }
                 CancelIoEx(pipe, nullptr); CloseHandle(pipe);

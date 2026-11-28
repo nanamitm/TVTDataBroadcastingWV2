@@ -24,6 +24,7 @@ $response = Join-Path $output 'link.rsp'
 $batch = Join-Path $output 'run.cmd'
 @"
 @echo off
+set "PATH=$(Split-Path $vswhere);%PATH%"
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
 cd /d "$repo"

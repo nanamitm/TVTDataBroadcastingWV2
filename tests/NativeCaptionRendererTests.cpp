@@ -112,14 +112,21 @@ void CheckWrap(NativeCaptionRenderer& renderer)
 }
 void CheckFonts(NativeCaptionRenderer& renderer)
 {
-    NativeCaptionSettings settings; settings.faceName = L"Arial"; renderer.SetSettings(settings);
     auto& backend = *renderer.impl_->tracks[0].renderer->pimpl_;
+    // A fresh libaribcaption renderer holds the library default for language 0.
+    aribcaption::Context context;
+    aribcaption::Renderer pristine(context);
+    Check(pristine.Initialize(aribcaption::CaptionType::kCaption, aribcaption::FontProviderType::kDirectWrite,
+        aribcaption::TextRendererType::kDirectWrite), "reference renderer must initialize");
+    const auto libraryDefault = pristine.pimpl_->language_font_family_[0];
+    NativeCaptionSettings settings; settings.faceName = L"Arial"; renderer.SetSettings(settings);
     const auto japanese = backend.language_font_family_[aribcaption::ThreeCC("jpn")];
     Check(backend.force_default_font_family_ && backend.language_font_family_[0][0] == "Arial", "explicit font must be forced");
     settings.faceName.clear(); renderer.SetSettings(settings);
     Check(!backend.force_default_font_family_, "clearing font fields must restore automatic selection");
     Check(backend.language_font_family_[aribcaption::ThreeCC("jpn")] == japanese, "automatic language font families must be preserved");
-    Check(backend.language_font_family_[0][0] != "Arial", "previous forced fallback must not survive clearing");
+    Check(backend.language_font_family_[0] == libraryDefault,
+        "clearing font fields must restore the library default for language 0, including Japanese fallbacks");
 }
 int main()
 {

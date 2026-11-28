@@ -115,8 +115,11 @@ struct NativeCaptionRenderer::Impl
             else
             {
                 // Keep the library's language-specific families and stop forcing
-                // a previously selected font. Use its generic fallback otherwise.
-                track.renderer->SetDefaultFontFamily({"sans-serif"}, false);
+                // a previously selected font. Restore libaribcaption's Windows
+                // default for language 0 (RendererImpl::LoadDefaultFontFamilies),
+                // including the Japanese fonts used as a fallback for symbols.
+                track.renderer->SetDefaultFontFamily(
+                    {"sans-serif", "Windows TV MaruGothic", "Noto Sans JP", "MS Gothic"}, false);
             }
             track.renderer->SetForceNoBackground(settings.noBackground);
             // 縁取り幅は10倍で保持している

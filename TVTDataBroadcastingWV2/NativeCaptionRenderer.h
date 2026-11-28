@@ -66,7 +66,11 @@ public:
     void SetProfileC(bool profileC);
     void SetFrameCallback(FrameCallback callback);
     void RequestRedraw();
+    // Reset decoder/history and invalidate the clock. PES received before the
+    // next PCR is decoded and held in a bounded queue until it can be scheduled.
     void Reset();
+    // pts90kHz is the raw 33-bit transport timestamp. Update() supplies the
+    // matching raw PCR in milliseconds; the renderer handles their wraparound.
     void Push(int streamId, const std::vector<std::uint8_t>& data, std::optional<std::int64_t> pts90kHz);
     void Update(std::int64_t currentTimeMs, int frameWidth, int frameHeight);
 

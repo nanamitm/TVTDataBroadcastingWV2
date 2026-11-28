@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <string>
 #include <utility>
 
@@ -18,6 +19,17 @@ namespace
 {
 constexpr int STREAM_CAPTION = 0xbd;
 constexpr int STREAM_SUPERIMPOSE = 0xbf;
+constexpr std::int64_t CLOCK_PERIOD_90KHZ = INT64_C(1) << 33;
+constexpr std::int64_t MAX_CLOCK_JUMP_90KHZ = 10000 * 90;
+constexpr std::size_t MAX_STORED_CAPTIONS = 128;
+
+std::int64_t WrapClockDelta(std::int64_t delta)
+{
+    delta %= CLOCK_PERIOD_90KHZ;
+    if (delta > CLOCK_PERIOD_90KHZ / 2) delta -= CLOCK_PERIOD_90KHZ;
+    else if (delta <= -CLOCK_PERIOD_90KHZ / 2) delta += CLOCK_PERIOD_90KHZ;
+    return delta;
+}
 
 std::string EncodeBase64(const std::uint8_t* data, std::size_t size)
 {
@@ -43,8 +55,13 @@ struct NativeCaptionRenderer::Impl
 {
     struct Track
     {
+        struct PendingCaption {
+            aribcaption::Caption caption;
+            std::optional<std::int64_t> pts90kHz;
+        };
         std::unique_ptr<aribcaption::Decoder> decoder;
         std::unique_ptr<aribcaption::Renderer> renderer;
+        std::deque<PendingCaption> pending;
         bool visible = false;
     };
 
@@ -52,6 +69,7 @@ struct NativeCaptionRenderer::Impl
 
     bool InitializeTrack(Track& track, aribcaption::CaptionType type)
     {
+        track.pending.clear();
         track.decoder = std::make_unique<aribcaption::Decoder>(context);
         if (!track.decoder->Initialize(aribcaption::EncodingScheme::kAuto, type))
         {
@@ -66,6 +84,9 @@ struct NativeCaptionRenderer::Impl
             return false;
         }
         ApplySettings(track);
+        // The default minimum policy only evicts relative to a rendered caption.
+        // Hidden tracks must have a bound even when Render() is never called.
+        track.renderer->SetStoragePolicy(aribcaption::CaptionStoragePolicy::kUpperLimitCount, MAX_STORED_CAPTIONS);
         track.decoder->SetProfile(profileC ? aribcaption::Profile::kProfileC : aribcaption::Profile::kProfileA);
         return true;
     }
@@ -90,6 +111,12 @@ struct NativeCaptionRenderer::Impl
             if (!fontFamily.empty())
             {
                 track.renderer->SetDefaultFontFamily(fontFamily, true);
+            }
+            else
+            {
+                // Keep the library's language-specific families and stop forcing
+                // a previously selected font. Use its generic fallback otherwise.
+                track.renderer->SetDefaultFontFamily({"sans-serif"}, false);
             }
             track.renderer->SetForceNoBackground(settings.noBackground);
             // 縁取り幅は10倍で保持している
@@ -116,6 +143,16 @@ struct NativeCaptionRenderer::Impl
         if (frameCallback) frameCallback(index, frameWidth, frameHeight, {});
         callback({{"type", "captionImage"}, {"track", index}, {"images", nlohmann::json::array()}});
         tracks[index].visible = false;
+    }
+
+    void AppendCaption(int index, aribcaption::Caption caption, std::optional<std::int64_t> pts90kHz)
+    {
+        caption.pts = pts90kHz
+            ? (currentTime90kHz + WrapClockDelta(*pts90kHz - *lastPCR90kHz)) / 90
+            : currentTimeMs;
+        if (caption.has_builtin_sound && IsTrackVisible(index))
+            callback({{"type", "captionSound"}, {"sound", caption.builtin_sound_id}});
+        tracks[index].renderer->AppendCaption(std::move(caption));
     }
 
     void RenderTrack(int index, std::int64_t currentTimeMs, bool frameSizeChanged)
@@ -181,6 +218,8 @@ struct NativeCaptionRenderer::Impl
     int frameWidth = 0;
     int frameHeight = 0;
     std::int64_t currentTimeMs = 0;
+    std::int64_t currentTime90kHz = 0;
+    std::optional<std::int64_t> lastPCR90kHz;
 };
 
 NativeCaptionRenderer::NativeCaptionRenderer(MessageCallback callback) :
@@ -218,6 +257,10 @@ bool NativeCaptionRenderer::Initialize()
 
 void NativeCaptionRenderer::Reset()
 {
+    impl_->currentTimeMs = 0;
+    impl_->currentTime90kHz = 0;
+    impl_->lastPCR90kHz.reset();
+    impl_->forceRender = true;
     for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
     {
         auto& track = impl_->tracks[i];
@@ -250,18 +293,23 @@ void NativeCaptionRenderer::Push(int streamId, const std::vector<std::uint8_t>& 
     {
         return;
     }
-    const std::int64_t ptsMs = index == 0 && pts90kHz ? *pts90kHz / 90 : impl_->currentTimeMs;
+    if (index != 0) pts90kHz.reset();
+    if (pts90kHz && (*pts90kHz < 0 || *pts90kHz >= CLOCK_PERIOD_90KHZ)) return;
+    // Decode management/DRCS data immediately, but do not schedule a caption
+    // against zero or the previous service's clock before the first PCR.
+    const std::int64_t ptsMs = pts90kHz ? *pts90kHz / 90 : impl_->currentTimeMs;
     aribcaption::DecodeResult result;
     if (track.decoder->Decode(data.data(), data.size(), ptsMs, result) != aribcaption::DecodeStatus::kGotCaption)
     {
         return;
     }
-    // 表示しないトラックの内蔵音は鳴らさない
-    if (result.caption->has_builtin_sound && impl_->IsTrackVisible(index))
+    if (!impl_->lastPCR90kHz)
     {
-        impl_->callback({{"type", "captionSound"}, {"sound", result.caption->builtin_sound_id}});
+        track.pending.push_back({std::move(*result.caption), pts90kHz});
+        if (track.pending.size() > MAX_STORED_CAPTIONS) track.pending.pop_front();
+        return;
     }
-    track.renderer->AppendCaption(std::move(*result.caption));
+    impl_->AppendCaption(index, std::move(*result.caption), pts90kHz);
 }
 
 void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, int frameHeight)
@@ -270,7 +318,28 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
     {
         return;
     }
-    impl_->currentTimeMs = currentTimeMs;
+    if (currentTimeMs < 0 || currentTimeMs > (CLOCK_PERIOD_90KHZ - 1) / 90) return;
+    const auto rawPCR90kHz = currentTimeMs * 90;
+    if (impl_->lastPCR90kHz)
+    {
+        const auto delta = WrapClockDelta(rawPCR90kHz - *impl_->lastPCR90kHz);
+        // Match the TTML path: a large jump is a seek/discontinuity, not a wrap.
+        if (delta > MAX_CLOCK_JUMP_90KHZ || delta < -MAX_CLOCK_JUMP_90KHZ) Reset();
+        else impl_->currentTime90kHz += delta;
+    }
+    if (!impl_->lastPCR90kHz) impl_->currentTime90kHz = rawPCR90kHz;
+    impl_->lastPCR90kHz = rawPCR90kHz;
+    impl_->currentTimeMs = impl_->currentTime90kHz / 90;
+    for (int i = 0; i < static_cast<int>(impl_->tracks.size()); ++i)
+    {
+        auto& pending = impl_->tracks[i].pending;
+        while (!pending.empty())
+        {
+            auto caption = std::move(pending.front());
+            pending.pop_front();
+            if (impl_->tracks[i].renderer) impl_->AppendCaption(i, std::move(caption.caption), caption.pts90kHz);
+        }
+    }
     const bool frameSizeChanged = impl_->frameWidth != frameWidth || impl_->frameHeight != frameHeight;
     if (frameSizeChanged)
     {
@@ -301,7 +370,7 @@ void NativeCaptionRenderer::Update(std::int64_t currentTimeMs, int frameWidth, i
             }
             continue;
         }
-        impl_->RenderTrack(i, currentTimeMs - impl_->TrackDelayMs(i), forceRedraw);
+        impl_->RenderTrack(i, impl_->currentTimeMs - impl_->TrackDelayMs(i), forceRedraw);
     }
 }
 

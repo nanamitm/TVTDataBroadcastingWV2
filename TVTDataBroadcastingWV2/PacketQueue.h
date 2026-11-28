@@ -33,6 +33,9 @@ public:
     static constexpr size_t packetSize = 188;
     static constexpr size_t packetBlockSize = packetSize * 500;
     static constexpr size_t maxQueueLength = 100;
+    // PCR units (45 kHz, LSB dropped). A larger step between consecutive PCRs is
+    // a seek or discontinuity, not elapsed time (PCRs repeat at least every 100 ms).
+    static constexpr int32_t maxPCRStep = 45000 * 10;
 
     BasicPacketQueue()
     {
@@ -80,9 +83,17 @@ public:
                 {
                     // PCRを取得する。時計演算の便利のため下位1bitは捨てる
                     this->pcrPIDCandidates.clear();
+                    const DWORD previous = this->pcr;
                     this->pcr = (static_cast<DWORD>(packet[6]) << 24) | (packet[7] << 16) | (packet[8] << 8) | packet[9];
                     // A TDT/TOT may arrive before the first usable PCR.
                     if (!this->pcrKnown) this->pcrAtTot = this->pcr;
+                    else if (const auto step = static_cast<int32_t>(this->pcr - previous); step > maxPCRStep || step < -maxPCRStep)
+                    {
+                        // Do not extrapolate the old TOT across a seek (up to ±13 hours
+                        // wrong until the next TOT); report the time as unknown instead.
+                        this->totUnix = 0;
+                        this->pcrAtTot = this->pcr;
+                    }
                     this->pcrKnown = true;
                 }
             }

@@ -190,6 +190,27 @@ int main() {
         intercept = false;
     }
     {
+        // HTTPS headers must not be accepted unless SENDING_REQUEST verified the
+        // certificate; a deferred check (HTTPS proxy CONNECT) is not enough.
+        intercept = true; unsigned errors = 0;
+        auto unverified = std::make_shared<ProxyRequest>(nullptr, nullptr, [&] { ++errors; },
+            [](DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*) {}, std::vector<BYTE>{}, false);
+        unverified->state = std::make_shared<ProxySessionState>();
+        unverified->secure = true;
+        unverified->AsyncCallback(nullptr, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, nullptr, 0);
+        check(errors == 1 && unverified->completed, "unverified HTTPS response is rejected");
+        auto verified = std::make_shared<ProxyRequest>(nullptr, nullptr, [&] { ++errors; },
+            [](DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*) {}, std::vector<BYTE>{}, false);
+        verified->state = std::make_shared<ProxySessionState>();
+        verified->secure = true; verified->certificateVerified = true;
+        verified->AsyncCallback(nullptr, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, nullptr, 0);
+        check(errors == 1 && !verified->completed, "verified HTTPS response proceeds");
+        const wchar_t* redirect = L"https://example.jp/next";
+        verified->AsyncCallback(nullptr, WINHTTP_CALLBACK_STATUS_REDIRECT, const_cast<wchar_t*>(redirect), 0);
+        check(!verified->certificateVerified && verified->tlsHost == L"example.jp", "redirect requires verification again");
+        intercept = false;
+    }
+    {
         Server server("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nABCDEFGH");
         ProxySession session(false, {8, 4, 1}); localProxy(session);
         auto outcome = std::make_shared<Outcome>();

@@ -14,7 +14,8 @@ struct QueuedProxyRequest
     std::vector<BYTE> payload;
     std::vector<std::pair<std::wstring, std::wstring>> headers;
     std::function<void(DWORD, LPCWSTR, LPCWSTR, size_t, BYTE*)> respond;
-    bool blockPrivateAddresses = false;
+    // Every caller's destination is chosen by broadcast or network content.
+    bool blockPrivateAddresses = true;
 };
 
 // UI-thread queue. Bound both retained request data and the number of WebView

@@ -3068,7 +3068,9 @@ HRESULT CDataBroadcastingWV2::Proxy(ICoreWebView2WebResourceRequestedEventArgs* 
         }
         return;
     };
-    QueuedProxyRequest queued{ proxyUrl, method.get(), std::move(contentBuffer), {}, postResponse, allowOrigin != nullptr };
+    // BMLの通信 (transmitTextDataOverIP、X_CSV、XML-AITの取得) も放送側が宛先を決めるので、
+    // 4Kデータ放送と同じくローカル・プライベートなアドレスには送らない。
+    QueuedProxyRequest queued{ proxyUrl, method.get(), std::move(contentBuffer), {}, postResponse, true };
     for (const auto& [name, value] : headersPtr)
     {
         queued.headers.emplace_back(name, value);

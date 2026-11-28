@@ -11,6 +11,7 @@ QueuedProxyRequest Request(std::vector<DWORD>& statuses, size_t payload = 0)
 int main()
 {
     try {
+        Check(QueuedProxyRequest{}.blockPrivateAddresses, "queued proxy requests block private addresses by default");
         std::vector<DWORD> statuses;
         unsigned starts = 0;
         auto start = [&](QueuedProxyRequest) { ++starts; };

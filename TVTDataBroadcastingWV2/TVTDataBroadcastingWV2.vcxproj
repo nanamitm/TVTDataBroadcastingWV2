@@ -285,7 +285,9 @@
     <ClInclude Include="proxy.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="StartupPolicy.h" />
+    <ClInclude Include="PacketQueue.h" />
     <ClInclude Include="AsyncLifetime.h" />
+    <ClInclude Include="PostedPayload.h" />
     <ClInclude Include="Html5RpcPolicy.h" />
     <ClInclude Include="ProxyPolicy.h" />
     <ClInclude Include="ProxyQueue.h" />

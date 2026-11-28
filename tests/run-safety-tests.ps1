@@ -17,6 +17,10 @@ cl /nologo /EHsc /MD /std:c++20 /utf-8 tests\ProxyQueueTests.cpp /Fo:"$output\pr
 if errorlevel 1 exit /b 1
 "$output\proxy-queue.exe"
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /MD /std:c++20 /utf-8 tests\PacketQueueTests.cpp /Fo:"$output\packet-queue.obj" /Fe:"$output\packet-queue.exe"
+if errorlevel 1 exit /b 1
+"$output\packet-queue.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsoft.Windows.ImplementationLibrary.1.0.220201.1\include" /I"packages\Microsoft.Web.WebView2.1.0.4258.31\build\native\include" tests\B62AppReceiverTests.cpp TVTDataBroadcastingWV2\B62AppReceiver.cpp TVTDataBroadcastingWV2\ZlibInflate.cpp /Fo:"$output\\" /Fe:"$output\b62-receiver.exe"
 if errorlevel 1 exit /b 1
 "$output\b62-receiver.exe"
@@ -29,7 +33,7 @@ cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsof
 if errorlevel 1 exit /b 1
 "$output\proxy.exe"
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTests\StartupSmokeTests.cpp /Fo:"$output\startup.obj" /Fe:"$output\startup.exe"
+cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTests\StartupSmokeTests.cpp /Fo:"$output\startup.obj" /Fe:"$output\startup.exe" user32.lib
 if errorlevel 1 exit /b 1
 "$output\startup.exe"
 if errorlevel 1 exit /b 1

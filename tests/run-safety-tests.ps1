@@ -25,7 +25,7 @@ cl /nologo /EHsc /MD /std:c++20 /utf-8 /DUNICODE /D_UNICODE /I"packages\Microsof
 if errorlevel 1 exit /b 1
 "$output\proxy.exe"
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTests\StartupSmokeTests.cpp /Fo:"$output\startup.obj" /Fe:"$output\startup.exe"
+cl /nologo /EHsc /MD /std:c++20 /I"TVTDataBroadcastingWV2" tests\StartupSmokeTests\StartupSmokeTests.cpp /Fo:"$output\startup.obj" /Fe:"$output\startup.exe" user32.lib
 if errorlevel 1 exit /b 1
 "$output\startup.exe"
 if errorlevel 1 exit /b 1

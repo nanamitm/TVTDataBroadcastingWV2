@@ -13,6 +13,7 @@
 #endif
 #include "StartupPolicy.h"
 #include "AsyncLifetime.h"
+#include "PostedPayload.h"
 #include "ProxyPolicy.h"
 #include "B62Navigation.h"
 #include "B62RomSound.h"
@@ -546,7 +547,7 @@ class CDataBroadcastingWV2 : public TVTest::CTVTestPlugin, TVTest::CTVTestEventH
     wil::com_ptr<ICoreWebView2Controller>   momentumWebViewController;
     wil::com_ptr<ICoreWebView2>             momentumWebView;
     bool momentumWebViewReady   = false;
-    bool momentumWebViewPending = false;
+    AsyncCreation momentumWebViewCreation;
     wil::com_ptr<IBasicVideo> basicVideo;
     wil::com_ptr<IBaseFilter> vmr7Renderer;
     wil::com_ptr<IBaseFilter> vmr9Renderer;
@@ -2104,7 +2105,7 @@ void CDataBroadcastingWV2::OnFilterGraphInitialized(TVTest::FilterGraphInfo* pIn
         this->hVideoWnd = this->hContainerWnd;
         this->hContainerWnd = GetParent(this->hContainerWnd);
     }
-    if (this->deferWebView)
+    if (this->deferWebView && AsyncLifetime::IsCurrent(this->webViewLifetime.GetTicket()))
     {
         this->deferWebView = false;
         this->InitWebView2();
@@ -2132,6 +2133,7 @@ void CDataBroadcastingWV2::OnFilterGraphFinalize(TVTest::FilterGraphInfo* pInfo)
 
 void CDataBroadcastingWV2::InitWebView2()
 {
+    if (!AsyncLifetime::IsCurrent(this->webViewLifetime.GetTicket())) return;
     this->InitHtml5();
     if (!this->hContainerWnd)
     {
@@ -2172,10 +2174,9 @@ void CDataBroadcastingWV2::InitWebView2()
         }
         // 環境を保存し、保留中の勢いパネルがあればコントローラーを作成
         this->webViewEnv = env;
-        if (this->momentumWebViewPending && this->hMomentumPanel)
+        if (this->hMomentumPanel)
         {
-            this->momentumWebViewPending = false;
-            this->CreateMomentumWebViewController(this->hMomentumPanel);
+            this->InitMomentumWebView(this->hMomentumPanel);
         }
         wil::unique_cotaskmem_string ver;
         if (SUCCEEDED(env->get_BrowserVersionString(ver.put())))
@@ -3376,6 +3377,8 @@ void CDataBroadcastingWV2::ResizeVideoWindow()
 
 void CDataBroadcastingWV2::Disable(bool finalize)
 {
+    this->deferWebView = false;
+    this->momentumWebViewCreation.Cancel();
     this->StopHtml5(false);
     this->html5Lifetime.Cancel();
     if (this->html5Controller) this->html5Controller->Close();
@@ -3477,6 +3480,10 @@ void CDataBroadcastingWV2::Disable(bool finalize)
     this->packetQueue.clear();
     this->b62Receiver.Reset(this->currentService.ServiceID);
 
+    // Both the login worker and WebView have stopped producing notifications.
+    // Reclaim ownership transferred by posts that the UI has not handled yet.
+    DiscardPostedPayloads<JkcnslLoginEvent>(this->hMessageWnd, WM_APP_LOGIN, PostedPayloadParameter::WParam);
+    DiscardPostedPayloads<InputDialog>(this->hMessageWnd, WM_APP_INPUT, PostedPayloadParameter::LParam);
     if (this->hMessageWnd)
     {
         auto hWnd = this->hMessageWnd;
@@ -5635,6 +5642,7 @@ static std::string colorToHex(COLORREF c)
     case WM_INITDIALOG:
         pThis->panelBackColor = pThis->m_pApp->GetColor(L"PanelBack");
         pThis->panelTextColor = pThis->m_pApp->GetColor(L"PanelText");
+        pThis->hMomentumPanel = hDlg;
         pThis->InitMomentumWebView(hDlg);
         return TRUE;
     case WM_SIZE:
@@ -5646,6 +5654,7 @@ static std::string colorToHex(COLORREF c)
         }
         return TRUE;
     case WM_DESTROY:
+        pThis->momentumWebViewCreation.Cancel();
         pThis->momentumWebViewReady = false;
         pThis->momentumWebView = nullptr;
         if (pThis->momentumWebViewController)
@@ -5661,18 +5670,23 @@ static std::string colorToHex(COLORREF c)
 
 void CDataBroadcastingWV2::InitMomentumWebView(HWND hwnd)
 {
-    if (this->webViewEnv)
+    if (AsyncLifetime::IsCurrent(this->webViewLifetime.GetTicket()) &&
+        this->webViewEnv && !this->momentumWebViewController)
         this->CreateMomentumWebViewController(hwnd);
-    else
-        this->momentumWebViewPending = true; // データ放送 WebView2 の環境作成後に起動
 }
 
 void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
 {
-    this->webViewEnv->CreateCoreWebView2Controller(hwnd,
+    const auto creation = this->momentumWebViewCreation.TryBegin();
+    if (!creation) return;
+    const auto result = this->webViewEnv->CreateCoreWebView2Controller(hwnd,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [this, hwnd, ticket = this->webViewLifetime.GetTicket()](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
+            [this, hwnd, creation = *creation, ticket = this->webViewLifetime.GetTicket()](HRESULT hr, ICoreWebView2Controller* ctrl) -> HRESULT {
                 if (!AsyncLifetime::IsCurrent(ticket)) {
+                    if (ctrl) ctrl->Close();
+                    return S_OK;
+                }
+                if (!this->momentumWebViewCreation.Complete(creation)) {
                     if (ctrl) ctrl->Close();
                     return S_OK;
                 }
@@ -5790,6 +5804,7 @@ void CDataBroadcastingWV2::CreateMomentumWebViewController(HWND hwnd)
                 return S_OK;
             }
         ).Get());
+    if (FAILED(result)) this->momentumWebViewCreation.Complete(*creation);
 }
 
 void CDataBroadcastingWV2::SendMomentumTheme()

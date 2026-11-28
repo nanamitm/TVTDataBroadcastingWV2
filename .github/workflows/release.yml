@@ -10,8 +10,10 @@ on:
         description: 'Version tag (e.g. v1.0.0)'
         required: true
 
+# The build job runs npm install scripts; give it a read-only token and grant
+# contents: write only to the job that publishes the release.
 permissions:
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -32,8 +34,10 @@ jobs:
       version: ${{ steps.version.outputs.VERSION }}
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
+        # Do not leave the token in .git/config for later steps (npm scripts).
+        persist-credentials: false
         # libaribcaptionとdantto4k (TTMLのパーサ) をサブモジュールとして取り込んでビルドしている。
         # dantto4kの中のサブモジュール (tsduck、asio) は使わないので取得しない
         submodules: true
@@ -42,16 +46,19 @@ jobs:
 
     - name: Get version
       id: version
+      # Pass untrusted text through the environment, never into the script itself.
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        INPUT_VERSION: ${{ github.event.inputs.version }}
+        REF_NAME: ${{ github.ref_name }}
       run: |
-        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-          $v = "${{ github.event.inputs.version }}"
-        } else {
-          $v = "${{ github.ref_name }}"
-        }
+        $v = if ($env:EVENT_NAME -eq "workflow_dispatch") { $env:INPUT_VERSION } else { $env:REF_NAME }
+        # The version becomes file names and the release tag.
+        if ($v -cnotmatch '^v[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') { throw "Invalid version tag: $v" }
         Write-Output "VERSION=$v" >> $env:GITHUB_OUTPUT
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v3
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
 
     - name: Restore NuGet packages
       run: nuget restore
@@ -71,7 +78,7 @@ jobs:
         & ".\$projectPlatform\Release\StartupSmokeTests.exe"
         if ($LASTEXITCODE -ne 0) { throw "Startup smoke tests failed with exit code $LASTEXITCODE" }
 
-    - uses: actions/setup-node@v5
+    - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version: '24'
         cache-dependency-path: ./browser/package-lock.json
@@ -90,8 +97,9 @@ jobs:
 
     # jkcnslのライセンスとREADMEを、同梱する実行ファイルと同じタグから取得する
     - name: Checkout jkcnsl metadata
-      uses: actions/checkout@v5
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
+        persist-credentials: false
         repository: nanamitm/jkcnsl
         ref: ${{ env.JKCNSL_VERSION }}
         path: jkcnsl-source
@@ -144,7 +152,7 @@ jobs:
         Copy-Item -Recurse 'jkcnsl-expanded/jkcnsl' "$name/jkcnsl"
         Compress-Archive -Path $name -DestinationPath "$name.zip"
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}
         path: TVTDataBroadcastingWV2-${{ steps.version.outputs.VERSION }}-${{ matrix.platform }}.zip
@@ -154,14 +162,16 @@ jobs:
     # windows-2022と同じく版を固定する。ubuntu-latestは2026-10-19からUbuntu 26へ
     # 移り変わるので、リリースの発行だけが突然別の環境で走らないようにする。
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
 
     steps:
-    - uses: actions/download-artifact@v8
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         path: artifacts/
         merge-multiple: true
 
-    - uses: softprops/action-gh-release@v3
+    - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
       with:
         tag_name: ${{ needs.build.outputs.version }}
         name: ${{ needs.build.outputs.version }}

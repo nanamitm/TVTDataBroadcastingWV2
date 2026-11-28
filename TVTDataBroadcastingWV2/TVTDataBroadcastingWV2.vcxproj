@@ -290,6 +290,7 @@
     <ClInclude Include="PostedPayload.h" />
     <ClInclude Include="Html5RpcPolicy.h" />
     <ClInclude Include="ProxyPolicy.h" />
+    <ClInclude Include="ProxyQueue.h" />
     <ClInclude Include="B62Navigation.h" />
     <ClInclude Include="B62RomSound.h" />
     <ClInclude Include="TtmlCaption.h" />

@@ -225,8 +225,14 @@ int main() {
         auto rejected = std::make_shared<Outcome>();
         check(!start(session, server.url(), rejected), "concurrent request cap enforced");
         check(!start(session, server.url(), rejected, false, std::vector<BYTE>(5)), "upload cap enforced");
+        session.CancelPendingRequests();
+        check(waitFor([&] { return session.HasCapacity(); }), "canceled request releases its connection slot");
+        check(outcome->failures == 1 && outcome->successes == 0, "network disable cancels pending read exactly once");
+        Server resumed("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        auto fresh = std::make_shared<Outcome>();
+        check(start(session, resumed.url(), fresh), "network re-enable accepts a fresh request in the same session");
+        check(WaitForSingleObject(fresh->ready, 5000) == WAIT_OBJECT_0 && fresh->successes == 1, "fresh request completes after cancellation");
         session.Shutdown();
-        check(outcome->failures == 1 && outcome->successes == 0 && session.state->requests.empty(), "cancel pending read and retain context through close");
         check(!session.HasCapacity(), "no capacity after shutdown");
         const auto count = outcome->failures.load(); Sleep(30);
         check(outcome->failures == count, "no owner callback after shutdown");

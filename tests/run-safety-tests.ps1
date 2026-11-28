@@ -13,6 +13,10 @@ set "PATH=$(Split-Path $vswhere);%PATH%"
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
 cd /d "$repo"
+cl /nologo /EHsc /MD /std:c++20 /utf-8 tests\ProxyQueueTests.cpp /Fo:"$output\proxy-queue.obj" /Fe:"$output\proxy-queue.exe"
+if errorlevel 1 exit /b 1
+"$output\proxy-queue.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /MD /std:c++20 /utf-8 tests\PacketQueueTests.cpp /Fo:"$output\packet-queue.obj" /Fe:"$output\packet-queue.exe"
 if errorlevel 1 exit /b 1
 "$output\packet-queue.exe"

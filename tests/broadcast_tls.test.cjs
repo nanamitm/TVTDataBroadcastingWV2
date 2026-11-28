@@ -14,9 +14,9 @@ function ssl(...args) {
 }
 const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const close = server => new Promise(resolve => server.close(resolve));
-function native(url, expected) {
+function native(url, expected, trust = 'private') {
   return new Promise((resolve, reject) => {
-    const process = spawn(executable, ['--tls', path.join(dir, 'root.cer'), url, expected], { windowsHide: true });
+    const process = spawn(executable, ['--tls', path.join(dir, 'root.cer'), url, expected, trust], { windowsHide: true });
     let text = '';
     process.stdout.on('data', chunk => text += chunk);
     process.stderr.on('data', chunk => text += chunk);
@@ -65,13 +65,15 @@ async function main() {
     ssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'foreign.key', '-out', 'foreign.pem', '-days', '30', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost');
     // Before a valid CRL is cached, lack of revocation information must fail.
     for (const name of ['uncheckable', 'valid', 'revoked', 'expired', 'wrong-name', 'wrong-usage', 'foreign']) {
-      const fixture = await serverFor(name);
-      try {
-        const result = await native(fixture.url, name === 'valid' ? 'success' : 'failure');
-        if (name === 'valid') assert.ok(fixture.bytes().includes('fixture-secret'), 'approved TLS server receives POST');
-        else assert.equal(fixture.bytes().length, 0, `${name}: invalid certificate receives no HTTP bytes`);
-        console.log(name + ': ' + result.trim());
-      } finally { await fixture.close(); }
+      for (const trust of ['private', 'system']) {
+        const fixture = await serverFor(name);
+        try {
+          const result = await native(fixture.url, name === 'valid' ? 'success' : 'failure', trust);
+          if (name === 'valid') assert.ok(fixture.bytes().includes('fixture-secret'), 'approved TLS server receives POST');
+          else assert.equal(fixture.bytes().length, 0, `${trust}/${name}: invalid certificate receives no HTTP bytes`);
+          console.log(trust + '/' + name + ': ' + result.trim());
+        } finally { await fixture.close(); }
+      }
     }
     let httpRequests = 0;
     const plain = http.createServer((request, response) => { httpRequests++; request.resume(); response.writeHead(200); response.end(); });
@@ -80,20 +82,29 @@ async function main() {
       const url = `http://localhost:${plain.address().port}/fixture`;
       await native(url, 'success');
       assert.equal(httpRequests, 1, 'private roots do not break ordinary HTTP BML requests');
-      const downgrade = await serverFor('valid', `HTTP/1.1 307 Temporary Redirect\r\nLocation: ${url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
-      try {
-        await native(downgrade.url, 'failure');
-        assert.equal(httpRequests, 1, 'TLS cannot redirect POST to plaintext');
-      } finally { await downgrade.close(); }
+      for (const trust of ['private', 'system']) {
+        const downgrade = await serverFor('valid', `HTTP/1.1 307 Temporary Redirect\r\nLocation: ${url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+        try {
+          await native(downgrade.url, 'failure', trust);
+          assert.equal(httpRequests, 1, 'TLS cannot redirect POST to plaintext');
+        } finally { await downgrade.close(); }
+      }
     } finally { await close(plain); }
-    const destination = await serverFor('foreign');
-    const redirect = await serverFor('valid', `HTTP/1.1 307 Temporary Redirect\r\nLocation: ${destination.url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    for (const trust of ['private', 'system']) {
+      const destination = await serverFor('foreign');
+      const redirect = await serverFor('valid', `HTTP/1.1 307 Temporary Redirect\r\nLocation: ${destination.url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+      try {
+        await native(redirect.url, 'failure', trust);
+        assert.ok(redirect.bytes().includes('fixture-secret'));
+        assert.equal(destination.bytes().length, 0, 'redirect destination is verified before resending POST');
+      } finally { await redirect.close(); await destination.close(); }
+    }
+    const ignored = await serverFor('revoked');
     try {
-      await native(redirect.url, 'failure');
-      assert.ok(redirect.bytes().includes('fixture-secret'));
-      assert.equal(destination.bytes().length, 0, 'redirect destination is verified before resending POST');
-    } finally { await redirect.close(); await destination.close(); }
-    console.log('TLS validation and redirect tests passed; invalid peers received zero HTTP bytes');
+      await native(ignored.url, 'success', 'ignore');
+      assert.ok(ignored.bytes().includes('fixture-secret'), 'only the explicit IgnoreCertificateErrors option bypasses verification');
+    } finally { await ignored.close(); }
+    console.log('TLS validation and redirect tests passed; default verification blocked HTTP to invalid peers');
   } finally { await close(crlServer); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -60,6 +60,21 @@ void CheckClockReset()
     t = TDT(); queue.enqueuePacket(t.data());
     p = PCR(static_cast<DWORD>(0xffff8000ULL + 45000ULL)); queue.enqueuePacket(p.data());
     Check(queue.getBroadcastTime() == base + 1, "PCR wrap must advance the clock by one second");
+    // A seek must not extrapolate the old TOT; the time is unknown until the next TOT.
+    for (DWORD jump : {static_cast<DWORD>(45000 * 600), static_cast<DWORD>(-45000 * 600)})
+    {
+        queue.clear();
+        p = PCR(90000000); for (int i = 0; i < 3; ++i) queue.enqueuePacket(p.data());
+        t = TDT(); queue.enqueuePacket(t.data());
+        p = PCR(90000000 + 45000 * 9); queue.enqueuePacket(p.data());
+        Check(queue.getBroadcastTime() == base + 9, "steps within the limit are elapsed time");
+        p = PCR(90000000 + 45000 * 9 + jump); queue.enqueuePacket(p.data());
+        Check(queue.getBroadcastTime() == 0, "a PCR jump must invalidate the broadcast time");
+        t = TDT(0x30); queue.enqueuePacket(t.data());
+        Check(queue.getBroadcastTime() == base + 30, "the next TOT restores the broadcast time");
+        p = PCR(90000000 + 45000 * 10 + jump); queue.enqueuePacket(p.data());
+        Check(queue.getBroadcastTime() == base + 31, "interpolation resumes from the new TOT");
+    }
 }
 void CheckQueueBound()
 {

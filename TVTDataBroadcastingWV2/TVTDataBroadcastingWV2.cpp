@@ -3620,7 +3620,8 @@ void CDataBroadcastingWV2::QueueCommentStatus(JkcnslReader::Status status, std::
     // コメントの時刻は実況の投稿時刻 (放送時刻系) なので、状態行も放送時刻に
     // 合わせる。追っかけ再生中は壁時計と60秒以上ずれるため、揃えないとログの
     // 中で時刻が前後する。TOTが取れていないときだけ壁時計に落とす。
-    // getBroadcastTime()はatomicしか読まないのでワーカースレッドから呼べる。
+    // getBroadcastTime()はキューのロックの下で読むのでワーカースレッドから呼べる。
+    // シーク直後は次のTOTまで0 (不明) になり、壁時計に落とす。
     const long long broadcast = this->packetQueue.getBroadcastTime();
     // 無効化直後などPostMessageに失敗した場合はここで解放する
     auto payload = std::make_unique<CommentStatusNotification>(CommentStatusNotification{

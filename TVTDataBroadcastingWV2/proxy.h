@@ -44,6 +44,8 @@ public:
     explicit ProxySession(bool ignoreCertificateErrors = false, ProxyLimits limits = {});
     ~ProxySession();
     void Shutdown();
+    // Cancel current requests without closing the sessions; later requests may resume.
+    void CancelPendingRequests();
     // Whether another request can start now (below the concurrent request limit).
     bool HasCapacity() const;
     void SetCertificateStore(std::shared_ptr<BroadcastCertificates::Store> store);
@@ -74,6 +76,7 @@ class ProxyRequest : public std::enable_shared_from_this<ProxyRequest> {
     std::function<void(const ProxyDiagnostic&)> diagnostic;
     std::wstring tlsHost;
     bool secure = false;
+    bool verifyCertificate = true;
     DWORD secureFailureFlags = 0;
     ProxyRequest(HINTERNET connect, HINTERNET request,
         std::function<void()> errorCallback,

@@ -152,7 +152,7 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
     }
     case WINHTTP_CALLBACK_STATUS_SENDING_REQUEST:
     {
-        if (!secure || !certificateTrust) break;
+        if (!secure || !verifyCertificate) break;
         PCCERT_CONTEXT raw = nullptr; DWORD size = sizeof(raw);
         if (!WinHttpQueryOption(hInternet, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &raw, &size)) {
             const DWORD error = GetLastError();
@@ -162,7 +162,9 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
             Fail(error, L"TLS/server-certificate"); return;
         }
         BroadcastCertificates::Certificate certificate(raw);
-        const DWORD result = certificateTrust->Verify(raw, tlsHost, raw ? raw->hCertStore : nullptr);
+        const DWORD result = certificateTrust
+            ? certificateTrust->Verify(raw, tlsHost, raw ? raw->hCertStore : nullptr)
+            : BroadcastCertificates::Trust::VerifyWithEngine(nullptr, raw, tlsHost, raw ? raw->hCertStore : nullptr);
         if (result != ERROR_SUCCESS) { Fail(result, L"TLS/chain-policy"); return; }
         break;
     }
@@ -353,6 +355,7 @@ bool ProxyRequest::RequestAsync
     std::shared_ptr<ProxyRequest> preq(new ProxyRequest(connect, request, std::move(errorCallback), std::move(callback), std::move(payload), blockPrivateAddresses));
     preq->tlsHost = hostName;
     preq->secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+    preq->verifyCertificate = !session.IgnoreCertificateErrors();
     {
         std::lock_guard lock(sharedState->mutex);
         preq->diagnostic = sharedState->diagnostic;
@@ -482,6 +485,16 @@ void ProxySession::Shutdown()
     lock.unlock();
     if (session) WinHttpCloseHandle(session);
     if (protectedSession) WinHttpCloseHandle(protectedSession);
+}
+
+void ProxySession::CancelPendingRequests()
+{
+    std::vector<std::shared_ptr<ProxyRequest>> pending;
+    {
+        std::lock_guard lock(state->mutex);
+        for (const auto& [_, request] : state->requests) pending.push_back(request);
+    }
+    for (const auto& request : pending) request->Cancel();
 }
 
 ProxySession::~ProxySession() { Shutdown(); }

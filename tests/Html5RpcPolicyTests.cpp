@@ -46,6 +46,22 @@ int main() {
         Check(StorageValueLimit("greg1") == 512 * 3 && StorageValueLimit("_common0") == kMaxStorageValue, "Storage value limit");
         Check(ParseRequest(R"({"method":"readPersistentArray","params":{"filename":"nvram://receiverinfo/zipcode"}})").has_value(), "Optional structure rejected");
         Check(ParseRequest(R"({"method":"writePersistentArray","params":{"filename":"nvram://x","structure":"U:1B","data":[1]}})").has_value(), "Valid array write rejected");
+        // chrome.webview messages are authorized natively, not by the page's runtime.
+        Check(!MessageAllowed(-1, "html5Tune") && !MessageAllowed(0, "html5Tune") && MessageAllowed(kPermissionMisc, "html5Tune"),
+            "Tune requires the managed MISC permission");
+        Check(!MessageAllowed(0, "html5Replace") && !MessageAllowed(0, "html5LaunchDataBroadcasting"), "Application control requires MISC");
+        Check(!MessageAllowed(-1, "html5ExitManaged") && MessageAllowed(0, "html5ExitManaged") && !MessageAllowed(-1, "html5Destroy"),
+            "Owner application messages require the managed state");
+        Check(!MessageAllowed(kPermissionMisc, "html5Caption") && MessageAllowed(kPermissionAV, "html5Caption"), "Caption visibility requires AV");
+        Check(MessageAllowed(-1, "html5KeySet") && MessageAllowed(-1, "html5Viewport") && MessageAllowed(-1, "html5Video"),
+            "Layout and key messages remain available");
+        Check(!MessageAllowed(0x1fff, "html5Unknown") && !MessageAllowed(0x1fff, ""), "Unknown message accepted");
+        const nlohmann::json video{{"type", "html5Video"}, {"present", true}, {"audioMute", true}, {"fullscreen", true}, {"cssLeft", 10.0}};
+        Check(RestrictVideoMessage(video, -1) == nlohmann::json{{"type", "html5Video"}, {"present", false}}, "Unmanaged document placed video");
+        const auto noAV = RestrictVideoMessage(video, kPermissionMisc);
+        Check(noAV["present"] == true && noAV["audioMute"] == false && noAV["fullscreen"] == false && noAV["cssLeft"] == 10.0,
+            "Video without AV may be placed but not muted or made fullscreen");
+        Check(RestrictVideoMessage(video, kPermissionAV) == video, "AV permission video message changed");
         std::cout << "HTML5 native RPC authorization tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

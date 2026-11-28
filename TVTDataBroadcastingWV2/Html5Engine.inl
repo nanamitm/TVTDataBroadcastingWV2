@@ -362,12 +362,21 @@ void CDataBroadcastingWV2::CreateHtml5WebView()
         this->html5WebView->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [this](ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
             wil::unique_cotaskmem_string message;
-            if (SUCCEEDED(args->get_WebMessageAsJson(message.put())))
+            wil::unique_cotaskmem_string sender;
+            wil::unique_cotaskmem_string current;
+            // Only the current top-level document may send, with the permission
+            // of its own URL evaluated here (as for RPC), not by the page.
+            if (SUCCEEDED(args->get_Source(sender.put())) && sender && this->html5WebView &&
+                SUCCEEDED(this->html5WebView->get_Source(current.put())) && current &&
+                !wcscmp(sender.get(), current.get()) &&
+                SUCCEEDED(args->get_WebMessageAsJson(message.put())))
             {
                 try
                 {
                     auto json = nlohmann::json::parse(wstrToUTF8String(message.get()));
-                    this->OnHtml5WebMessage(json);
+                    const auto permission = Html5RpcPolicy::Permission(sender.get(),
+                        this->html5Launch.value("boundaries", nlohmann::json::array()), this->html5Unmanaged);
+                    this->OnHtml5WebMessage(json, permission);
                 }
                 catch (...)
                 {
@@ -660,16 +669,20 @@ void CDataBroadcastingWV2::PostToHtml5(const nlohmann::json& message)
     }
 }
 
-void CDataBroadcastingWV2::OnHtml5WebMessage(const nlohmann::json& a)
+void CDataBroadcastingWV2::OnHtml5WebMessage(const nlohmann::json& a, int permission)
 {
-    if (!this->html5Active)
+    if (!this->html5Active || !a.is_object())
     {
         return;
     }
     auto type = a.value("type", std::string());
+    if (!Html5RpcPolicy::MessageAllowed(permission, type))
+    {
+        return;
+    }
     if (type == "html5Video")
     {
-        this->html5LastVideo = a;
+        this->html5LastVideo = Html5RpcPolicy::RestrictVideoMessage(a, permission);
         this->ApplyHtml5Video();
     }
     else if (type == "html5Viewport")

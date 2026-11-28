@@ -136,4 +136,27 @@ inline bool Allowed(int permission, std::string_view method) {
     else return false;
     return (permission & required) == required;
 }
+// permission_bitmap bits checked by the injected runtime (aribhtml5_runtime.ts PERM).
+constexpr int kPermissionAV = 1 << 12;
+constexpr int kPermissionMisc = 1 << 5;
+// chrome.webview messages bypass the runtime's requirePermission(), because any
+// top-level document can call postMessage directly. Re-check them natively.
+inline bool MessageAllowed(int permission, std::string_view type) {
+    if (type == "html5Tune" || type == "html5Replace" || type == "html5LaunchDataBroadcasting")
+        return permission >= 0 && (permission & kPermissionMisc) != 0;
+    // The owner application object exists only in the managed state.
+    if (type == "html5ExitManaged" || type == "html5Destroy") return permission >= 0;
+    if (type == "html5Caption") return permission >= 0 && (permission & kPermissionAV) != 0;
+    return type == "html5Video" || type == "html5Viewport" || type == "html5KeySet" || type == "html5KeyUnhandled";
+}
+// Unmanaged documents cannot place the broadcast video, and only AV may mute it
+// or make it fullscreen (the runtime's video object methods require PERM.AV).
+inline nlohmann::json RestrictVideoMessage(nlohmann::json message, int permission) {
+    if (permission < 0 || !message.is_object()) return {{"type", "html5Video"}, {"present", false}};
+    if ((permission & kPermissionAV) == 0) {
+        message["audioMute"] = false;
+        message["fullscreen"] = false;
+    }
+    return message;
+}
 }

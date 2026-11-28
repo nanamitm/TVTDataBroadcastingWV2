@@ -148,6 +148,8 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
         }
         tlsHost.assign(target.lpszHostName, target.dwHostNameLength);
         secure = target.nScheme == INTERNET_SCHEME_HTTPS;
+        // The redirected request has its own connection and must be verified again.
+        certificateVerified = false;
         break;
     }
     case WINHTTP_CALLBACK_STATUS_SENDING_REQUEST:
@@ -166,6 +168,7 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
             ? certificateTrust->Verify(raw, tlsHost, raw ? raw->hCertStore : nullptr)
             : BroadcastCertificates::Trust::VerifyWithEngine(nullptr, raw, tlsHost, raw ? raw->hCertStore : nullptr);
         if (result != ERROR_SUCCESS) { Fail(result, L"TLS/chain-policy"); return; }
+        certificateVerified = true;
         break;
     }
     case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
@@ -189,6 +192,14 @@ void ProxyRequest::AsyncCallback(HINTERNET hInternet, DWORD dwInternetStatus, LP
     }
     case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
     {
+        // SENDING_REQUEST may defer verification (e.g. before an HTTPS proxy's
+        // CONNECT). Never accept a response if no later callback verified it,
+        // since SECURITY_FLAG_IGNORE_UNKNOWN_CA relies on our own check.
+        if (secure && verifyCertificate && !certificateVerified)
+        {
+            Fail(ERROR_WINHTTP_SECURE_FAILURE, L"TLS/unverified");
+            return;
+        }
         DWORD statusCode = 0, statusSize = sizeof(statusCode);
         WinHttpQueryHeaders(hInternet, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             nullptr, &statusCode, &statusSize, nullptr);

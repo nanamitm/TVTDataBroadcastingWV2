@@ -77,6 +77,8 @@ class ProxyRequest : public std::enable_shared_from_this<ProxyRequest> {
     std::wstring tlsHost;
     bool secure = false;
     bool verifyCertificate = true;
+    // Set once SENDING_REQUEST verified the current connection's certificate.
+    bool certificateVerified = false;
     DWORD secureFailureFlags = 0;
     ProxyRequest(HINTERNET connect, HINTERNET request,
         std::function<void()> errorCallback,

@@ -12,6 +12,7 @@
 #define TVTDATABROADCASTINGWV2_VERSION_STRING_W L"unknown"
 #endif
 #include "StartupPolicy.h"
+#include "PacketQueue.h"
 #include "AsyncLifetime.h"
 #include "ProxyPolicy.h"
 #include "B62Navigation.h"
@@ -139,203 +140,7 @@ struct Status
     bool html5 = false;
 };
 
-struct PacketQueue
-{
-private:
-    std::mutex queueMutex;
-    std::vector<BYTE> currentBlock;
-    std::queue<std::vector<BYTE>> queue;
-    std::atomic<bool> invalidate;
-    std::unordered_set<WORD> pidsToExclude;
-    std::unordered_map<WORD, int> pcrPIDCandidates;
-    int pcrPID = -1;
-    // TSスレッドが書き、getBroadcastTime()が別スレッドから読むためatomicにする
-    std::atomic<DWORD> pcr{ 0 };
-    DWORD lastBlockPCR = 0;
-    // Broadcast wall-clock from TDT/TOT (PID 0x0014), with the PCR at that moment
-    // for interpolation. totUnix==0 means unknown.
-    std::atomic<long long> totUnix{ 0 };
-    std::atomic<DWORD>     pcrAtTot{ 0 };
-public:
-    static constexpr size_t packetSize = 188;
-    static constexpr size_t packetBlockSize = packetSize * 500;
-    static constexpr size_t maxQueueLength = 100;
 
-    PacketQueue()
-    {
-        currentBlock.reserve(packetBlockSize);
-    }
-
-    // TSスレッドでのみ呼び出せる
-    bool enqueuePacket(BYTE* packet)
-    {
-        if (this->invalidate.exchange(false))
-        {
-            this->currentBlock.clear();
-        }
-        // 8-bit sync byte
-        // 1-bit TEI
-        // 1-bit PUSI
-        // 1-bit priority
-        // 13-bit PID
-        bool transportErrorIndicator = !!(packet[1] & 0x80);
-        WORD pid = ((packet[1] << 8) | packet[2]) & 0x1fff;
-        int adaptationFieldControl = (packet[3] >> 4) & 0x03;
-        bool pcrFlag = false;
-        if (!transportErrorIndicator && !!(adaptationFieldControl & 2))
-        {
-            int adaptationLength = packet[4];
-            pcrFlag = !!(packet[5] & 0x10);
-            if (adaptationLength >= 6 && pcrFlag)
-            {
-                // 参照するPCRのPIDを適当に選ぶ
-                if (pid != this->pcrPID)
-                {
-                    auto it = this->pcrPIDCandidates.find(pid);
-                    if (it == this->pcrPIDCandidates.end())
-                    {
-                        it = this->pcrPIDCandidates.emplace(pid, 0).first;
-                    }
-                    // 最初に3回出現するか、参照済みPCRが現れずに5回出現したPCRを使う
-                    it->second++;
-                    if ((this->pcrPID < 0 && it->second >= 3) || it->second >= 5)
-                    {
-                        this->pcrPID = pid;
-                    }
-                }
-                if (pid == this->pcrPID)
-                {
-                    // PCRを取得する。時計演算の便利のため下位1bitは捨てる
-                    this->pcrPIDCandidates.clear();
-                    this->pcr = (static_cast<DWORD>(packet[6]) << 24) | (packet[7] << 16) | (packet[8] << 8) | packet[9];
-                }
-            }
-        }
-
-        // TDT/TOT (PID 0x0014): broadcast wall-clock time.
-        if (pid == 0x0014 && !transportErrorIndicator && !!(adaptationFieldControl & 1))
-        {
-            bool pusi = !!(packet[1] & 0x40);
-            if (pusi)
-            {
-                int off = 4;
-                if (adaptationFieldControl & 2) off += 1 + packet[4]; // skip adaptation field
-                if (off < static_cast<int>(packetSize))
-                {
-                    off += 1 + packet[off]; // pointer_field
-                    if (off + 8 <= static_cast<int>(packetSize))
-                    {
-                        BYTE tableId = packet[off];
-                        if (tableId == 0x70 || tableId == 0x73) // TDT / TOT
-                        {
-                            const BYTE* t = packet + off + 3; // skip table_id + section_length(2)
-                            int mjd = (t[0] << 8) | t[1];
-                            int hh = (t[2] >> 4) * 10 + (t[2] & 0xf);
-                            int mm = (t[3] >> 4) * 10 + (t[3] & 0xf);
-                            int ss = (t[4] >> 4) * 10 + (t[4] & 0xf);
-                            if (mjd > 40587 && hh < 24 && mm < 60 && ss < 60)
-                            {
-                                // MJD 40587 = 1970-01-01. ARIB time is JST(UTC+9).
-                                long long unixT = static_cast<long long>(mjd - 40587) * 86400
-                                                + hh * 3600 + mm * 60 + ss - 32400;
-                                this->totUnix.store(unixT);
-                                this->pcrAtTot.store(this->pcr);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        bool acceptPacket;
-        {
-            // std::mutexの内部はSRWLock等なので頻繁に呼んでも別に気にしなくてよい
-            std::lock_guard<std::mutex> lock(this->queueMutex);
-            acceptPacket = this->pidsToExclude.count(pid) == 0;
-        }
-        if (acceptPacket)
-        {
-            this->currentBlock.insert(this->currentBlock.end(), packet, packet + this->packetSize);
-        }
-        else if (pcrFlag)
-        {
-            // 除外されているPIDにPCRが含まれていればPCRのみをキューに加える
-            BYTE pcr_packet[packetSize] = {};
-            pcr_packet[0] = 0x47;
-            // adaptation_field_control=0b10なのでCIは加算されない、0固定で間に合わせる
-            pcr_packet[1] = pid >> 8;
-            pcr_packet[2] = pid & 0xff;
-            pcr_packet[3] = 2 << 4;
-            pcr_packet[4] = packetSize - 5; // adaptation_field_length
-            pcr_packet[5] = 0x10; // PCR
-            memcpy(pcr_packet + 6, packet + 6, 6);
-            memset(pcr_packet + 12, 0xff, sizeof(pcr_packet) - 12);
-            this->currentBlock.insert(this->currentBlock.end(), pcr_packet, pcr_packet + sizeof(pcr_packet));
-        }
-
-        // PCRが100ミリ秒以上進めばキューに加える
-        // キューには100*maxQueueLengthミリ秒分ほど貯められる
-        if (this->currentBlock.size() >= this->packetBlockSize ||
-            (!this->currentBlock.empty() && (this->pcr - this->lastBlockPCR) >= 45 * 100))
-        {
-            {
-                std::lock_guard<std::mutex> lock(this->queueMutex);
-                this->queue.push(std::move(this->currentBlock));
-                if (this->queue.size() > this->maxQueueLength)
-                {
-                    // 古いものを中身再利用して捨てる
-                    this->currentBlock.swap(this->queue.front());
-                    this->queue.pop();
-                }
-            }
-            this->currentBlock.clear();
-            this->currentBlock.reserve(this->packetBlockSize);
-            this->lastBlockPCR = this->pcr;
-            return true;
-        }
-        return false;
-    }
-
-    // どのスレッドからも呼び出せる
-    void clear()
-    {
-        std::lock_guard<std::mutex> lock(this->queueMutex);
-        std::queue<std::vector<BYTE>>().swap(this->queue);
-        this->invalidate = true;
-    }
-
-    // どのスレッドからも呼び出せる
-    std::optional<std::vector<BYTE>> pop()
-    {
-        std::lock_guard<std::mutex> lock(this->queueMutex);
-        if (this->queue.empty())
-        {
-            return std::nullopt;
-        }
-        auto r = std::move(this->queue.front());
-        this->queue.pop();
-        return r;
-    }
-
-    // どのスレッドからも呼び出せる
-    void setPIDsToExclude(std::unordered_set<WORD> pids)
-    {
-        std::lock_guard<std::mutex> lock(this->queueMutex);
-        this->pidsToExclude.swap(pids);
-    }
-
-    // Current broadcast Unix time (JST converted to UTC seconds), interpolated
-    // from the last TOT with the PCR delta. Returns 0 if unknown.
-    // Callable from any thread.
-    long long getBroadcastTime() const
-    {
-        long long base = this->totUnix.load();
-        if (base == 0) return 0;
-        // pcr is the upper 32 bits of the 33-bit PCR base (LSB dropped) => 45kHz.
-        DWORD d = this->pcr - this->pcrAtTot.load();
-        return base + static_cast<long long>(static_cast<int32_t>(d)) / 45000;
-    }
-};
 
 struct Audio
 {
@@ -3924,8 +3729,10 @@ void CDataBroadcastingWV2::ClearOnScreenComments()
 void CDataBroadcastingWV2::PlaybackTick()
 {
     long long T = this->packetQueue.getBroadcastTime();
+    // A cleared clock is unknown, not evidence that recorded playback ended.
+    if (T == 0) return;
     long long now = static_cast<long long>(time(nullptr));
-    bool shouldPlayback = (T != 0) && (now - T > 60); // >60s behind => playback
+    bool shouldPlayback = (now - T > 60); // >60s behind => playback
 
     if (shouldPlayback && !this->m_playbackActive)
     {

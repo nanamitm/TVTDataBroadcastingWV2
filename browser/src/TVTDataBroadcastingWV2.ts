@@ -547,6 +547,9 @@ function onMessage(msg: ResponseMessage) {
         player.push(msg.streamId, Uint8Array.from(msg.data), msg.pts);
     } else if (msg.type === "pcr") {
         pcr = (msg.pcrBase + msg.pcrExtension / 300) / 90;
+        // Preserve PCR/PES order within each TS batch, particularly for
+        // superimposition packets without PTS and immediately after a seek.
+        player.updateTime(pcr);
     } else if (msg.type === "pmt") {
         audioESList = msg.components.filter(x => audioStreamType.has(x.streamType)).sort((a, b) => a.componentId - b.componentId);
         // 字幕 (0x30-0x37) と文字スーパー (0x38-0x3F)
@@ -781,7 +784,6 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         const curPCR = pcr;
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
-            player.updateTime(curPCR);
             ttmlPlayer.updateTime(curPCR);
             b62Application.updateTime(curPCR);
         }
@@ -795,7 +797,6 @@ function onWebViewMessage(data: ToWebViewMessage, reply: (data: FromWebViewMessa
         const curPCR = pcr;
         if (prevPCR !== curPCR && curPCR != null) {
             // 表示遅延はホスト側の設定(DelayTime)で調整する
-            player.updateTime(curPCR);
             ttmlPlayer.updateTime(curPCR);
             b62Application.updateTime(curPCR);
         }

@@ -16,7 +16,7 @@ const context = {
     cProfile: true, oneSegLaunched: false, oneSegCaptionOverlay: false,
     performance: { now: () => 0 },
     pcr: 0, broadcastTimeKnown: false, remoteControlStatusTimeout: Infinity,
-    tsStream: { push() { pushes++; context.pcr++; } },
+    tsStream: { push() { pushes++; context.onMessage({ type: 'pcr', pcrBase: (context.pcr + 1) * 90, pcrExtension: 0 }); } },
     player: { updateTime() { updates++; } },
     ttmlPlayer: { updateTime() {} }, b62Application: { updateTime() {} },
     fromBase64: () => new Uint8Array([0x47]),
@@ -66,4 +66,16 @@ context.cProfile = false;
 context.oneSegLaunched = false;
 context.onWebViewMessage({ type: 'streamBase64', data: 'Rw==' });
 assert.equal(pushes, 5, 'ordinary services continue receiving without the one-seg window');
+const ordered = [];
+context.player.updateTime = time => ordered.push(['clock', time]);
+context.player.push = streamId => ordered.push(['pes', streamId]);
+context.tsStream.push = () => {
+    context.onMessage({ type: 'pcr', pcrBase: 90000, pcrExtension: 0 });
+    context.onMessage({ type: 'pes', streamId: 0xbf, data: [] });
+    context.onMessage({ type: 'pcr', pcrBase: 180000, pcrExtension: 0 });
+    context.onMessage({ type: 'pes', streamId: 0xbd, data: [], pts: 180000 });
+};
+context.onWebViewMessage({ type: 'streamBase64', data: 'Rw==' });
+assert.deepEqual(ordered, [['clock', 1000], ['pes', 0xbf], ['clock', 2000], ['pes', 0xbd]],
+    'native clock notifications must preserve PCR/PES order within one TS batch without duplicate end-of-batch updates');
 console.log('OneSeg caption stream routing tests passed');

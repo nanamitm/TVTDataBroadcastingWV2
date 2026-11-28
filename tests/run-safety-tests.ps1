@@ -67,5 +67,6 @@ if errorlevel 1 exit /b 1
 "@ | Set-Content -LiteralPath $batch -Encoding ascii
 & $batch
 if ($LASTEXITCODE -ne 0) { throw 'Native safety tests failed' }
+& (Join-Path $PSScriptRoot 'run-caption-tests.ps1')
 node (Join-Path $PSScriptRoot 'broadcast_tls.test.cjs') (Join-Path $output 'broadcast-certificates.exe')
 if ($LASTEXITCODE -ne 0) { throw 'TLS certificate policy tests failed' }
